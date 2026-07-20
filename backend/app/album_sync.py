@@ -532,23 +532,43 @@ async def _download_album_task_internal(
                 await db.update_album_download_status(download_id, "failed")
                 return
 
-        # Pre-fetch official tracklist from Deezer for name matching
+        # Pre-fetch official tracklist, cover art, and release date from Deezer
         official_album_tracks = []
+        official_album_cover_bytes = None
+        official_album_date = None
         try:
-            logger.info(f"Pre-fetching official tracklist for album '{album}' from Deezer...")
+            logger.info(f"Pre-fetching official tracklist & cover for album '{album}' from Deezer...")
             async with httpx.AsyncClient(timeout=config.timeouts.http_seconds) as client:
                 search_url = f"https://api.deezer.com/search/album?q={urllib.parse.quote(f'{artist} {album}')}"
                 resp = await client.get(search_url)
                 if resp.status_code == 200:
                     results = resp.json().get("data", [])
-                    if results:
-                        album_id = results[0]["id"]
+                    best_album_match = None
+                    clean_target_album = clean_album_name(album).lower()
+                    for res in results:
+                        res_title = clean_album_name(res.get("title", "")).lower()
+                        if res_title == clean_target_album or clean_target_album in res_title:
+                            best_album_match = res
+                            # Prefer full album over single (nb_tracks > 1)
+                            if res.get("nb_tracks", 0) > 3:
+                                break
+                    if not best_album_match and results:
+                        best_album_match = results[0]
+
+                    if best_album_match:
+                        album_id = best_album_match["id"]
+                        cover_url = best_album_match.get("cover_xl") or best_album_match.get("cover_big")
+                        if cover_url:
+                            official_album_cover_bytes = await deezer_client.download_cover_art(cover_url)
+                        album_details = await deezer_client.get_album_metadata(album_id)
+                        if album_details:
+                            official_album_date = album_details.get("release_date")
                         tracks_data = await deezer_client.get_album_tracks(album_id)
                         if tracks_data and "data" in tracks_data:
                             official_album_tracks = tracks_data["data"]
-                            logger.info(f"Fetched {len(official_album_tracks)} official tracks for album '{album}' from Deezer.")
+                            logger.info(f"Fetched {len(official_album_tracks)} official tracks and cover art for album '{album}'.")
         except Exception as e:
-            logger.warning(f"Could not pre-fetch official album tracklist from Deezer: {e}")
+            logger.warning(f"Could not pre-fetch official album metadata from Deezer: {e}")
 
         max_attempts = getattr(config.schedule, "max_candidate_attempts", 3) or 3
         overall_downloaded = []
@@ -663,10 +683,10 @@ async def _download_album_task_internal(
                                 title=title_tag,
                                 album=album,
                                 track_num=track_num,
-                                cover_bytes=cover_bytes,
+                                cover_bytes=official_album_cover_bytes or cover_bytes,
                                 lyrics_text=lyrics_text,
                                 album_artist=artist,
-                                date=dz_date
+                                date=official_album_date or dz_date
                             )
 
                             # Update M3U references and clean up the old file in explore/playlists
@@ -888,10 +908,10 @@ async def _download_album_task_internal(
                             title=title_tag,
                             album=album,
                             track_num=track_num,
-                            cover_bytes=cover_bytes,
+                            cover_bytes=official_album_cover_bytes or cover_bytes,
                             lyrics_text=lyrics_text,
                             album_artist=artist,
-                            date=dz_date
+                            date=official_album_date or dz_date
                         )
                     except Exception as e:
                         logger.error(f"Failed to embed metadata/lyrics for {dest_path}: {e}")
