@@ -20,10 +20,8 @@ services:
       # Example: - /home/user/appdata/slskd/downloads:/slskd_downloads
       - ${SLSKD_DOWNLOADS_HOST_PATH:-./slskd_downloads}:/slskd_downloads
 
-      # Navidrome playlists volume mount
-      - ${NAVIDROME_PLAYLISTS_HOST_PATH:-./navidrome_playlists}:/navidrome_playlists
-      
-      # General music library (for checking existing tracks to hardlink)
+      # Main music library root (mount host music root, e.g., /navidrome/music:/music)
+      # Each user sets their personal subfolder in the UI (e.g. /music/a, /music/b/playlists)
       - ${MUSIC_HOST_PATH:-./music}:/music
       
     restart: unless-stopped

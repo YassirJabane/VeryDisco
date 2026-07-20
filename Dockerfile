@@ -30,8 +30,8 @@ RUN groupadd -g 1000 appgroup && \
     useradd -r -u 1000 -g appgroup appuser
 
 # Pre-create required directory structures
-RUN mkdir -p /data /app/frontend/dist /slskd_downloads /navidrome_playlists && \
-    chown -R appuser:appgroup /data /app /slskd_downloads /navidrome_playlists
+RUN mkdir -p /data /app/frontend/dist /slskd_downloads /music && \
+    chown -R appuser:appgroup /data /app /slskd_downloads /music
 
 # Install Python backend dependencies (production only)
 COPY backend/requirements.txt ./

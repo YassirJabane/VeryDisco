@@ -36,7 +36,7 @@ schedule:
 # File storage paths
 paths:
   weekly_output_dir: "/data/weekly/current" # Optional: Path where downloaded files are organized
-  navidrome_playlists_dir: "/navidrome_playlists" # Optional: Directory for Navidrome playlists
+  navidrome_playlists_dir: "/music/playlists" # Optional: Directory for Navidrome playlists
   music_dir: "/music"                      # Optional: Root music directory for hardlinking existing tracks
 
 
