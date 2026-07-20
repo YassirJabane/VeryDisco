@@ -604,6 +604,13 @@ async def _download_album_task_internal(
                     if q_status in ["same", "better"]:
                         logger.info(f"Skipping download of track '{artist} - {clean_title}'; using existing same/better quality file: {existing_path}")
                         
+                        # If the existing file is already inside the destination album folder,
+                        # there is nothing to do — skip entirely to avoid creating duplicates.
+                        if Path(existing_path).resolve().parent == Path(final_dir).resolve():
+                            logger.debug(f"Existing file already in destination folder, no copy needed for '{clean_title}'")
+                            copied_files.append((f, existing_path))
+                            continue
+                        
                         # 1. Fetch metadata (MusicBrainz primary, Deezer fallback)
                         track_num = None
                         cover_bytes = None
@@ -632,7 +639,7 @@ async def _download_album_task_internal(
                         dest_path = final_dir / clean_filename
                         
                         try:
-                            # If existing_path is inside playlists/explore, we can copy it to dest_path.
+                            # Copy from explore/playlists dir to final library dir.
                             # Skip if they are already the same file.
                             if Path(existing_path).resolve() != Path(dest_path).resolve():
                                 shutil.copy2(str(existing_path), str(dest_path))
@@ -655,14 +662,15 @@ async def _download_album_task_internal(
                                 track_num=track_num,
                                 cover_bytes=cover_bytes,
                                 lyrics_text=lyrics_text,
-                                album_artist=dz_album_artist,
+                                album_artist=artist,
                                 date=dz_date
                             )
 
                             # Update M3U references and clean up the old file in explore/playlists
                             from backend.app.sync import update_m3u_references
                             try:
-                                update_m3u_references(Path(playlists_dir), existing_path.name, dest_path)
+                                if Path(playlists_dir).exists():
+                                    update_m3u_references(Path(playlists_dir), existing_path.name, dest_path)
                             except Exception as e:
                                 logger.error(f"Failed to update M3U references on sync: {e}")
 
@@ -879,7 +887,7 @@ async def _download_album_task_internal(
                             track_num=track_num,
                             cover_bytes=cover_bytes,
                             lyrics_text=lyrics_text,
-                            album_artist=dz_album_artist,
+                            album_artist=artist,
                             date=dz_date
                         )
                     except Exception as e:

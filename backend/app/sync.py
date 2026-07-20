@@ -236,8 +236,8 @@ def embed_metadata(
         except Exception:
             pass
     if not album_artist:
-        # Fall back to stripping featuring/feat from track artist to get a clean album artist
-        album_artist = re.split(r'\bfeat\b|\bft\b', artist, flags=re.IGNORECASE)[0].strip()
+        # Fall back to stripping featuring/collaborators from track artist to get a clean primary album artist
+        album_artist = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', artist, flags=re.IGNORECASE)[0].strip()
     if not album_artist:
         album_artist = artist
 
@@ -956,7 +956,15 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
 
       try:
           # Pre-create parent directory to avoid FileNotFoundError
-          parent_dir.mkdir(parents=True, exist_ok=True)
+          try:
+              parent_dir.mkdir(parents=True, exist_ok=True)
+          except PermissionError as e:
+              logger.error(
+                  f"Sync run #{run_id} failed: cannot create playlist directory '{parent_dir}'. "
+                  f"Check that the path is correctly mounted and writable by UID 1000. Error: {e}"
+              )
+              await db.update_run(run_id, "failed", 0, 0, 0, 0, str(e))
+              return
           
           # Ensure explore dir exists and remove any .ndignore files that would hide files from Navidrome.
           # Previously we put a .ndignore in explore/ to prevent duplicates when files were also copied
