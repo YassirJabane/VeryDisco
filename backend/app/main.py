@@ -5844,7 +5844,7 @@ async def scan_feat_artists(request: Request):
         music_dir = Path(user_row["music_dir"])
 
     _FEAT_RE = re.compile(
-        r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)(.+?)[\)\]]?\s*$',
+        r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+)(.+?)[\)\]]?\s*$',
         re.IGNORECASE
     )
 
@@ -5914,7 +5914,7 @@ async def fix_feat_artists(req: FeatFixRequest, request: Request):
         music_dir = Path(user_row["music_dir"])
 
     _FEAT_RE = re.compile(
-        r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)(.+?)[\)\]]?\s*$',
+        r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+)(.+?)[\)\]]?\s*$',
         re.IGNORECASE
     )
 
@@ -6000,6 +6000,38 @@ async def fix_feat_artists(req: FeatFixRequest, request: Request):
         "dry_run": req.dry_run,
         "message": f"{'Preview' if req.dry_run else 'Fixed'} {len(fixed)} tracks."
     }
+
+
+class FixFolderTagsRequest(BaseModel):
+    folder_path: str
+    target_artist: Optional[str] = None
+    target_album: Optional[str] = None
+
+@app.post("/api/library/fix-folder-tags")
+async def fix_folder_tags_endpoint(req: FixFolderTagsRequest, request: Request):
+    """
+    Scans a folder, updates embedded tags (Artist, Album Artist, Album) to match the folder structure
+    and triggers a Navidrome scan so Navidrome updates its database.
+    """
+    if not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured.")
+
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+
+    folder = Path(req.folder_path)
+    if not folder.exists() or not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Folder not found")
+
+    from backend.app.sync import fix_directory_tags_and_rescan
+    count = await fix_directory_tags_and_rescan(
+        dir_path=folder,
+        target_artist=req.target_artist,
+        target_album=req.target_album,
+        config=config_manager.config
+    )
+
+    return {"status": "success", "updated_files": count}
 
 
 # ==============================================================================

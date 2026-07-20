@@ -196,17 +196,76 @@ def sanitize_filename(name: str) -> str:
     sanitized = re.sub(r'[\\/*?":<>|]', "_", name)
     return sanitized.strip('. ')
 
-def get_folder_artist_name(artist: str, album_artist: str = "") -> str:
+def get_folder_artist_name(artist: str, album_artist: str = "", album: str = "") -> str:
     """
-    Returns a clean primary artist name for top-level folder structure under /music/{user}/.
-    Strips featuring artists, joint collaborators, and feat./ft./&/with/vs.
-    Example: 'Travis Scott feat. Kanye West' -> 'Travis Scott'
+    Returns a clean primary or collaborative artist name for top-level folder structure under /music/{user}/.
+    Strips featuring artists (feat./ft.), but preserves joint album artists or group names.
+    Handles supergroup / collaboration overrides like Huncho Jack.
     """
+    if (album and "huncho jack" in album.lower()) or (artist and "huncho jack" in artist.lower()) or (album_artist and "huncho jack" in album_artist.lower()):
+        return "Huncho Jack"
+
     candidate = album_artist or artist
     if not candidate:
         return "Unknown Artist"
-    primary = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', candidate, flags=re.IGNORECASE)[0].strip()
+
+    primary = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+)', candidate, flags=re.IGNORECASE)[0].strip()
+    primary = re.sub(r'[\(\[\)\]]', '', primary).strip()
+
     return primary or candidate
+
+async def fix_directory_tags_and_rescan(
+    dir_path: Union[str, Path],
+    target_artist: Optional[str] = None,
+    target_album: Optional[str] = None,
+    config: Optional[Any] = None
+) -> int:
+    """
+    Scans all audio files in dir_path, updates their embedded ID3/FLAC metadata 
+    (Artist, Album Artist, Album) to match folder structure / target params, 
+    and triggers a Navidrome scan.
+    """
+    path = Path(dir_path)
+    if not path.exists() or not path.is_dir():
+        return 0
+
+    updated_count = 0
+    folder_album = target_album or path.name
+    folder_artist = target_artist or path.parent.name
+
+    for f_path in path.rglob("*"):
+        if f_path.is_file() and f_path.suffix.lower() in [".mp3", ".flac", ".m4a"]:
+            try:
+                from backend.app.main import read_basic_tags
+                meta = read_basic_tags(f_path)
+                curr_title = meta.get("title") or f_path.stem
+
+                embed_metadata(
+                    file_path=str(f_path),
+                    artist=folder_artist,
+                    title=curr_title,
+                    album=folder_album,
+                    album_artist=folder_artist,
+                    track_num=meta.get("track_num")
+                )
+                updated_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to update tags for '{f_path}': {e}")
+
+    if updated_count > 0 and config and config.navidrome.url:
+        try:
+            from backend.app.clients.navidrome import NavidromeClient
+            nd_client = NavidromeClient(
+                url=config.navidrome.url,
+                username=config.navidrome.username,
+                password=config.navidrome.password
+            )
+            await nd_client.trigger_scan()
+            logger.info(f"Updated tags for {updated_count} files in '{path}' and triggered Navidrome scan.")
+        except Exception as nd_err:
+            logger.warning(f"Triggering Navidrome scan failed: {nd_err}")
+
+    return updated_count
 
 def get_clean_album_folder(album: str, artist: str = "") -> str:
     """
