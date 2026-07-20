@@ -6,7 +6,7 @@ WORKDIR /build
 
 # Copy frontend source files
 COPY frontend/package*.json ./
-RUN npm install && npm install vite-plugin-pwa workbox-window workbox-build -D
+RUN npm install
 
 COPY frontend/ ./
 RUN npm run build
