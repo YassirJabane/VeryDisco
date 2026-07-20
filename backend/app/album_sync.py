@@ -580,6 +580,9 @@ async def _download_album_task_internal(
                     clean_title = matched["title"]
                     f["track_num"] = matched.get("track_position")
                     f["title_tag"] = matched["title"]
+                elif official_album_tracks:
+                    logger.info(f"Skipping extra non-album file in search result folder: {filename_part}")
+                    continue
                 else:
                     clean_title = clean_track_title(basename, artist, album)
                 
