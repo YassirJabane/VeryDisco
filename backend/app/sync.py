@@ -1436,6 +1436,8 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
                                           except Exception:
                                               pass
                                       downloaded_file.unlink(missing_ok=True)
+                              else:
+                                  logger.info(f"No MusicBrainz recording MBID found for '{artist} - {title}'. Skipping AcoustID fingerprint check.")
                           if final_state == "succeeded":
                               break
                       elif final_state in ["xfer_failed", "stuck"]:
