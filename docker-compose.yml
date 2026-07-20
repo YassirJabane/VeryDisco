@@ -1,9 +1,6 @@
 services:
   verydisco:
     image: ghcr.io/yassirjabane/verydisco:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
     container_name: verydisco
     ports:
       - "8086:8080"

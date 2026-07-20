@@ -49,6 +49,10 @@ const Setup: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (activeStep < steps.length - 1) {
+      handleNext();
+      return;
+    }
     setError(null);
     setLoading(true);
 
