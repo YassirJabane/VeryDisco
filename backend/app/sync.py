@@ -196,6 +196,18 @@ def sanitize_filename(name: str) -> str:
     sanitized = re.sub(r'[\\/*?":<>|]', "_", name)
     return sanitized.strip('. ')
 
+def get_folder_artist_name(artist: str, album_artist: str = "") -> str:
+    """
+    Returns a clean primary artist name for top-level folder structure under /music/{user}/.
+    Strips featuring artists, joint collaborators, and feat./ft./&/with/vs.
+    Example: 'Travis Scott feat. Kanye West' -> 'Travis Scott'
+    """
+    candidate = album_artist or artist
+    if not candidate:
+        return "Unknown Artist"
+    primary = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', candidate, flags=re.IGNORECASE)[0].strip()
+    return primary or candidate
+
 def get_safe_filename(artist: str, title: str, ext: str) -> str:
     return f"{sanitize_filename(artist)} - {sanitize_filename(title)}{ext}"
 
@@ -568,7 +580,8 @@ async def relocate_and_tag_download(
                 _, dz_album_artist = deezer_client.resolve_joint_artists(album_meta)
 
     # Sanitize path segments
-    safe_artist = sanitize_filename(dz_album_artist or dz_artist)
+    clean_folder_artist = get_folder_artist_name(dz_artist, dz_album_artist)
+    safe_artist = sanitize_filename(clean_folder_artist)
     safe_album = sanitize_filename(dz_album)
 
     if dest_dir:
@@ -825,10 +838,11 @@ def cleanup_album_explore_tracks(playlists_dir: Path, music_dir: Path, artist: s
     and updates their M3U references and unlinks the explore/playlist copies.
     """
     import os, re
-    from backend.app.sync import sanitize_filename
+    from backend.app.sync import sanitize_filename, get_folder_artist_name
     from backend.app.main import read_basic_tags
 
-    safe_artist = sanitize_filename(artist)
+    clean_folder_artist = get_folder_artist_name(artist)
+    safe_artist = sanitize_filename(clean_folder_artist)
     safe_album = sanitize_filename(album)
     album_dir = Path(music_dir) / safe_artist / safe_album
     if not album_dir.exists() or not album_dir.is_dir():

@@ -592,7 +592,9 @@ async def _download_album_task_internal(
             best_username, best_dir_path = dir_key
             logger.info(f"--- [Attempt {attempt + 1}/{max_attempts}] Trying peer '{best_username}' for album directory '{best_dir_path}' with {len(best_files)} tracks. ---")
 
-            safe_artist = sanitize_filename(artist)
+            from backend.app.sync import get_folder_artist_name
+            clean_folder_artist = get_folder_artist_name(artist)
+            safe_artist = sanitize_filename(clean_folder_artist)
             safe_album = sanitize_filename(album)
             final_dir = Path(music_dir) / safe_artist / safe_album
             final_dir.mkdir(parents=True, exist_ok=True)
@@ -1231,7 +1233,9 @@ async def download_single_track_task(artist: str, title: str, album: str, config
             except Exception as meta_err:
                 logger.warning(f"Could not retrieve metadata: {meta_err}")
 
-            safe_artist = sanitize_filename(fetched_artist)
+            from backend.app.sync import get_folder_artist_name
+            clean_folder_artist = get_folder_artist_name(fetched_artist, dz_album_artist)
+            safe_artist = sanitize_filename(clean_folder_artist)
             safe_album = sanitize_filename(fetched_album) if fetched_album else "Downloads"
             dest_dir = Path(music_dir) / safe_artist / safe_album
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1445,7 +1449,9 @@ async def grab_single_track_task(
         except Exception as meta_err:
             logger.warning(f"Could not retrieve Deezer metadata: {meta_err}")
 
-        safe_artist = sanitize_filename(fetched_artist)
+        from backend.app.sync import get_folder_artist_name
+        clean_folder_artist = get_folder_artist_name(fetched_artist, dz_album_artist)
+        safe_artist = sanitize_filename(clean_folder_artist)
         safe_album = sanitize_filename(fetched_album) if fetched_album else "Downloads"
         dest_dir = Path(music_dir) / safe_artist / safe_album
         dest_dir.mkdir(parents=True, exist_ok=True)
