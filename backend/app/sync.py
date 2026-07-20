@@ -4,7 +4,7 @@ import shutil
 import tempfile
 import asyncio
 from pathlib import Path
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Union
 from datetime import datetime
 
 import json
