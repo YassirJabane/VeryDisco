@@ -255,6 +255,7 @@ const Setup: React.FC = () => {
 
             <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 4 }}>
               <Button
+                type="button"
                 disabled={activeStep === 0 || loading}
                 onClick={handleBack}
                 startIcon={<PrevIcon />}
@@ -265,6 +266,7 @@ const Setup: React.FC = () => {
               
               {activeStep < steps.length - 1 ? (
                 <Button
+                  type="button"
                   variant="contained"
                   onClick={handleNext}
                   endIcon={<NextIcon />}
