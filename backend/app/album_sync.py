@@ -592,13 +592,8 @@ async def _download_album_task_internal(
             best_username, best_dir_path = dir_key
             logger.info(f"--- [Attempt {attempt + 1}/{max_attempts}] Trying peer '{best_username}' for album directory '{best_dir_path}' with {len(best_files)} tracks. ---")
 
-            from backend.app.sync import get_folder_artist_name, get_clean_album_folder
-            clean_folder_artist = get_folder_artist_name(artist)
-            clean_folder_album = get_clean_album_folder(album, clean_folder_artist)
-            safe_artist = sanitize_filename(clean_folder_artist)
-            safe_album = sanitize_filename(clean_folder_album)
-            final_dir = Path(music_dir) / safe_artist / safe_album
-            final_dir.mkdir(parents=True, exist_ok=True)
+            from backend.app.sync import get_folder_artist_name, get_clean_album_folder, resolve_album_dir
+            final_dir, safe_artist, safe_album = resolve_album_dir(music_dir, artist, album)
 
             to_download = []
             copied_files = []
@@ -1225,7 +1220,9 @@ async def download_single_track_task(artist: str, title: str, album: str, config
                 )
                 fetched_artist = meta_result["artist"]
                 title_tag = meta_result["title"] or title
-                if not fetched_album:
+                if meta_result.get("album"):
+                    fetched_album = meta_result["album"]
+                elif not fetched_album:
                     fetched_album = album
                 track_num = meta_result["track_num"]
                 cover_bytes = meta_result["cover_bytes"]
@@ -1234,15 +1231,9 @@ async def download_single_track_task(artist: str, title: str, album: str, config
             except Exception as meta_err:
                 logger.warning(f"Could not retrieve metadata: {meta_err}")
 
-            from backend.app.sync import get_folder_artist_name, get_clean_album_folder
-            clean_folder_artist = get_folder_artist_name(fetched_artist, dz_album_artist)
-            clean_folder_album = get_clean_album_folder(fetched_album, clean_folder_artist)
-            safe_artist = sanitize_filename(clean_folder_artist)
-            safe_album = sanitize_filename(clean_folder_album)
-            dest_dir = Path(music_dir) / safe_artist / safe_album
-            dest_dir.mkdir(parents=True, exist_ok=True)
+            from backend.app.sync import resolve_album_dir, get_library_filename
+            dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, fetched_artist, fetched_album, dz_album_artist)
 
-            from backend.app.sync import get_library_filename
             clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
             dest_audio_path = dest_dir / clean_filename
 
@@ -1451,15 +1442,8 @@ async def grab_single_track_task(
         except Exception as meta_err:
             logger.warning(f"Could not retrieve Deezer metadata: {meta_err}")
 
-        from backend.app.sync import get_folder_artist_name, get_clean_album_folder
-        clean_folder_artist = get_folder_artist_name(fetched_artist, dz_album_artist)
-        clean_folder_album = get_clean_album_folder(fetched_album, clean_folder_artist)
-        safe_artist = sanitize_filename(clean_folder_artist)
-        safe_album = sanitize_filename(clean_folder_album)
-        dest_dir = Path(music_dir) / safe_artist / safe_album
-        dest_dir.mkdir(parents=True, exist_ok=True)
-
-        from backend.app.sync import get_library_filename
+        from backend.app.sync import resolve_album_dir, get_library_filename
+        dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, fetched_artist, fetched_album, dz_album_artist)
         clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
         dest_audio_path = dest_dir / clean_filename
 

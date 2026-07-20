@@ -224,6 +224,77 @@ def get_clean_album_folder(album: str, artist: str = "") -> str:
         return "Singles"
     return clean or album
 
+def find_existing_album_folder(artist_dir: Path, target_album: str) -> Optional[Path]:
+    """
+    Looks under artist_dir for an existing album directory that matches target_album.
+    Matches case-insensitively, and handles variations like '(Deluxe)', '[Explicit]', etc.
+    """
+    if not artist_dir.exists() or not artist_dir.is_dir():
+        return None
+        
+    def normalize_album(name: str) -> str:
+        cleaned = re.sub(r'[\(\[]?\s*(?:deluxe|bonus|explicit|expanded|remastered|special|edition|version|digital).*?[\)\]]?', '', name, flags=re.IGNORECASE)
+        cleaned = re.sub(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+.*[\)\]]?)', '', cleaned, flags=re.IGNORECASE)
+        return re.sub(r'[^\w]', '', cleaned).lower()
+
+    target_clean = get_clean_album_folder(target_album).lower()
+    target_norm = normalize_album(target_album)
+
+    try:
+        children = list(artist_dir.iterdir())
+    except Exception:
+        return None
+
+    # 1. Exact case-insensitive match
+    for child in children:
+        if child.is_dir():
+            if child.name.lower() == target_clean:
+                return child
+
+    # 2. Normalized match (e.g. UTOPIA vs UTOPIA (Deluxe))
+    if target_norm:
+        for child in children:
+            if child.is_dir():
+                child_norm = normalize_album(child.name)
+                if child_norm and child_norm == target_norm:
+                    return child
+
+    return None
+
+def resolve_album_dir(music_dir: Union[str, Path], artist: str, album: str, album_artist: str = "") -> Tuple[Path, str, str]:
+    """
+    Resolves the target album directory under music_dir/Artist/Album.
+    Reuses an existing album directory if a case-insensitive or normalized match exists.
+    Returns (target_folder_path, safe_artist_name, safe_album_name).
+    """
+    clean_folder_artist = get_folder_artist_name(artist, album_artist)
+    clean_folder_album = get_clean_album_folder(album, clean_folder_artist)
+    
+    safe_artist = sanitize_filename(clean_folder_artist)
+    safe_album = sanitize_filename(clean_folder_album)
+    
+    music_path = Path(music_dir)
+    artist_dir = music_path / safe_artist
+    
+    if not artist_dir.exists() and music_path.exists():
+        try:
+            for child in music_path.iterdir():
+                if child.is_dir() and child.name.lower() == safe_artist.lower():
+                    artist_dir = child
+                    safe_artist = child.name
+                    break
+        except Exception:
+            pass
+
+    if artist_dir.exists() and artist_dir.is_dir():
+        existing_album_dir = find_existing_album_folder(artist_dir, clean_folder_album)
+        if existing_album_dir:
+            return existing_album_dir, safe_artist, existing_album_dir.name
+
+    target = artist_dir / safe_album
+    target.mkdir(parents=True, exist_ok=True)
+    return target, safe_artist, safe_album
+
 def get_safe_filename(artist: str, title: str, ext: str) -> str:
     return f"{sanitize_filename(artist)} - {sanitize_filename(title)}{ext}"
 
@@ -603,10 +674,8 @@ async def relocate_and_tag_download(
         safe_audio_name = get_safe_filename(dz_artist, dz_title, ext)
     else:
         # Library: resolve target directory under main music_dir
-        music_dir = Path(music_dir)
-        target_folder = music_dir / safe_artist / safe_album
-        target_folder.mkdir(parents=True, exist_ok=True)
-        safe_audio_name = get_library_filename(dz_artist, dz_album, track_num, dz_title, ext)
+        target_folder, safe_artist, safe_album = resolve_album_dir(music_dir, dz_artist, dz_album, dz_album_artist)
+        safe_audio_name = get_library_filename(dz_artist, safe_album, track_num, dz_title, ext)
 
     dest_audio_path = target_folder / safe_audio_name
 
@@ -852,10 +921,7 @@ def cleanup_album_explore_tracks(playlists_dir: Path, music_dir: Path, artist: s
     from backend.app.sync import sanitize_filename, get_folder_artist_name
     from backend.app.main import read_basic_tags
 
-    clean_folder_artist = get_folder_artist_name(artist)
-    safe_artist = sanitize_filename(clean_folder_artist)
-    safe_album = sanitize_filename(album)
-    album_dir = Path(music_dir) / safe_artist / safe_album
+    album_dir, safe_artist, safe_album = resolve_album_dir(music_dir, artist, album)
     if not album_dir.exists() or not album_dir.is_dir():
         return
         
