@@ -4896,6 +4896,7 @@ async def scan_missing_art_endpoint(request: Request):
                 data = json.load(f)
         except Exception:
             pass
+    from datetime import datetime
     data["missing_art"] = missing
     data["missing_art_last_scan"] = datetime.utcnow().isoformat()
     try:
