@@ -1,6 +1,6 @@
 services:
   verydisco:
-    # image: ghcr.io/yassin/verydisco:latest
+    image: ghcr.io/yassirjabane/verydisco:latest
     build:
       context: .
       dockerfile: Dockerfile
