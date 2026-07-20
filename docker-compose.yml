@@ -1,0 +1,29 @@
+services:
+  verydisco-md:
+    # image: ghcr.io/yassin/verydisco-md:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: verydisco-md
+    ports:
+      - "8086:8080"
+    user: "1000:1000"
+    volumes:
+      # Mount the configuration file. It will be created automatically if it does not exist.
+      - ./config.yml:/app/config.yml
+      
+      # SQLite database and weekly synchronized files directory
+      - ./data:/data
+      
+      # Soulseek download folder sync target.
+      # You can define SLSKD_DOWNLOADS_HOST_PATH in a .env file or replace it with a direct host path below.
+      # Example: - /home/user/appdata/slskd/downloads:/slskd_downloads
+      - ${SLSKD_DOWNLOADS_HOST_PATH:-./slskd_downloads}:/slskd_downloads
+
+      # Navidrome playlists volume mount
+      - ${NAVIDROME_PLAYLISTS_HOST_PATH:-./navidrome_playlists}:/navidrome_playlists
+      
+      # General music library (for checking existing tracks to hardlink)
+      - ${MUSIC_HOST_PATH:-./music}:/music
+      
+    restart: unless-stopped

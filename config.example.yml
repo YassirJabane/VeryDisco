@@ -1,0 +1,50 @@
+# VeryDisco-MD Configuration File
+
+# ListenBrainz configuration
+listenbrainz:
+  username: "your-username"                # Required: Your ListenBrainz username
+  playlist_source: "weekly-exploration"   # Required: Playlist source to sync ("weekly-exploration" or "weekly-jams")
+  token: ""                                # Optional: Required only if your playlists are private
+
+# slskd (Soulseek client) configuration
+slskd:
+  base_url: "http://slskd:5030"            # Required: Base URL of your slskd instance
+  api_key: ""                              # Optional: API key/token if authentication is enabled on slskd
+  downloads_dir: "/slskd_downloads"        # Required: Path where slskd downloads files (inside container volume)
+  min_bitrate: 320                         # Optional: Minimum audio bitrate to download (default: 320)
+  allowed_extensions:                      # Optional: Allowed formats (uncomment/edit as needed, defaults to mp3 only)
+    - "mp3"
+
+# Navidrome/Subsonic server configuration
+navidrome:
+  url: ""                                  # Optional: Subsonic URL of your Navidrome server (e.g. http://navidrome:4533)
+  username: ""                             # Optional: Username for Subsonic client
+  password: ""                             # Optional: Password for Subsonic client
+
+# Lyrics lookup configuration
+lyrics:
+  provider: "lrclib"                       # Optional: Lyrics provider name (default: "lrclib")
+  base_url: "https://lrclib.net"           # Optional: Lyrics service API base URL
+
+# Sync scheduler configuration
+schedule:
+  cron: "0 3 * * 1"                        # Optional: Cron schedule (default: Mondays at 03:00 UTC)
+  run_on_startup: true                     # Optional: Run sync immediately when the app starts
+  batch_size: 5                            # Optional: Max number of concurrent search/download flows
+  max_candidate_attempts: 3                # Optional: Max search result candidates to try before failing
+
+# File storage paths
+paths:
+  weekly_output_dir: "/data/weekly/current" # Optional: Path where downloaded files are organized
+  navidrome_playlists_dir: "/navidrome_playlists" # Optional: Directory for Navidrome playlists
+  music_dir: "/music"                      # Optional: Root music directory for hardlinking existing tracks
+
+
+# Timeout configurations (in seconds)
+timeouts:
+  http_seconds: 20                         # Optional: General HTTP client request timeout
+  search_seconds: 30                       # Optional: Maximum wait time for slskd search results
+  download_seconds: 240                    # Optional: Maximum wait time for a single track download
+
+# Logging configuration
+log_level: "INFO"                         # Optional: Log level (DEBUG, INFO, WARNING, ERROR)

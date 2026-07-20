@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <title>VeryDisco - Weekly Jams Sync</title>
+    <script>
+      window.addEventListener('error', function(e) {
+        var div = document.createElement('div');
+        div.style.position = 'fixed';
+        div.style.top = '0';
+        div.style.left = '0';
+        div.style.width = '100%';
+        div.style.background = 'red';
+        div.style.color = 'white';
+        div.style.padding = '20px';
+        div.style.zIndex = '99999';
+        div.style.fontFamily = 'monospace';
+        div.style.whiteSpace = 'pre-wrap';
+        div.innerText = 'UNCAUGHT ERROR: ' + (e.error ? e.error.stack : e.message);
+        document.body.appendChild(div);
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        var div = document.createElement('div');
+        div.style.position = 'fixed';
+        div.style.top = '0';
+        div.style.left = '0';
+        div.style.width = '100%';
+        div.style.background = 'darkred';
+        div.style.color = 'white';
+        div.style.padding = '20px';
+        div.style.zIndex = '99999';
+        div.style.fontFamily = 'monospace';
+        div.style.whiteSpace = 'pre-wrap';
+        div.innerText = 'UNHANDLED REJECTION: ' + (e.reason ? (e.reason.stack || e.reason) : e.message);
+        document.body.appendChild(div);
+      });
+    </script>
+    <!-- Modern Typography: Outfit for UI, JetBrains Mono for logs -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  </head>
+  <body style="margin: 0; padding: 0; font-family: 'Outfit', sans-serif;">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

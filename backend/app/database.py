@@ -1,0 +1,765 @@
+import os
+import aiosqlite
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
+from contextlib import asynccontextmanager
+
+class Database:
+    def __init__(self, db_path: str = "/data/verydisco.db"):
+        self.db_path = db_path
+        self.mem_cache = {}
+        self.metadata_mem_cache = None
+        self.metadata_mem_cache_ts = 0.0
+        import asyncio
+        self.mem_cache_lock = asyncio.Lock()
+        # Ensure parent directory exists
+        db_dir = os.path.dirname(os.path.abspath(self.db_path))
+        if db_dir:
+            try:
+                os.makedirs(db_dir, exist_ok=True)
+            except Exception:
+                pass
+
+    @asynccontextmanager
+    async def get_db(self):
+        """Asynchronous context manager returning a configured sqlite connection."""
+        try:
+            conn = await aiosqlite.connect(self.db_path)
+        except Exception:
+            # Fallback if primary db_path is not writable (e.g., permission error in docker)
+            fallback = os.path.join(os.getcwd(), "verydisco.db")
+            conn = await aiosqlite.connect(fallback)
+        conn.row_factory = aiosqlite.Row
+        try:
+            await conn.execute("PRAGMA journal_mode=WAL;")
+            await conn.execute("PRAGMA synchronous=NORMAL;")
+            await conn.execute("PRAGMA cache_size=-32000;")
+            await conn.execute("PRAGMA temp_store=MEMORY;")
+            await conn.execute("PRAGMA mmap_size=268435456;")
+            await conn.execute("PRAGMA foreign_keys = ON;")
+            await conn.execute("PRAGMA busy_timeout = 30000;")  # Wait up to 30s on lock
+            yield conn
+        finally:
+            await conn.close()
+
+    async def initialize(self):
+        """Creates SQLite tables if they do not exist."""
+        async with self.get_db() as db:
+            await db.execute("PRAGMA journal_mode=WAL;")
+            await db.execute("PRAGMA synchronous=NORMAL;")
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                status TEXT NOT NULL,
+                tracks_found INTEGER DEFAULT 0,
+                tracks_downloaded INTEGER DEFAULT 0,
+                tracks_skipped INTEGER DEFAULT 0,
+                tracks_failed INTEGER DEFAULT 0,
+                error_message TEXT,
+                source TEXT,
+                ended_at TEXT
+            );
+            """)
+            try:
+                await db.execute("SELECT source FROM runs LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE runs ADD COLUMN source TEXT")
+                    await db.commit()
+                except Exception:
+                    pass
+
+            try:
+                await db.execute("SELECT ended_at FROM runs LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE runs ADD COLUMN ended_at TEXT")
+                    await db.commit()
+                except Exception:
+                    pass
+
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS tracks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id INTEGER NOT NULL,
+                    artist TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    filename TEXT,
+                    lyrics_status TEXT DEFAULT 'missing',
+                    error_reason TEXT,
+                    bitrate INTEGER,
+                    size INTEGER,
+                    FOREIGN KEY(run_id) REFERENCES runs(id)
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS album_downloads (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artist TEXT NOT NULL,
+                    title TEXT,
+                    album TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                run_id INTEGER
+            );
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS pinned_artists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                artist_name TEXT UNIQUE NOT NULL,
+                deezer_id INTEGER NOT NULL,
+                picture_url TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS silenced_issues (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                issue_type TEXT NOT NULL,
+                target_path TEXT UNIQUE NOT NULL,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS library_cache (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS processed_starred_tracks (
+                navidrome_track_id TEXT PRIMARY KEY,
+                artist TEXT NOT NULL,
+                title TEXT NOT NULL,
+                user_id TEXT,
+                processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS acoustid_results (
+                file_path TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                reason TEXT,
+                scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS file_metadata_cache (
+                filepath TEXT PRIMARY KEY,
+                mtime REAL NOT NULL,
+                artist TEXT,
+                album TEXT,
+                title TEXT,
+                track_num INTEGER,
+                total_tracks INTEGER,
+                quality_desc TEXT,
+                bitrate INTEGER,
+                bit_depth INTEGER,
+                sample_rate INTEGER,
+                duration INTEGER,
+                year TEXT
+            );
+            """)
+            
+            # Migrate year column to file_metadata_cache
+            try:
+                await db.execute("SELECT year FROM file_metadata_cache LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE file_metadata_cache ADD COLUMN year TEXT")
+                except Exception:
+                    pass
+
+            # Add user_id column to processed_starred_tracks if upgrading from old schema
+            try:
+                await db.execute("SELECT user_id FROM processed_starred_tracks LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE processed_starred_tracks ADD COLUMN user_id TEXT")
+                    await db.commit()
+                except Exception:
+                    pass
+
+            # ── Multi-user tables ───────────────────────────────────────────────────
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id              TEXT PRIMARY KEY,
+                username        TEXT UNIQUE NOT NULL,
+                display_name    TEXT DEFAULT '',
+                is_admin        INTEGER DEFAULT 0,
+                music_dir       TEXT DEFAULT '',
+                playlist_dir    TEXT DEFAULT '',
+                subsonic_token  TEXT DEFAULT '',
+                subsonic_salt   TEXT DEFAULT '',
+                created_at      TEXT DEFAULT (datetime('now')),
+                last_login      TEXT
+            );
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_config (
+                user_id          TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                lb_username      TEXT DEFAULT '',
+                lb_token         TEXT DEFAULT '',
+                active_playlists TEXT DEFAULT '[]',
+                enabled_features TEXT DEFAULT '{}',
+                updated_at       TEXT DEFAULT (datetime('now'))
+            );
+            """)
+            # Add user_id to album_downloads for per-user tracking
+            try:
+                await db.execute("SELECT user_id FROM album_downloads LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE album_downloads ADD COLUMN user_id TEXT")
+                    await db.commit()
+                except Exception:
+                    pass
+            # Add user_id to runs for per-user tracking
+            try:
+                await db.execute("SELECT user_id FROM runs LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE runs ADD COLUMN user_id TEXT")
+                    await db.commit()
+                except Exception:
+                    pass
+            # Migrate pinned_artists to user-specific
+            try:
+                await db.execute("SELECT user_id FROM pinned_artists LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE pinned_artists RENAME TO pinned_artists_old")
+                    await db.execute("""
+                        CREATE TABLE pinned_artists (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            artist_name TEXT NOT NULL,
+                            deezer_id INTEGER NOT NULL,
+                            picture_url TEXT,
+                            user_id TEXT,
+                            added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(user_id, artist_name)
+                        );
+                    """)
+                    await db.execute("""
+                        INSERT INTO pinned_artists (id, artist_name, deezer_id, picture_url, user_id, added_at)
+                        SELECT id, artist_name, deezer_id, picture_url, NULL, added_at FROM pinned_artists_old
+                    """)
+                    await db.execute("DROP TABLE pinned_artists_old")
+                    await db.commit()
+                except Exception:
+                    pass
+            # Add playlist_dir to users table if upgrading from old schema
+            try:
+                await db.execute("SELECT playlist_dir FROM users LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE users ADD COLUMN playlist_dir TEXT DEFAULT ''")
+                    await db.commit()
+                except Exception:
+                    pass
+            # Add subsonic_token and subsonic_salt to users table if upgrading from old schema
+            try:
+                await db.execute("SELECT subsonic_token FROM users LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE users ADD COLUMN subsonic_token TEXT DEFAULT ''")
+                    await db.execute("ALTER TABLE users ADD COLUMN subsonic_salt TEXT DEFAULT ''")
+                    await db.commit()
+                except Exception:
+                    pass
+            # Add renaming_pattern to users table if upgrading from old schema
+            try:
+                await db.execute("SELECT renaming_pattern FROM users LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE users ADD COLUMN renaming_pattern TEXT DEFAULT '{Artist}/{Year} - {Album}/{Track:2} - {Title}'")
+                    await db.commit()
+                except Exception:
+                    pass
+            # Add enabled_features to user_config table if upgrading from old schema
+            try:
+                await db.execute("SELECT enabled_features FROM user_config LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE user_config ADD COLUMN enabled_features TEXT DEFAULT '{}'")
+                    await db.commit()
+                except Exception:
+                    pass
+            await db.commit()
+
+    # Runs Operations
+    async def create_run(self, status: str = "running", source: Optional[str] = None, user_id: Optional[str] = None) -> int:
+        async with self.get_db() as db:
+            now = datetime.utcnow().isoformat()
+            cursor = await db.execute(
+                "INSERT INTO runs (timestamp, status, source, user_id) VALUES (?, ?, ?, ?)",
+                (now, status, source, user_id)
+            )
+            run_id = cursor.lastrowid
+            await db.commit()
+            return run_id
+
+    async def update_run(self, run_id: int, status: str, tracks_found: int, tracks_downloaded: int, 
+                         tracks_skipped: int, tracks_failed: int, error_message: Optional[str] = None):
+        async with self.get_db() as db:
+            await db.execute(
+                """UPDATE runs 
+                   SET status = ?, tracks_found = ?, tracks_downloaded = ?, 
+                       tracks_skipped = ?, tracks_failed = ?, error_message = ?
+                   WHERE id = ?""",
+                (status, tracks_found, tracks_downloaded, tracks_skipped, tracks_failed, error_message, run_id)
+            )
+            await db.commit()
+
+    async def get_latest_run(self, source: Optional[str] = None, user_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        async with self.get_db() as db:
+            if source and user_id:
+                query = "SELECT * FROM runs WHERE source = ? AND user_id = ? ORDER BY id DESC LIMIT 1"
+                params = (source, user_id)
+            elif source:
+                query = "SELECT * FROM runs WHERE source = ? ORDER BY id DESC LIMIT 1"
+                params = (source,)
+            elif user_id:
+                query = "SELECT * FROM runs WHERE user_id = ? ORDER BY id DESC LIMIT 1"
+                params = (user_id,)
+            else:
+                query = "SELECT * FROM runs ORDER BY id DESC LIMIT 1"
+                params = ()
+            async with db.execute(query, params) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_runs(self, limit: int = 20, offset: int = 0, user_id: Optional[str] = None) -> Tuple[List[Dict[str, Any]], int]:
+        async with self.get_db() as db:
+            if user_id:
+                async with db.execute("SELECT COUNT(*) as cnt FROM runs WHERE user_id = ?", (user_id,)) as cursor:
+                    row = await cursor.fetchone()
+                    total = row["cnt"] if row else 0
+                async with db.execute(
+                    "SELECT * FROM runs WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?", (user_id, limit, offset)
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(r) for r in rows], total
+            else:
+                async with db.execute("SELECT COUNT(*) as cnt FROM runs") as cursor:
+                    row = await cursor.fetchone()
+                    total = row["cnt"] if row else 0
+                async with db.execute(
+                    "SELECT * FROM runs ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(r) for r in rows], total
+
+    # Tracks Operations
+    async def add_track(self, run_id: int, artist: str, title: str, status: str, 
+                        filename: Optional[str] = None, lyrics_status: Optional[str] = None, 
+                        error_reason: Optional[str] = None, bitrate: Optional[int] = None, 
+                        size: Optional[int] = None) -> int:
+        async with self.get_db() as db:
+            cursor = await db.execute(
+                """INSERT INTO tracks (run_id, artist, title, status, filename, lyrics_status, error_reason, bitrate, size) 
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (run_id, artist, title, status, filename, lyrics_status, error_reason, bitrate, size)
+            )
+            track_id = cursor.lastrowid
+            await db.commit()
+            return track_id
+
+    async def add_album_download(self, artist: str, title: str, album: str) -> int:
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO album_downloads (artist, title, album, status) VALUES (?, ?, ?, 'pending')",
+                (artist, title, album)
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def get_pending_album_downloads(self) -> list:
+        async with self.get_db() as conn:
+            cursor = await conn.execute("SELECT * FROM album_downloads WHERE status = 'pending' LIMIT 20")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def update_album_download_status(self, download_id: int, status: str):
+        async with self.get_db() as conn:
+            await conn.execute(
+                "UPDATE album_downloads SET status = ? WHERE id = ?",
+                (status, download_id)
+            )
+            await conn.commit()
+
+    async def update_track(self, track_id: int, status: str, filename: Optional[str] = None, 
+                           lyrics_status: Optional[str] = None, error_reason: Optional[str] = None, 
+                           bitrate: Optional[int] = None, size: Optional[int] = None):
+        async with self.get_db() as db:
+            await db.execute(
+                """UPDATE tracks 
+                   SET status = ?, filename = ?, lyrics_status = ?, error_reason = ?, bitrate = ?, size = ? 
+                   WHERE id = ?""",
+                (status, filename, lyrics_status, error_reason, bitrate, size, track_id)
+            )
+            await db.commit()
+
+    async def get_tracks_for_run(self, run_id: int) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("SELECT * FROM tracks WHERE run_id = ? ORDER BY id ASC", (run_id,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    # Logs Operations
+    async def add_log(self, level: str, message: str, run_id: Optional[int] = None):
+        async with self.get_db() as db:
+            now = datetime.utcnow().isoformat()
+            await db.execute(
+                "INSERT INTO logs (timestamp, level, message, run_id) VALUES (?, ?, ?, ?)",
+                (now, level, message, run_id)
+            )
+            await db.commit()
+
+    async def get_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in reversed(rows)]
+
+    # Pinned Artists Operations
+    async def get_pinned_artists(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            if user_id:
+                async with db.execute("SELECT * FROM pinned_artists WHERE user_id = ? ORDER BY artist_name ASC", (user_id,)) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(r) for r in rows]
+            else:
+                async with db.execute("SELECT * FROM pinned_artists WHERE user_id IS NULL ORDER BY artist_name ASC") as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(r) for r in rows]
+
+    async def add_pinned_artist(self, artist_name: str, deezer_id: int, picture_url: Optional[str], user_id: Optional[str] = None) -> int:
+        async with self.get_db() as db:
+            cursor = await db.execute(
+                "INSERT OR REPLACE INTO pinned_artists (artist_name, deezer_id, picture_url, user_id) VALUES (?, ?, ?, ?)",
+                (artist_name, deezer_id, picture_url, user_id)
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+    async def delete_pinned_artist(self, id: int):
+        async with self.get_db() as db:
+            await db.execute("DELETE FROM pinned_artists WHERE id = ?", (id,))
+            await db.commit()
+
+    # Silenced Issues Operations
+    async def get_silenced_issues(self) -> List[str]:
+        async with self.get_db() as db:
+            async with db.execute("SELECT target_path FROM silenced_issues") as cursor:
+                rows = await cursor.fetchall()
+                return [r["target_path"] for r in rows]
+
+    async def add_silenced_issue(self, issue_type: str, target_path: str):
+        async with self.get_db() as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO silenced_issues (issue_type, target_path) VALUES (?, ?)",
+                (issue_type, target_path)
+            )
+            await db.commit()
+
+    async def delete_silenced_issue(self, target_path: str):
+        async with self.get_db() as db:
+            await db.execute("DELETE FROM silenced_issues WHERE target_path = ?", (target_path,))
+            await db.commit()
+
+    # Cache operations
+    async def set_cache(self, key: str, value: Any, ttl: int = 3600):
+        import time
+        async with self.mem_cache_lock:
+            self.mem_cache[key] = {
+                "value": value,
+                "expires": time.time() + ttl
+            }
+        import json
+        val_str = json.dumps(value, ensure_ascii=False)
+        async with self.get_db() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO library_cache (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)",
+                (key, val_str)
+            )
+            await db.commit()
+
+    async def get_cache(self, key: str) -> Optional[Any]:
+        import time
+        async with self.mem_cache_lock:
+            entry = self.mem_cache.get(key)
+            if entry:
+                if time.time() < entry["expires"]:
+                    return entry["value"]
+                else:
+                    self.mem_cache.pop(key, None)
+        import json
+        async with self.get_db() as db:
+            async with db.execute("SELECT value FROM library_cache WHERE key = ?", (key,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    try:
+                        val = json.loads(row["value"])
+                        async with self.mem_cache_lock:
+                            self.mem_cache[key] = {
+                                "value": val,
+                                "expires": time.time() + 3600
+                            }
+                        return val
+                    except Exception:
+                        return None
+                return None
+
+    async def delete_cache(self, key: str):
+        async with self.mem_cache_lock:
+            self.mem_cache.pop(key, None)
+        async with self.get_db() as db:
+            await db.execute("DELETE FROM library_cache WHERE key = ?", (key,))
+            await db.commit()
+
+    async def get_all_file_metadata(self) -> dict:
+        import time
+        if self.metadata_mem_cache is not None and (time.time() - self.metadata_mem_cache_ts) < 60:
+            return self.metadata_mem_cache
+        async with self.get_db() as db:
+            async with db.execute("SELECT * FROM file_metadata_cache") as cursor:
+                rows = await cursor.fetchall()
+                self.metadata_mem_cache = {r["filepath"]: dict(r) for r in rows}
+                self.metadata_mem_cache_ts = time.time()
+                return self.metadata_mem_cache
+
+    async def clear_file_metadata_cache(self):
+        async with self.metadata_cache_lock:
+            self.metadata_mem_cache_ts = 0
+
+    async def save_file_metadata_batch(self, entries: list):
+        if not entries:
+            return
+        async with self.get_db() as db:
+            await db.executemany("""
+                INSERT OR REPLACE INTO file_metadata_cache 
+                (filepath, mtime, artist, album, title, track_num, total_tracks, quality_desc, bitrate, bit_depth, sample_rate, duration, year)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, entries)
+            await db.commit()
+        self.metadata_mem_cache = None
+
+    async def is_starred_track_processed(self, track_id: str, user_id: Optional[str] = None) -> bool:
+        async with self.get_db() as db:
+            if user_id:
+                async with db.execute(
+                    "SELECT 1 FROM processed_starred_tracks WHERE navidrome_track_id = ? AND user_id = ?",
+                    (track_id, user_id)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    return row is not None
+            else:
+                async with db.execute(
+                    "SELECT 1 FROM processed_starred_tracks WHERE navidrome_track_id = ?", (track_id,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    return row is not None
+
+    async def mark_starred_track_processed(self, track_id: str, artist: str, title: str, user_id: Optional[str] = None):
+        async with self.get_db() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO processed_starred_tracks (navidrome_track_id, artist, title, user_id) VALUES (?, ?, ?, ?)",
+                (track_id, artist, title, user_id)
+            )
+            await db.commit()
+
+    # ── User Management ───────────────────────────────────────────────────────
+
+    async def get_or_create_user(
+        self,
+        user_id: str,
+        username: str,
+        display_name: str = "",
+        is_admin: bool = False,
+        music_dir: str = "",
+    ) -> Dict[str, Any]:
+        """Upsert a user row. Returns the full user dict."""
+        import json
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+        async with self.get_db() as db:
+            await db.execute(
+                """
+                INSERT INTO users (id, username, display_name, is_admin, music_dir, last_login)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    username=excluded.username,
+                    display_name=excluded.display_name,
+                    is_admin=excluded.is_admin,
+                    last_login=excluded.last_login,
+                    music_dir=COALESCE(NULLIF(users.music_dir, ''), excluded.music_dir)
+                """,
+                (user_id, username, display_name, 1 if is_admin else 0, music_dir, now),
+            )
+            # Ensure user_config row exists
+            await db.execute(
+                "INSERT OR IGNORE INTO user_config (user_id, lb_username, lb_token, active_playlists) VALUES (?, '', '', '[]')",
+                (user_id,),
+            )
+            await db.commit()
+
+        return await self.get_user_by_id(user_id)
+
+    async def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("SELECT * FROM users WHERE id = ?", (user_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("SELECT * FROM users WHERE username = ?", (username,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def list_users(self) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("SELECT * FROM users ORDER BY username ASC") as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def get_user_config(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """Get per-user ListenBrainz config."""
+        import json
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT uc.*, u.username, u.display_name, u.is_admin, u.music_dir, u.playlist_dir, u.renaming_pattern "
+                "FROM user_config uc JOIN users u ON u.id = uc.user_id WHERE uc.user_id = ?",
+                (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                data = dict(row)
+                try:
+                    data["active_playlists"] = json.loads(data["active_playlists"] or "[]")
+                except Exception:
+                    data["active_playlists"] = []
+                
+                try:
+                    data["enabled_features"] = json.loads(data.get("enabled_features") or "{}")
+                except Exception:
+                    data["enabled_features"] = {}
+                
+                # Default features values if missing
+                defaults = {
+                    "starred_sync": True,
+                    "listenbrainz_sync": True,
+                    "discovery": True,
+                    "album_downloads": True
+                }
+                for k, v in defaults.items():
+                    if k not in data["enabled_features"]:
+                        data["enabled_features"][k] = v
+                        
+                return data
+
+    async def save_user_config(
+        self,
+        user_id: str,
+        lb_username: str,
+        lb_token: str,
+        active_playlists: List[str],
+    ) -> None:
+        """Persist per-user ListenBrainz config."""
+        import json
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+        async with self.get_db() as db:
+            await db.execute(
+                """
+                INSERT INTO user_config (user_id, lb_username, lb_token, active_playlists, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    lb_username=excluded.lb_username,
+                    lb_token=excluded.lb_token,
+                    active_playlists=excluded.active_playlists,
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, lb_username, lb_token, json.dumps(active_playlists), now),
+            )
+            await db.commit()
+
+    async def save_user_features(
+        self,
+        user_id: str,
+        enabled_features: Dict[str, bool],
+    ) -> None:
+        """Persist per-user enabled features flags."""
+        import json
+        from datetime import datetime
+        now = datetime.utcnow().isoformat()
+        async with self.get_db() as db:
+            await db.execute(
+                """
+                INSERT INTO user_config (user_id, enabled_features, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    enabled_features=excluded.enabled_features,
+                    updated_at=excluded.updated_at
+                """,
+                (user_id, json.dumps(enabled_features), now),
+            )
+            await db.commit()
+
+    async def update_user_paths(
+        self,
+        user_id: str,
+        music_dir: str,
+        playlist_dir: str,
+        renaming_pattern: str = ""
+    ) -> None:
+        """Update a user's personal music and playlist directories and renaming pattern."""
+        async with self.get_db() as db:
+            await db.execute(
+                "UPDATE users SET music_dir = ?, playlist_dir = ?, renaming_pattern = ? WHERE id = ?",
+                (music_dir, playlist_dir, renaming_pattern, user_id),
+            )
+            await db.commit()
+
+    async def add_album_download(
+        self, artist: str, title: str, album: str, user_id: Optional[str] = None
+    ) -> int:
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                "INSERT INTO album_downloads (artist, title, album, status, user_id) VALUES (?, ?, ?, 'pending', ?)",
+                (artist, title, album, user_id)
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def save_acoustid_result(self, file_path: str, status: str, reason: Optional[str] = None):
+        async with self.get_db() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO acoustid_results (file_path, status, reason, scanned_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (file_path, status, reason)
+            )
+            await conn.commit()
+
+    async def get_acoustid_results(self) -> list:
+        async with self.get_db() as conn:
+            cursor = await conn.execute("SELECT * FROM acoustid_results")
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def clear_acoustid_result(self, file_path: str):
+        async with self.get_db() as conn:
+            await conn.execute("DELETE FROM acoustid_results WHERE file_path = ?", (file_path,))
+            await conn.commit()
