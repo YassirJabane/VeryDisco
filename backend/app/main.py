@@ -322,7 +322,7 @@ async def import_navidrome_users(request: Request):
             if not uname:
                 continue
             await db.get_or_create_user(
-                user_id=uname,
+                user_id=u.get("id", uname),
                 username=uname,
                 display_name=uname,
                 is_admin=bool(u.get("adminRole", False)),
