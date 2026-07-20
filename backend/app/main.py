@@ -5410,6 +5410,7 @@ async def scan_duplicates_endpoint(request: Request):
         except Exception:
             pass
     data["duplicates"] = duplicates_groups
+    from datetime import datetime
     data["duplicates_last_scan"] = datetime.utcnow().isoformat()
     try:
         import json
