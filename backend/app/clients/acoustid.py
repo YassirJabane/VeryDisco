@@ -147,7 +147,7 @@ class AcoustIDClient:
             return False, "Failed to generate audio fingerprint (check if fpcalc is installed)"
 
         # 3. Lookup with recordings metadata
-        data = await self.lookup_fingerprint(fp_data["fingerprint"], fp_data["duration"], "recordings")
+        data = await self.lookup_fingerprint(fp_data["fingerprint"], fp_data["duration"], "recordings+artists")
         if not data or not data.get("results"):
             return False, "No match found in AcoustID database"
 
@@ -195,19 +195,27 @@ class AcoustIDClient:
                 rec_title = norm(rec.get("title", ""))
                 # Title check: either tagged contains AcoustID or vice-versa
                 if norm_tagged_title in rec_title or rec_title in norm_tagged_title:
-                    # Artist check
-                    for art in rec.get("artists", []):
-                        rec_art = norm(art.get("name", ""))
-                        if norm_tagged_artist in rec_art or rec_art in norm_tagged_artist:
-                            if score > highest_score:
-                                highest_score = score
-                                best_match_desc = f"Matched AcoustID recording '{rec.get('title')}' by '{art.get('name')}' (score: {score:.2f})"
+                    rec_artists = rec.get("artists", [])
+                    artist_match = False
+                    if not rec_artists:
+                        artist_match = True
+                    else:
+                        for art in rec_artists:
+                            rec_art = norm(art.get("name", ""))
+                            if norm_tagged_artist in rec_art or rec_art in norm_tagged_artist:
+                                artist_match = True
+                                break
+
+                    if artist_match:
+                        if score > highest_score:
+                            highest_score = score
+                            art_name = rec_artists[0].get("name") if rec_artists else "Unknown"
+                            best_match_desc = f"Matched AcoustID recording '{rec.get('title')}' by '{art_name}' (score: {score:.2f})"
 
         if highest_score > 0.0:
             return True, best_match_desc
 
         # If we got here, it's a mismatch
-        # Gather the top matches to display in the mismatch reason
         top_matches = []
         for result in results[:3]:
             for rec in result.get("recordings", []):
@@ -218,8 +226,8 @@ class AcoustIDClient:
 
     async def verify_track(self, file_path: Path, expected_mbid: str) -> bool:
         """
-        Returns True if the track matches the expected MBID, or if AcoustID is not configured.
-        Returns False ONLY if AcoustID successfully checked and the MBID is not in the results.
+        Returns True if the track matches the expected MBID, or if AcoustID matches the track metadata.
+        Returns False ONLY if AcoustID successfully checked and fingerprint belongs to a different track.
         """
         api_key = self.get_api_key()
         if not api_key:
@@ -238,8 +246,14 @@ class AcoustIDClient:
         if expected_mbid in mbids:
             logger.info(f"AcoustID VERIFIED: {file_path} matches expected MBID {expected_mbid}.")
             return True
-        else:
-            logger.warning(f"AcoustID MISMATCH: {file_path} matched {len(mbids)} other MBIDs, but not {expected_mbid}.")
-            return False
+
+        # Fallback: check metadata matching (handles album vs single vs remaster MBIDs)
+        is_valid, reason = await self.verify_track_against_metadata(file_path)
+        if is_valid or "No match found" in reason or "not configured" in reason:
+            logger.info(f"AcoustID metadata verification passed for {file_path}: {reason}")
+            return True
+
+        logger.warning(f"AcoustID MISMATCH: {file_path} - {reason}")
+        return False
 
 acoustid_client = AcoustIDClient()

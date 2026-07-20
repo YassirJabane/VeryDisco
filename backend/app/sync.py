@@ -677,7 +677,8 @@ async def relocate_and_tag_download(
     title: str,
     downloads_dir: str,
     music_dir: str,
-    dest_dir: Optional[str] = None
+    dest_dir: Optional[str] = None,
+    album: Optional[str] = None
 ) -> Tuple[str, Optional[str], Optional[str]]:
     """
     Relocate a downloaded file and embed metadata, cover art, and lyrics.
