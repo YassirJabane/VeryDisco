@@ -29,7 +29,7 @@ class LrcLibClient:
         
         logger.info(f"Searching lyrics for '{artist} - {title}' on LRCLIB...")
         
-        headers = {"User-Agent": "VeryDisco-MD/1.0.0"}
+        headers = {"User-Agent": "VeryDisco/1.0.0"}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(url, params=params, headers=headers)
             
@@ -67,7 +67,7 @@ class LrcLibClient:
             "artist_name": artist,
             "track_name": title
         }
-        headers = {"User-Agent": "VeryDisco-MD/1.0.0"}
+        headers = {"User-Agent": "VeryDisco/1.0.0"}
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 resp = await client.get(url, params=params, headers=headers)

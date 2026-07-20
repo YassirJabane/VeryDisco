@@ -36,7 +36,7 @@ class ListenBrainzClient:
         self.base_url = "https://api.listenbrainz.org"
 
     def _get_headers(self) -> Dict[str, str]:
-        headers = {"User-Agent": "VeryDisco-MD/1.0.0"}
+        headers = {"User-Agent": "VeryDisco/1.0.0"}
         if self.token:
             headers["Authorization"] = f"Token {self.token}"
         return headers
@@ -157,7 +157,7 @@ class ListenBrainzClient:
         }
         logger.info(f"Resolving MBID via MusicBrainz for '{artist} - {title}'...")
         # Note: MusicBrainz requires a proper User-Agent
-        headers = {"User-Agent": "VeryDisco-MD/1.0.0 ( contact@example.com )"}
+        headers = {"User-Agent": "VeryDisco/1.0.0 ( contact@example.com )"}
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             resp = await client.get(url, params=params, headers=headers)
             if resp.status_code != 200:

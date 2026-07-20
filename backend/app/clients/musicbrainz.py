@@ -1,5 +1,5 @@
 """
-MusicBrainz API client for veryDisco-MD.
+MusicBrainz API client for VeryDisco.
 - Searches for recordings, artists, and releases via the MusicBrainz JSON API.
 - Downloads cover art from the Cover Art Archive (CAA).
 - Enforces the ToS rate limit of 1 request/second via an asyncio lock.
@@ -16,7 +16,7 @@ logger = get_logger()
 
 _MB_BASE = "https://musicbrainz.org/ws/2"
 _CAA_BASE = "https://coverartarchive.org"
-_USER_AGENT = "veryDisco-MD/1.0 (homelab music manager)"
+_USER_AGENT = "VeryDisco/1.0 (homelab music manager)"
 
 # MusicBrainz ToS: max 1 request per second for unauthenticated clients
 _rate_lock = asyncio.Lock()

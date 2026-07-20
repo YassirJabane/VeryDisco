@@ -150,7 +150,7 @@ async def lifespan(app: FastAPI):
     # Clean shutdown
     scheduler_manager.shutdown()
 
-app = FastAPI(title="VeryDisco-MD API", lifespan=lifespan)
+app = FastAPI(title="VeryDisco API", lifespan=lifespan)
 
 # Allow CORS for dev & reverse proxy environments with credentials
 app.add_middleware(
@@ -6229,4 +6229,4 @@ async def serve_frontend(catchall: str):
     index_path = os.path.join(frontend_dir, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return HTMLResponse("VeryDisco-MD Front-end dashboard is loading. Please run production Vite build.", status_code=200)
+    return HTMLResponse("VeryDisco Front-end dashboard is loading. Please run production Vite build.", status_code=200)

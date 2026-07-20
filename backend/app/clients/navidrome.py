@@ -35,7 +35,7 @@ class NavidromeClient:
             "t": t,
             "s": s,
             "v": "1.16.1",
-            "c": "verydisco-md",
+            "c": "verydisco",
             "f": "json"
         }
 

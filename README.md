@@ -1,6 +1,6 @@
-# VeryDisco-MD 🎵
+# VeryDisco 🎵
 
-**VeryDisco-MD** is a Dockerized homelab synchronization service that automatically retrieves your weekly ListenBrainz personalized playlists ("Weekly Exploration" or "Weekly Jams"), resolves them dynamically, searches and downloads tracks from Soulseek (via `slskd`), retrieves synchronized lyrics files (`.lrc`), and presents a premium Web Dashboard styled in modern Material Design (MUI v5).
+**VeryDisco** is a Dockerized homelab synchronization service that automatically retrieves your weekly ListenBrainz personalized playlists ("Weekly Exploration" or "Weekly Jams"), resolves them dynamically, searches and downloads tracks from Soulseek (via `slskd`), retrieves synchronized lyrics files (`.lrc`), and presents a premium Web Dashboard styled in modern Material Design (MUI v5).
 
 ---
 
@@ -84,15 +84,15 @@ veryDisco/
 ## Troubleshooting
 
 ### Volume Mount Matching (The Most Common Issue ⚠️)
-For VeryDisco-MD to find downloaded audio files, **both VeryDisco-MD and slskd containers must mount the exact same physical folder** on the host. 
+For VeryDisco to find downloaded audio files, **both VeryDisco and slskd containers must mount the exact same physical folder** on the host. 
 - In your `slskd` configuration, the downloads folder might be mapped to a path on your host (e.g. `/home/user/music/downloads`).
-- In `docker-compose.yml`, mount that exact host path to `/slskd_downloads` inside VeryDisco-MD:
+- In `docker-compose.yml`, mount that exact host path to `/slskd_downloads` inside VeryDisco:
   ```yaml
   volumes:
     - /home/user/music/downloads:/slskd_downloads
   ```
 - Ensure `slskd.downloads_dir` in `config.yml` is set to `/slskd_downloads`.
-- When `slskd` marks a download as complete, VeryDisco-MD scans `/slskd_downloads` recursively for the file matching the exact size. If permissions are restricted (read-only) or paths do not align, files cannot be moved.
+- When `slskd` marks a download as complete, VeryDisco scans `/slskd_downloads` recursively for the file matching the exact size. If permissions are restricted (read-only) or paths do not align, files cannot be moved.
 
 ### File Staging Permissions
 Because the container runs under a non-root user (`appuser`, UID/GID `10001`) for enhanced security, make sure the host folders mounted for `./data` and `./config.yml` are writeable by `10001` or run:

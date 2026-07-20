@@ -1,10 +1,10 @@
 services:
-  verydisco-md:
-    # image: ghcr.io/yassin/verydisco-md:latest
+  verydisco:
+    # image: ghcr.io/yassin/verydisco:latest
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: verydisco-md
+    container_name: verydisco
     ports:
       - "8086:8080"
     user: "1000:1000"

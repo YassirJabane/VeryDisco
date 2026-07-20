@@ -17,7 +17,7 @@ class SlskdClient:
 
     def _get_headers(self) -> Dict[str, str]:
         headers = {
-            "User-Agent": "VeryDisco-MD/1.0.0",
+            "User-Agent": "VeryDisco/1.0.0",
             "Content-Type": "application/json"
         }
         if self.api_key:

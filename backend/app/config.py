@@ -147,7 +147,7 @@ class AppConfig(BaseModel):
         return v.upper()
 
 
-DEFAULT_TEMPLATE = """# VeryDisco-MD Configuration File
+DEFAULT_TEMPLATE = """# VeryDisco Configuration File
 
 # ListenBrainz configuration
 listenbrainz:

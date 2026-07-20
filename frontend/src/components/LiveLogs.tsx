@@ -154,7 +154,7 @@ export const LiveLogs: React.FC = () => {
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 800 }}>Live Logs</Typography>
           <Typography variant="body2" color="text.secondary">
-            Realtime terminal logs piped directly from VeryDisco-MD.
+            Realtime terminal logs piped directly from VeryDisco.
           </Typography>
         </Box>
         <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
