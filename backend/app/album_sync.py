@@ -532,12 +532,24 @@ async def _download_album_task_internal(
                 await db.update_album_download_status(download_id, "failed")
                 return
 
-        # Pre-fetch official tracklist, cover art, and release date from Deezer
+        # Pre-fetch official tracklist, cover art, and release date (MusicBrainz first, Deezer fallback)
         official_album_tracks = []
         official_album_cover_bytes = None
         official_album_date = None
+
+        # 1. Try MusicBrainz Cover Art Archive first for official album artwork
         try:
-            logger.info(f"Pre-fetching official tracklist & cover for album '{album}' from Deezer...")
+            from backend.app.clients.musicbrainz import musicbrainz_client
+            logger.info(f"Pre-fetching official cover art for '{artist} - {album}' from MusicBrainz Cover Art Archive...")
+            official_album_cover_bytes = await musicbrainz_client.get_cover_art_for_artist_album(artist, album)
+            if official_album_cover_bytes:
+                logger.info(f"Retrieved official album cover art from MusicBrainz Cover Art Archive for '{album}'.")
+        except Exception as e:
+            logger.debug(f"MusicBrainz cover art pre-fetch failed for '{artist} - {album}': {e}")
+
+        # 2. Query Deezer for tracklist, date, and fallback cover art
+        try:
+            logger.info(f"Pre-fetching official tracklist for album '{album}' from Deezer...")
             async with httpx.AsyncClient(timeout=config.timeouts.http_seconds) as client:
                 search_url = f"https://api.deezer.com/search/album?q={urllib.parse.quote(f'{artist} {album}')}"
                 resp = await client.get(search_url)
@@ -557,16 +569,17 @@ async def _download_album_task_internal(
 
                     if best_album_match:
                         album_id = best_album_match["id"]
-                        cover_url = best_album_match.get("cover_xl") or best_album_match.get("cover_big")
-                        if cover_url:
-                            official_album_cover_bytes = await deezer_client.download_cover_art(cover_url)
+                        if not official_album_cover_bytes:
+                            cover_url = best_album_match.get("cover_xl") or best_album_match.get("cover_big")
+                            if cover_url:
+                                official_album_cover_bytes = await deezer_client.download_cover_art(cover_url)
                         album_details = await deezer_client.get_album_metadata(album_id)
                         if album_details:
                             official_album_date = album_details.get("release_date")
                         tracks_data = await deezer_client.get_album_tracks(album_id)
                         if tracks_data and "data" in tracks_data:
                             official_album_tracks = tracks_data["data"]
-                            logger.info(f"Fetched {len(official_album_tracks)} official tracks and cover art for album '{album}'.")
+                            logger.info(f"Fetched {len(official_album_tracks)} official tracks from Deezer.")
         except Exception as e:
             logger.warning(f"Could not pre-fetch official album metadata from Deezer: {e}")
 
