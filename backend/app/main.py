@@ -1130,21 +1130,14 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
         return {"tracks": []}
     except Exception as e:
         logger.error(f"Error fetching playlist {source} for UI: {repr(e)}")
+        fallback_tracks = []
         if cached:
             logger.info("Falling back to cached playlist due to fetch error.")
-            tracks_copy = [dict(t) for t in cached["tracks"]]
-            for t in tracks_copy:
-                key = f"{t['artist'].lower()}-{t['title'].lower()}"
-                info = db_tracks_map.get(key, {"status": "pending", "error_reason": ""})
-                t['status'] = info["status"]
-                t['error_reason'] = info["error_reason"]
-            return {"tracks": tracks_copy}
-        
-        if run_to_use:
+            fallback_tracks = cached["tracks"]
+        elif run_to_use:
             db_tracks = await db.get_tracks_for_run(run_to_use)
             if db_tracks:
                 logger.info(f"Falling back to DB tracks for latest run of {source} due to fetch error.")
-                fallback_tracks = []
                 for dbt in db_tracks:
                     fallback_tracks.append({
                         "artist": dbt.get("artist", ""),
@@ -1154,8 +1147,21 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
                         "status": dbt.get("status", "pending"),
                         "error_reason": dbt.get("error_reason") or ""
                     })
-                return {"tracks": fallback_tracks}
-                
+
+        # Cache fallback for 60 seconds to prevent UI polling spam when ListenBrainz has outages
+        if fallback_tracks:
+            _cached_playlists[cache_key] = {
+                "time": current_time - 43200 + 60,
+                "tracks": fallback_tracks
+            }
+            tracks_copy = [dict(t) for t in fallback_tracks]
+            for t in tracks_copy:
+                key = f"{t['artist'].lower()}-{t['title'].lower()}"
+                info = db_tracks_map.get(key, {"status": "pending", "error_reason": ""})
+                t['status'] = info["status"]
+                t['error_reason'] = info["error_reason"]
+            return {"tracks": tracks_copy}
+            
         raise HTTPException(status_code=503, detail="ListenBrainz API is temporarily unavailable.")
 
     # Enrich metadata in parallel
