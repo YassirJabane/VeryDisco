@@ -208,6 +208,22 @@ def get_folder_artist_name(artist: str, album_artist: str = "") -> str:
     primary = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', candidate, flags=re.IGNORECASE)[0].strip()
     return primary or candidate
 
+def get_clean_album_folder(album: str, artist: str = "") -> str:
+    """
+    Returns a clean album folder name.
+    Strips featuring artist info from album titles (e.g. '3500 (feat. Future & 2 Chainz)' -> '3500').
+    If the album title equals or contains the artist name with feat. (e.g. 'Travis Scott feat. Quavo'),
+    falls back to 'Singles'.
+    """
+    if not album:
+        return "Singles"
+    clean = re.sub(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+.*[\)\]]?)', '', album, flags=re.IGNORECASE).strip()
+    if re.search(r'\b(?:feat|ft|featuring)\b', album, flags=re.IGNORECASE) and (not clean or clean.lower() == artist.lower()):
+        return "Singles"
+    if clean.lower() in ["unknown", "unknown album", ""]:
+        return "Singles"
+    return clean or album
+
 def get_safe_filename(artist: str, title: str, ext: str) -> str:
     return f"{sanitize_filename(artist)} - {sanitize_filename(title)}{ext}"
 
@@ -541,35 +557,29 @@ async def relocate_and_tag_download(
     artist_clean = re.sub(r'[-_][a-f0-9]{6,8}$', '', artist)
     artist_clean = artist_clean.replace("_", " ").strip()
 
-    # Fetch Deezer metadata first
-    dz_meta = await deezer_client.get_track_metadata(artist_clean, title_clean)
-    dz_artist = artist_clean
-    dz_title = title_clean
-    dz_album_artist = None
-    dz_album = "Unknown Album"
-    track_num_str = ""
-    track_num = None
-    cover_bytes = None
+    # Fetch metadata using MusicBrainz primary, Deezer fallback
+    from backend.app.album_sync import fetch_track_metadata_with_fallback
+    meta_result = await fetch_track_metadata_with_fallback(deezer_client, artist_clean, title_clean, album)
     
-    dz_date = None
-    if dz_meta:
-        dz_artist = dz_meta.get("artist", {}).get("name", artist_clean)
-        dz_title = dz_meta.get("title", title_clean)
-        dz_album = dz_meta.get("album", {}).get("title", "Unknown Album")
-        track_num = dz_meta.get("track_position")
-        if track_num is not None and track_num > 0:
-            track_num_str = f"{track_num:02d} - "
-        cover_url = dz_meta.get("album", {}).get("cover_xl")
-        if cover_url:
-            cover_bytes = await deezer_client.download_cover_art(cover_url)
-        
-        # Get track details for joint track contributors
-        track_id = dz_meta.get("id")
-        track_details = await deezer_client.get_track_details(track_id) if track_id else None
-        if track_details:
-            dz_artist, dz_album_artist = deezer_client.resolve_joint_artists(track_details)
-        else:
-            dz_artist, dz_album_artist = deezer_client.resolve_joint_artists(dz_meta)
+    dz_title = meta_result.get("title") or title_clean
+    dz_artist = meta_result.get("artist") or artist_clean
+    dz_album_artist = meta_result.get("album_artist") or artist_clean
+    dz_album = meta_result.get("album") or album or "Singles"
+    track_num = meta_result.get("track_num")
+    track_num_str = f"{track_num:02d} - " if track_num and track_num > 0 else ""
+    cover_bytes = meta_result.get("cover_bytes")
+    dz_date = meta_result.get("date")
+
+    # If MB didn't give cover, try Deezer fallback cover
+    if not cover_bytes:
+        try:
+            dz_meta = await deezer_client.get_track_metadata(artist_clean, title_clean)
+            if dz_meta:
+                cover_url = dz_meta.get("album", {}).get("cover_xl")
+                if cover_url:
+                    cover_bytes = await deezer_client.download_cover_art(cover_url)
+        except Exception:
+            pass
         
         album_id = dz_meta.get("album", {}).get("id")
         if album_id:
@@ -581,8 +591,9 @@ async def relocate_and_tag_download(
 
     # Sanitize path segments
     clean_folder_artist = get_folder_artist_name(dz_artist, dz_album_artist)
+    clean_folder_album = get_clean_album_folder(dz_album, clean_folder_artist)
     safe_artist = sanitize_filename(clean_folder_artist)
-    safe_album = sanitize_filename(dz_album)
+    safe_album = sanitize_filename(clean_folder_album)
 
     if dest_dir:
         # Explore-only: flat file in dest_dir as 'Artist - Title.ext'
