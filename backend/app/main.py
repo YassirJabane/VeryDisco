@@ -291,8 +291,7 @@ async def import_navidrome_users(request: Request):
     if not cfg:
         raise HTTPException(status_code=503, detail="App not configured.")
 
-    # Use Navidrome admin API to list users
-    import hashlib
+    # Use Navidrome Subsonic admin API to list users
     params = {
         "u": cfg.navidrome.username,
         "p": cfg.navidrome.password,
@@ -310,23 +309,34 @@ async def import_navidrome_users(request: Request):
             data = resp.json()
         subsonic = data.get("subsonic-response", {})
         if subsonic.get("status") != "ok":
-            raise HTTPException(status_code=502, detail="Navidrome returned an error getting users.")
+            nd_error = subsonic.get("error", {})
+            err_msg = nd_error.get("message", "Unknown error from Navidrome")
+            logger.error(f"Navidrome getUsers.view returned error: {nd_error}")
+            raise HTTPException(status_code=502, detail=f"Navidrome error: {err_msg}")
         users_data = subsonic.get("users", {}).get("user", [])
         if isinstance(users_data, dict):
             users_data = [users_data]  # single user comes as dict
 
         music_base = cfg.paths.music_dir.rstrip("/")
+        playlists_base = cfg.paths.navidrome_playlists_dir.rstrip("/")
         imported = []
         for u in users_data:
             uname = u.get("username", "")
             if not uname:
                 continue
+            # username is the stable ID used by login (Subsonic API has no UUID)
             await db.get_or_create_user(
-                user_id=u.get("id", uname),
+                user_id=uname,
                 username=uname,
                 display_name=uname,
                 is_admin=bool(u.get("adminRole", False)),
                 music_dir=f"{music_base}/{uname}",
+            )
+            # Also set playlist_dir
+            await db.update_user_paths(
+                user_id=uname,
+                music_dir=f"{music_base}/{uname}",
+                playlist_dir=f"{playlists_base}/{uname}",
             )
             imported.append(uname)
 
