@@ -232,7 +232,17 @@ class MusicBrainzClient:
           - 'recording_id'  MusicBrainz Recording ID
         or None if no result found.
         """
-        recording = await self.search_recording(artist, title, album)
+        # Clean featuring / joint info before searching MusicBrainz
+        clean_art = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', artist, flags=re.IGNORECASE)[0].strip()
+        clean_tit = re.split(r'[\(\[]\s*(?:feat|ft|featuring)', title, flags=re.IGNORECASE)[0].strip()
+        
+        recording = await self.search_recording(clean_art, clean_tit, album)
+        if not recording and album:
+            # Fall back to searching without album restriction
+            recording = await self.search_recording(clean_art, clean_tit, "")
+        if not recording:
+            # Fall back to original raw artist & title
+            recording = await self.search_recording(artist, title, album)
         if not recording:
             return None
 
