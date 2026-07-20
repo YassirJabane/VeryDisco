@@ -226,7 +226,20 @@ async def fix_directory_tags_and_rescan(
     and triggers a Navidrome scan.
     """
     path = Path(dir_path)
+    logger.info(f"fix_directory_tags_and_rescan starting for path: {path}")
+
+    # Case-insensitive / fuzzy fallback if path doesn't exist directly
+    if not path.exists() and path.parent.exists():
+        try:
+            for child in path.parent.iterdir():
+                if child.name.lower() == path.name.lower():
+                    path = child
+                    break
+        except Exception:
+            pass
+
     if not path.exists() or not path.is_dir():
+        logger.warning(f"fix_directory_tags_and_rescan: Directory not found: '{dir_path}'")
         return 0
 
     updated_count = 0
@@ -249,10 +262,14 @@ async def fix_directory_tags_and_rescan(
                     track_num=meta.get("track_num")
                 )
                 updated_count += 1
+                logger.info(f"Re-tagged embedded metadata for '{f_path.name}' -> Artist: '{folder_artist}', Album: '{folder_album}'")
             except Exception as e:
                 logger.warning(f"Failed to update tags for '{f_path}': {e}")
 
-    if updated_count > 0 and config and config.navidrome.url:
+    logger.info(f"fix_directory_tags_and_rescan completed. Updated {updated_count} files.")
+
+    # Trigger Navidrome scan
+    if config and config.navidrome.url:
         try:
             from backend.app.clients.navidrome import NavidromeClient
             nd_client = NavidromeClient(
@@ -261,7 +278,7 @@ async def fix_directory_tags_and_rescan(
                 password=config.navidrome.password
             )
             await nd_client.trigger_scan()
-            logger.info(f"Updated tags for {updated_count} files in '{path}' and triggered Navidrome scan.")
+            logger.info(f"Triggered Navidrome scan for url '{config.navidrome.url}'.")
         except Exception as nd_err:
             logger.warning(f"Triggering Navidrome scan failed: {nd_err}")
 
