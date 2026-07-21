@@ -14,7 +14,8 @@ def _promote_track_sync(explore_candidate_path, user_music_dir, artist, title, a
     import asyncio
     from pathlib import Path
     from backend.app.sync import resolve_album_dir, get_library_filename, embed_metadata, update_m3u_references
-    from backend.app.clients.deezer import deezer_client
+    from backend.app.clients.deezer import DeezerClient
+    deezer_client = DeezerClient()
 
     # 1. Fetch full canonical metadata
     loop = asyncio.new_event_loop()

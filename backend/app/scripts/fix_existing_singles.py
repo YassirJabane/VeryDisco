@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 
 from backend.app.config import ConfigManager
 from backend.app.logger import setup_logging
-from backend.app.clients.deezer import deezer_client
+from backend.app.clients.deezer import DeezerClient
 from backend.app.album_sync import fetch_track_metadata_with_fallback
 from backend.app.sync import (
     resolve_album_dir,
@@ -21,6 +21,7 @@ from backend.app.sync import (
 from backend.app.clients.navidrome import NavidromeClient
 
 logger = setup_logging("INFO")
+deezer_client = DeezerClient()
 
 def read_file_basic_tags(file_path: Path) -> tuple[Optional[str], Optional[str], Optional[str]]:
     """Return (artist, title, album) from file tags."""
