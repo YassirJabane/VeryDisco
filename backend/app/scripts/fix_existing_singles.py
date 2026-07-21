@@ -182,7 +182,7 @@ async def main():
     config_path = os.getenv("CONFIG_PATH", "/data/config.yml" if os.path.exists("/data/config.yml") else "config.yml")
     cfg_mgr = ConfigManager(config_path)
     cfg = cfg_mgr.config
-    music_dir = Path(cfg.slskd.music_dir)
+    music_dir = Path(getattr(cfg.paths, "music_dir", "/music"))
     
     await process_music_directory(music_dir)
 
@@ -192,9 +192,7 @@ async def main():
         nd_client = NavidromeClient(
             url=cfg.navidrome.url,
             username=cfg.navidrome.username,
-            password=cfg.navidrome.password,
-            token=cfg.navidrome.token,
-            salt=cfg.navidrome.salt
+            password=cfg.navidrome.password
         )
         await nd_client.trigger_rescan()
 

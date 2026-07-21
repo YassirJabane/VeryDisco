@@ -2292,7 +2292,7 @@ async def fix_legacy_singles(request: Request):
         raise HTTPException(status_code=400, detail="App is not configured yet.")
     
     cfg = config_manager.config
-    music_dir = Path(cfg.slskd.music_dir)
+    music_dir = Path(getattr(cfg.paths, "music_dir", "/music"))
     
     from backend.app.scripts.fix_existing_singles import process_music_directory
     from backend.app.clients.navidrome import NavidromeClient
@@ -2303,9 +2303,7 @@ async def fix_legacy_singles(request: Request):
             nd_client = NavidromeClient(
                 url=cfg.navidrome.url,
                 username=cfg.navidrome.username,
-                password=cfg.navidrome.password,
-                token=cfg.navidrome.token,
-                salt=cfg.navidrome.salt
+                password=cfg.navidrome.password
             )
             await nd_client.trigger_rescan()
 
