@@ -179,7 +179,8 @@ async def process_music_directory(music_dir: Path):
     logger.info(f"Migration complete! Fixed {fixed_explore} explore tracks, {fixed_library} library singles, and removed {removed_folders} empty 'Singles' directories.")
 
 async def main():
-    cfg_mgr = ConfigManager()
+    config_path = os.getenv("CONFIG_PATH", "/data/config.yml" if os.path.exists("/data/config.yml") else "config.yml")
+    cfg_mgr = ConfigManager(config_path)
     cfg = cfg_mgr.config
     music_dir = Path(cfg.slskd.music_dir)
     
