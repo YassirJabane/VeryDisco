@@ -125,7 +125,7 @@ async def fix_multidisc_library(music_dir: Path):
         if any(p.lower() in ["explore", "playlists", "navidrome_playlists", "staging"] for p in root_path.parts):
             continue
 
-        audio_files = [root_path / f for f in files if f.suffix.lower() in [".mp3", ".flac", ".m4a"]]
+        audio_files = [root_path / f for f in files if Path(f).suffix.lower() in [".mp3", ".flac", ".m4a"]]
         if not audio_files:
             continue
 
