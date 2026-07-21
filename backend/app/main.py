@@ -2310,6 +2310,31 @@ async def fix_legacy_singles(request: Request):
     asyncio.create_task(_run_migration())
     return {"status": "ok", "message": "Migration task started in background. Library is being scanned and fixed."}
 
+@app.post("/api/library/fix-multidisc")
+async def fix_multidisc_albums_endpoint(request: Request):
+    """Trigger background migration to re-organize multi-disc albums into Disc 01/Disc 02 subdirectories."""
+    if not config_manager.is_configured or not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured yet.")
+    
+    cfg = config_manager.config
+    music_dir = Path(getattr(cfg.paths, "music_dir", "/music"))
+    
+    from backend.app.scripts.fix_multidisc_albums import fix_multidisc_library
+    from backend.app.clients.navidrome import NavidromeClient
+    
+    async def _run_multidisc_fix():
+        await fix_multidisc_library(music_dir)
+        if cfg.navidrome.url and cfg.navidrome.username:
+            nd_client = NavidromeClient(
+                url=cfg.navidrome.url,
+                username=cfg.navidrome.username,
+                password=cfg.navidrome.password
+            )
+            await nd_client.trigger_rescan(full_scan=True)
+
+    asyncio.create_task(_run_multidisc_fix())
+    return {"status": "ok", "message": "Multi-disc migration task started in background. Albums are being scanned and organized."}
+
 @app.post("/api/navidrome/sync_starred")
 async def trigger_navidrome_starred_sync(request: Request):
     """Manual trigger to sync starred tracks from Navidrome to ListenBrainz and download albums."""
