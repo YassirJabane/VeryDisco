@@ -2285,6 +2285,33 @@ async def get_navidrome_stats(request: Request):
         logger.error(f"Error fetching Navidrome stats for user '{nd_username}': {e}")
         return {"songs": 0, "albums": 0, "artists": 0}
 
+@app.post("/api/library/fix-singles")
+async def fix_legacy_singles(request: Request):
+    """Trigger background migration to re-tag explore tracks and fix legacy 'Singles' albums in library."""
+    if not config_manager.is_configured or not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured yet.")
+    
+    cfg = config_manager.config
+    music_dir = Path(cfg.slskd.music_dir)
+    
+    from backend.app.scripts.fix_existing_singles import process_music_directory
+    from backend.app.clients.navidrome import NavidromeClient
+    
+    async def _run_migration():
+        await process_music_directory(music_dir)
+        if cfg.navidrome.url and cfg.navidrome.username:
+            nd_client = NavidromeClient(
+                url=cfg.navidrome.url,
+                username=cfg.navidrome.username,
+                password=cfg.navidrome.password,
+                token=cfg.navidrome.token,
+                salt=cfg.navidrome.salt
+            )
+            await nd_client.trigger_rescan()
+
+    asyncio.create_task(_run_migration())
+    return {"status": "ok", "message": "Migration task started in background. Library is being scanned and fixed."}
+
 @app.post("/api/navidrome/sync_starred")
 async def trigger_navidrome_starred_sync(request: Request):
     """Manual trigger to sync starred tracks from Navidrome to ListenBrainz and download albums."""
