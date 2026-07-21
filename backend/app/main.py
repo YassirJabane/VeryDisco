@@ -2462,17 +2462,27 @@ def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_
     bit_depth = 0
     sample_rate = 0
     duration = 0
+    duration = 0
     t_num = 0
     t_total = 0
+    disc_num = 1
+    disc_total = 1
 
     try:
         mtime = os.path.getmtime(f_path)
     except Exception:
         mtime = 0.0
 
+    # Folder fallback check for disc number
+    parent_name = f_path.parent.name.lower()
+    m_disc = re.search(r'^(?:cd|disc|disk)\s*(\d+)$', parent_name)
+    if m_disc:
+        disc_num = int(m_disc.group(1))
+
     if metadata_cache and f_path_str in metadata_cache:
         entry = metadata_cache[f_path_str]
         if abs(entry.get("mtime", 0.0) - mtime) < 0.01:
+            cached_disc = entry.get("disc_num") or disc_num
             return {
                 "artist": entry.get("artist") or "Unknown Artist",
                 "album": entry.get("album") or "Unknown Album",
@@ -2480,6 +2490,8 @@ def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_
                 "year": entry.get("year") or "0000",
                 "track_num": entry.get("track_num") or 0,
                 "total_tracks": entry.get("total_tracks") or 0,
+                "disc_num": cached_disc,
+                "disc_total": entry.get("disc_total") or 1,
                 "quality_desc": entry.get("quality_desc") or "",
                 "bitrate": entry.get("bitrate") or 0,
                 "bit_depth": entry.get("bit_depth") or 0,
@@ -2514,6 +2526,16 @@ def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_
                     t_total = int(easy_audio.get("tracktotal")[0])
                 elif easy_audio.get("totaltracks"):
                     t_total = int(easy_audio.get("totaltracks")[0])
+
+                disc_str = easy_audio.get("discnumber", [""])[0]
+                if "/" in disc_str:
+                    try:
+                        disc_num = int(disc_str.split("/")[0])
+                        disc_total = int(disc_str.split("/")[1])
+                    except Exception:
+                        pass
+                elif disc_str.isdigit():
+                    disc_num = int(disc_str)
             except Exception:
                 pass
                 
@@ -2539,6 +2561,16 @@ def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_
                 t_total = int(audio.get("tracktotal")[0])
             elif audio.get("totaltracks"):
                 t_total = int(audio.get("totaltracks")[0])
+
+            disc_str = audio.get("discnumber", [""])[0]
+            if "/" in disc_str:
+                try:
+                    disc_num = int(disc_str.split("/")[0])
+                    disc_total = int(disc_str.split("/")[1])
+                except Exception:
+                    pass
+            elif disc_str.isdigit():
+                disc_num = int(disc_str)
                 
         elif ext in ["m4a", "mp4"]:
             from mutagen.mp4 import MP4
@@ -2559,6 +2591,9 @@ def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_
             if "trkn" in audio:
                 t_num = audio["trkn"][0][0]
                 t_total = audio["trkn"][0][1]
+            if "disk" in audio and audio["disk"]:
+                disc_num = audio["disk"][0][0] or disc_num
+                disc_total = audio["disk"][0][1] or disc_total
     except Exception:
         pass
 
@@ -2592,6 +2627,8 @@ def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_
         "year": year.strip()[:4] if year.strip() else "0000",
         "track_num": t_num,
         "total_tracks": t_total,
+        "disc_num": disc_num,
+        "disc_total": disc_total,
         "quality_desc": quality_desc,
         "bitrate": bitrate,
         "bit_depth": bit_depth,
@@ -2735,13 +2772,18 @@ def get_all_album_folders(music_dir: Path, metadata_cache: dict = None, new_cach
 
         total_tracks = 0
         track_nums = set()
+        disc_tracks = {}
         for f_path in audio_files:
             try:
                 t_meta = read_file_metadata_with_cache(f_path, metadata_cache, new_cache_entries)
                 t_num = t_meta["track_num"]
+                d_num = t_meta.get("disc_num", 1)
                 t_total = t_meta["total_tracks"]
                 if t_num > 0:
                     track_nums.add(t_num)
+                    if d_num not in disc_tracks:
+                        disc_tracks[d_num] = set()
+                    disc_tracks[d_num].add(t_num)
                 if t_total > 0:
                     total_tracks = max(total_tracks, t_total)
             except Exception:
@@ -2750,9 +2792,13 @@ def get_all_album_folders(music_dir: Path, metadata_cache: dict = None, new_cach
         track_count = len(audio_files)
         total_size = sum(f.stat().st_size for f in audio_files)
 
-        # If no TOTALTRACKS tag found, infer total from max track number seen
-        if total_tracks == 0 and track_nums:
+        if len(disc_tracks) > 1:
+            total_tracks = sum(max(t_set) for t_set in disc_tracks.values() if t_set)
+        elif total_tracks == 0 and track_nums:
             total_tracks = max(track_nums)
+
+        if track_count > total_tracks:
+            total_tracks = track_count
 
         status = "fully"
         if total_tracks > 0:
@@ -3237,6 +3283,7 @@ def _get_local_tracks_for_album_sync(target: Path, metadata_cache: dict, new_cac
         local_tracks.append({
             "title": meta["title"],
             "track_num": meta["track_num"],
+            "disc_num": meta.get("disc_num", 1),
             "filepath": str(f_path),
             "normalized_title": re.sub(r'[^\w]', '', meta["title"]).lower()
         })
@@ -3301,8 +3348,8 @@ async def get_library_album_tracks(folder_path: str, request: Request):
             match = None
             for lt in local_tracks:
                 lt_disc = lt.get("disc_num", 1)
-                # Match by track number & disc or by normalized title
-                if (lt["track_num"] == d_num and (lt_disc == disc_num or len(local_tracks) <= 15)) or lt.get("normalized_title") == d_norm:
+                # Match by (track_num & disc_num) or by normalized title
+                if (lt["track_num"] == d_num and lt_disc == disc_num) or (d_norm and lt.get("normalized_title") == d_norm):
                     match = lt
                     break
                     
@@ -3314,11 +3361,12 @@ async def get_library_album_tracks(folder_path: str, request: Request):
                 "filepath": match["filepath"] if match else None
             })
     else:
-        local_tracks.sort(key=lambda x: x["track_num"])
+        local_tracks.sort(key=lambda x: (x.get("disc_num", 1), x["track_num"]))
         for lt in local_tracks:
             results.append({
                 "title": lt["title"],
                 "track_num": lt["track_num"],
+                "disc_num": lt.get("disc_num", 1),
                 "exists": True,
                 "filepath": lt["filepath"]
             })

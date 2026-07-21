@@ -411,6 +411,31 @@ class MusicBrainzClient:
         clean_art = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', artist, flags=re.IGNORECASE)[0].strip()
         clean_tit = re.split(r'[\(\[]\s*(?:feat|ft|featuring)', title, flags=re.IGNORECASE)[0].strip()
         
+        # If album is provided, check the official album tracklist first to get exact canonical album/disc/track MBID info
+        if album:
+            try:
+                mb_album = await self.get_album_tracklist(clean_art or artist, album)
+                if mb_album and mb_album.get("tracks"):
+                    clean_target = _normalize(clean_tit)
+                    for t in mb_album["tracks"]:
+                        t_title = _normalize(t.get("title", ""))
+                        if clean_target and (clean_target == t_title or clean_target in t_title or t_title in clean_target or _fuzzy_match(t.get("title", ""), clean_tit)):
+                            return {
+                                "title": t.get("title", title),
+                                "artist": artist,
+                                "album_artist": artist,
+                                "album": mb_album.get("title", album),
+                                "date": mb_album.get("release_date", ""),
+                                "track_num": t.get("track_position"),
+                                "track_total": mb_album.get("nb_tracks"),
+                                "disc_num": t.get("disk_number", 1),
+                                "disc_total": mb_album.get("nb_discs", 1),
+                                "release_mbid": mb_album.get("release_mbid"),
+                                "recording_id": t.get("id"),
+                            }
+            except Exception as e:
+                logger.debug(f"get_album_tracklist lookup in get_track_metadata failed: {e}")
+
         recording = await self.search_recording(clean_art, clean_tit, album)
         if not recording and album:
             recording = await self.search_recording(clean_art, clean_tit, "")

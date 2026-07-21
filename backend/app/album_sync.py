@@ -1262,6 +1262,10 @@ async def download_single_track_task(artist: str, title: str, album: str, config
                 title_tag = meta_result["title"] or title
                 fetched_album = album if album else (meta_result.get("album") or title)
                 track_num = meta_result["track_num"]
+                disc_num = meta_result.get("disc_num", 1)
+                disc_total = meta_result.get("disc_total", 1)
+                mbid_album = meta_result.get("mbid_album")
+                mbid_recording = meta_result.get("mbid_recording")
                 cover_bytes = meta_result["cover_bytes"]
                 dz_album_artist = meta_result["album_artist"]
                 dz_date = meta_result["date"]
@@ -1269,7 +1273,10 @@ async def download_single_track_task(artist: str, title: str, album: str, config
                 logger.warning(f"Could not retrieve metadata: {meta_err}")
 
             from backend.app.sync import resolve_album_dir, get_library_filename
-            dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, fetched_artist, fetched_album, dz_album_artist)
+            dest_dir, safe_artist, safe_album = resolve_album_dir(
+                music_dir, fetched_artist, fetched_album, dz_album_artist or artist,
+                disc_num=disc_num, disc_total=disc_total
+            )
 
             clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
             dest_audio_path = dest_dir / clean_filename
@@ -1302,8 +1309,12 @@ async def download_single_track_task(artist: str, title: str, album: str, config
                     track_num=track_num,
                     cover_bytes=cover_bytes,
                     lyrics_text=lyrics_content,
-                    album_artist=dz_album_artist,
-                    date=dz_date
+                    album_artist=dz_album_artist or artist,
+                    date=dz_date,
+                    disc_num=disc_num,
+                    disc_total=disc_total,
+                    mbid_album=mbid_album,
+                    mbid_recording=mbid_recording
                 )
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
             except Exception as e:
@@ -1459,6 +1470,10 @@ async def grab_single_track_task(
             title_tag = meta_result["title"] or title
             fetched_album = album if album else (meta_result.get("album") or title)
             track_num = meta_result["track_num"]
+            disc_num = meta_result.get("disc_num", 1)
+            disc_total = meta_result.get("disc_total", 1)
+            mbid_album = meta_result.get("mbid_album")
+            mbid_recording = meta_result.get("mbid_recording")
             cover_bytes = meta_result["cover_bytes"]
             dz_album_artist = meta_result["album_artist"]
             dz_date = meta_result["date"]
@@ -1466,7 +1481,10 @@ async def grab_single_track_task(
             logger.warning(f"Could not retrieve metadata: {meta_err}")
 
         from backend.app.sync import resolve_album_dir, get_library_filename
-        dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, fetched_artist, fetched_album, dz_album_artist)
+        dest_dir, safe_artist, safe_album = resolve_album_dir(
+            music_dir, fetched_artist, fetched_album, dz_album_artist or artist,
+            disc_num=disc_num, disc_total=disc_total
+        )
         clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
         dest_audio_path = dest_dir / clean_filename
 
@@ -1498,8 +1516,12 @@ async def grab_single_track_task(
                 track_num=track_num,
                 cover_bytes=cover_bytes,
                 lyrics_text=lyrics_content,
-                album_artist=dz_album_artist,
-                date=dz_date
+                album_artist=dz_album_artist or artist,
+                date=dz_date,
+                disc_num=disc_num,
+                disc_total=disc_total,
+                mbid_album=mbid_album,
+                mbid_recording=mbid_recording
             )
             logger.info(f"Saved and embedded metadata for grabbed track '{fetched_artist} - {title_tag}'")
         except Exception as e:
