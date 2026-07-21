@@ -682,8 +682,10 @@ async def _download_album_task_internal(
 
                         filename_part = os.path.basename(str(existing_path))
                         matched = match_file_to_official_track(filename_part, official_album_tracks)
+                        official_disc_num = None
                         if matched:
-                            disc_num = matched.get("disk_number") or matched.get("disc_num") or 1
+                            official_disc_num = matched.get("disk_number") or matched.get("disc_num")
+                            disc_num = official_disc_num or 1
                             track_num = matched.get("track_position")
 
                         if official_album_tracks:
@@ -697,7 +699,7 @@ async def _download_album_task_internal(
                             )
                             title_tag = meta_result["title"]
                             track_num = meta_result["track_num"] or track_num
-                            if meta_result.get("disc_num"):
+                            if not official_disc_num and meta_result.get("disc_num"):
                                 disc_num = meta_result["disc_num"]
                             if meta_result.get("disc_total"):
                                 disc_total = max(disc_total, meta_result["disc_total"])
@@ -919,10 +921,12 @@ async def _download_album_task_internal(
                     mbid_recording = None
                     
                     matched = match_file_to_official_track(local_path.name, official_album_tracks)
+                    official_disc_num = None
                     if matched:
                         clean_title = matched["title"]
                         track_num = matched.get("track_position")
-                        disc_num = matched.get("disk_number") or matched.get("disc_num") or 1
+                        official_disc_num = matched.get("disk_number") or matched.get("disc_num")
+                        disc_num = official_disc_num or 1
                         title_tag = matched["title"]
                     else:
                         clean_title = clean_track_title(basename, artist, album)
@@ -946,7 +950,7 @@ async def _download_album_task_internal(
                         )
                         title_tag = meta_result["title"] or title_tag or clean_title
                         track_num = meta_result["track_num"] or track_num
-                        if meta_result.get("disc_num"):
+                        if not official_disc_num and meta_result.get("disc_num"):
                             disc_num = meta_result["disc_num"]
                         if meta_result.get("disc_total"):
                             disc_total = max(disc_total, meta_result["disc_total"])
