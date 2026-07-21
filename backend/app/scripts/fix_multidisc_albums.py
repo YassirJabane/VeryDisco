@@ -54,34 +54,103 @@ def _fuzzy_title_match(a: str, b: str) -> bool:
     return na == nb or na in nb or nb in na
 
 
+def _score_release(r: dict, album: str) -> int:
+    """
+    Score a MusicBrainz release to prefer:
+    - Official status (+20)
+    - CD format (+15)
+    - Country XW (worldwide) or US (+10)
+    - Title exact match (+10)
+    - Explicit or standard (not clean, not karaoke) (+5)
+    Penalise:
+    - Secondary types: Live, Compilation, Remix, DJ-mix, Spokenword (-20 each)
+    - Disambiguation contains 'clean' or 'instrumental' (-15)
+    - Format is 'Digital Media' only (no CD) (-5)
+    """
+    score = 0
+    title = r.get("title", "")
+    status = (r.get("status") or "").lower()
+    country = r.get("country") or r.get("release-event-count", "")
+    disambiguation = (r.get("disambiguation") or "").lower()
+    media = r.get("media") or []
+    formats = {(m.get("format") or "").lower() for m in media}
+    rg = r.get("release-group") or {}
+    secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
+
+    # Status
+    if status == "official":
+        score += 20
+
+    # Format
+    if "cd" in formats:
+        score += 15
+    elif "digital media" in formats and "cd" not in formats:
+        score -= 5
+
+    # Country
+    if isinstance(country, str):
+        if country.upper() == "XW":
+            score += 10
+        elif country.upper() in ("US", "GB"):
+            score += 5
+
+    # Title match
+    if _normalize(title) == _normalize(album):
+        score += 10
+    elif _fuzzy_title_match(title, album):
+        score += 5
+
+    # Explicit or standard (not clean/karaoke)
+    if "explicit" in disambiguation:
+        score += 5
+    if "clean" in disambiguation or "instrumental" in disambiguation or "karaoke" in disambiguation:
+        score -= 15
+
+    # Secondary types penalties
+    for bad_type in ("live", "compilation", "remix", "dj-mix", "spokenword", "mixtape"):
+        if bad_type in secondary_types:
+            score -= 20
+
+    return score
+
+
 async def get_mb_album_tracklist(artist: str, album: str) -> Optional[List[Dict]]:
     """
     Returns the full MusicBrainz tracklist for artist+album.
-    Each entry: {disc_num, disc_total, track_num, track_total, title, recording_id}
+    Selects the best release (prefers CD, XW/international, official, explicit).
+    Each entry: {disc_num, disc_total, track_num, track_total, title, recording_id, release_mbid}
     Returns None if not found.
     """
-    # Search for the release
+    # Search for releases with media info included so we can score formats
     data = await _mb_get("/release", params={
         "query": f'release:"{album}" AND artist:"{artist}"',
-        "limit": 10,
-        "inc": "artist-credits",
+        "limit": 20,
+        "inc": "artist-credits+media+release-groups",
         "fmt": "json",
     })
     releases = data.get("releases", []) if data else []
 
-    best_release = None
-    for r in releases:
-        if _fuzzy_title_match(r.get("title", ""), album):
-            best_release = r
-            break
-    if not best_release and releases:
-        best_release = releases[0]
-    if not best_release:
+    # Filter to only releases that fuzzy-match the album title
+    candidates = [r for r in releases if _fuzzy_title_match(r.get("title", ""), album)]
+    if not candidates:
+        candidates = releases  # fall back to all if nothing fuzzy-matches
+
+    if not candidates:
         return None
 
+    # Score and pick best release
+    best_release = max(candidates, key=lambda r: _score_release(r, album))
     release_mbid = best_release.get("id")
     if not release_mbid:
         return None
+
+    logger.info(
+        f"[MB] Best release for '{artist} - {album}': "
+        f"'{best_release.get('title')}' "
+        f"[{best_release.get('status')} | {best_release.get('country','?')} | "
+        f"formats: {[m.get('format') for m in (best_release.get('media') or [])]}] "
+        f"(score={_score_release(best_release, album)})"
+    )
 
     # Fetch full release with media+recordings to get disc/track positions
     full = await _mb_get(f"/release/{release_mbid}", params={
@@ -118,6 +187,7 @@ async def get_mb_album_tracklist(artist: str, album: str) -> Optional[List[Dict]
             })
 
     return tracklist if tracklist else None
+
 
 
 def match_file_to_tracklist(
