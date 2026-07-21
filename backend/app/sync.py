@@ -441,26 +441,31 @@ def embed_metadata(
             tags.setall("TCMP", [TCMP(encoding=3, text=compilation_val)])
             tags.delall("COMM")
             
-            # Write disc number
-            disc_str = f"{disc_num}/{disc_total}" if disc_total else str(disc_num)
-            tags.setall("TPOS", [TPOS(encoding=3, text=disc_str)])
-            
-            if track_num:
-                trck_str = f"{track_num}/{track_total}" if track_total else str(track_num)
-                tags.setall("TRCK", [TRCK(encoding=3, text=trck_str)])
-            if not is_explore:
+            if is_explore:
+                # Omit release date and disc_total for explore tracks so Navidrome merges ALL explore tracks into 1 single album
+                tags.delall("TDRC")
+                tags.delall("TDOR")
+                tags.delall("TYER")
+                tags.setall("TPOS", [TPOS(encoding=3, text="1/1")])
+            else:
+                disc_str = f"{disc_num}/{disc_total}" if disc_total else str(disc_num)
+                tags.setall("TPOS", [TPOS(encoding=3, text=disc_str)])
+                if date:
+                    tags.setall("TDRC", [TDRC(encoding=3, text=date)])
+                    tags.setall("TDOR", [TDOR(encoding=3, text=date)])
+                    if len(date) >= 4:
+                        tags.setall("TYER", [TYER(encoding=3, text=date[:4])])
                 if mbid_album:
                     tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
                 if mbid_recording:
                     tags.add(UFID(owner="http://musicbrainz.org", data=mbid_recording.encode('utf-8')))
 
+            if track_num:
+                trck_str = f"{track_num}/{track_total}" if track_total and not is_explore else str(track_num)
+                tags.setall("TRCK", [TRCK(encoding=3, text=trck_str)])
+
             if lyrics_text:
                 tags.setall("USLT", [USLT(encoding=3, lang='eng', desc='Lyrics', text=lyrics_text)])
-            if date:
-                tags.setall("TDRC", [TDRC(encoding=3, text=date)])
-                tags.setall("TDOR", [TDOR(encoding=3, text=date)])
-                if len(date) >= 4:
-                    tags.setall("TYER", [TYER(encoding=3, text=date[:4])])
             if cover_bytes:
                 tags.setall("APIC", [APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_bytes)])
                 
@@ -481,23 +486,32 @@ def embed_metadata(
             audio["album"] = final_album
             audio["title"] = title
             audio["compilation"] = compilation_val
-            audio["discnumber"] = str(disc_num)
-            audio["disctotal"] = str(disc_total)
             if "comment" in audio:
                 del audio["comment"]
-            if track_num:
-                audio["tracknumber"] = str(track_num)
-            if track_total:
-                audio["tracktotal"] = str(track_total)
-            if not is_explore:
+
+            if is_explore:
+                for k in ["date", "year", "musicbrainz_albumid", "musicbrainz_trackid", "musicbrainz_artistid"]:
+                    if k in audio:
+                        del audio[k]
+                audio["discnumber"] = "1"
+                audio["disctotal"] = "1"
+            else:
+                audio["discnumber"] = str(disc_num)
+                audio["disctotal"] = str(disc_total)
+                if date:
+                    audio["date"] = date
+                    if len(date) >= 4:
+                        audio["year"] = date[:4]
                 if mbid_album:
                     audio["musicbrainz_albumid"] = mbid_album
                 if mbid_recording:
                     audio["musicbrainz_trackid"] = mbid_recording
-            if date:
-                audio["date"] = date
-                if len(date) >= 4:
-                    audio["year"] = date[:4]
+
+            if track_num:
+                audio["tracknumber"] = str(track_num)
+            if track_total and not is_explore:
+                audio["tracktotal"] = str(track_total)
+
             if lyrics_text:
                 audio["lyrics"] = lyrics_text
             if cover_bytes:
@@ -523,18 +537,24 @@ def embed_metadata(
             audio["\xa9nam"] = title
             audio["\xa9alb"] = final_album
             audio["cpil"] = True if is_explore else False
-            audio["disk"] = [(disc_num, disc_total)]
             if "\xa9cmt" in audio:
                 del audio["\xa9cmt"]
-            if track_num:
-                audio["trkn"] = [(int(track_num), int(track_total or 0))]
-            if not is_explore:
+
+            if is_explore:
+                if "\xa9day" in audio:
+                    del audio["\xa9day"]
+                audio["disk"] = [(1, 1)]
+            else:
+                audio["disk"] = [(disc_num, disc_total)]
+                if date:
+                    audio["\xa9day"] = date
                 if mbid_album:
                     audio["----:com.apple.iTunes:MusicBrainz Album Id"] = mbid_album.encode('utf-8')
                 if mbid_recording:
                     audio["----:com.apple.iTunes:MusicBrainz Track Id"] = mbid_recording.encode('utf-8')
-            if date:
-                audio["\xa9day"] = date
+
+            if track_num:
+                audio["trkn"] = [(int(track_num), int(track_total or 0) if not is_explore else 0)]
             if lyrics_text:
                 audio["\xa9lyr"] = lyrics_text
             if cover_bytes:
