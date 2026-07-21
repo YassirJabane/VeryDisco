@@ -438,11 +438,14 @@ async def fix_multidisc_library(music_dir: Path):
             cover_bytes = canonical_cover
             mbid_album = canonical_mbid_album
 
-            # Resolve target folder (creates Disc 01 / Disc 02 structure)
-            target_folder, safe_artist, safe_album = resolve_album_dir(
-                music_dir, dz_artist, dz_album, dz_album_artist,
-                disc_num=disc_num, disc_total=disc_total
-            )
+            # Reorganize locally inside the album_root to preserve user folder structure (e.g. /music/Yassir)
+            if disc_total > 1:
+                target_folder = album_root / f"Disc {disc_num:02d}"
+            else:
+                target_folder = album_root
+
+            from backend.app.sync import sanitize_filename
+            safe_album = sanitize_filename(dz_album)
             safe_filename = get_library_filename(dz_artist, safe_album, track_num, dz_title, f_path.suffix)
             dest_path = target_folder / safe_filename
 
