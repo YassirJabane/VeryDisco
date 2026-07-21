@@ -117,10 +117,15 @@ def check_artist_match(artist: str, parent_dir: str, filename: str) -> bool:
 
 def check_remix_mismatch(album_title: str, folder_path: str) -> bool:
     """
-    Returns True if the folder_path contains remix/screwed keywords that
+    Returns True if the folder_path contains remix/screwed/boxset keywords that
     are NOT in the requested album_title, indicating a mismatch.
     """
-    keywords = ["chopped", "screwed", "remix", "slowed", "reverb", "tribute", "cover", "instrumental", "karaoke", "acapella", "acappella", "slopped"]
+    keywords = [
+        "chopped", "screwed", "remix", "slowed", "reverb", "tribute", "cover",
+        "instrumental", "karaoke", "acapella", "acappella", "slopped",
+        "mnesia", "boxset", "box set", "discography", "anthology", "rarities",
+        "outtakes", "demos", "sessions", "unreleased", "greatest hits"
+    ]
     folder_lower = folder_path.lower()
     album_lower = album_title.lower()
     

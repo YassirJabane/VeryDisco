@@ -24,32 +24,36 @@ _last_request_time: float = 0.0
 _MIN_INTERVAL = 1.05  # seconds between requests
 
 
-async def _mb_get(path: str, params: dict = None, timeout: int = 15) -> Optional[dict]:
-    """Make a rate-limited GET to the MusicBrainz API."""
+async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional[dict]:
+    """Make a rate-limited GET to the MusicBrainz API with automatic retries."""
     global _last_request_time
-    async with _rate_lock:
-        now = time.monotonic()
-        wait = _MIN_INTERVAL - (now - _last_request_time)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        _last_request_time = time.monotonic()
-
     url = f"{_MB_BASE}{path}"
     headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url, params=params, headers=headers)
-            if resp.status_code == 404:
-                return None
-            if resp.status_code == 503:
-                logger.warning("MusicBrainz rate-limited (503). Sleeping 2s.")
+
+    for attempt in range(3):
+        async with _rate_lock:
+            now = time.monotonic()
+            wait = _MIN_INTERVAL - (now - _last_request_time)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _last_request_time = time.monotonic()
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=False) as client:
+                resp = await client.get(url, params=params, headers=headers)
+                if resp.status_code == 404:
+                    return None
+                if resp.status_code in (503, 429):
+                    logger.warning(f"MusicBrainz rate-limited ({resp.status_code}). Sleeping 3s before retry {attempt+1}/3.")
+                    await asyncio.sleep(3)
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+        except Exception as e:
+            logger.warning(f"MusicBrainz request failed ({path}, attempt {attempt+1}/3): {e}")
+            if attempt < 2:
                 await asyncio.sleep(2)
-                return None
-            resp.raise_for_status()
-            return resp.json()
-    except Exception as e:
-        logger.warning(f"MusicBrainz request failed ({path}): {e}")
-        return None
+    return None
 
 
 async def get_release_with_media(release_mbid: str) -> Optional[dict]:

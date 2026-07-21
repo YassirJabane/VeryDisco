@@ -51,7 +51,7 @@ class ListenBrainzClient:
         """Fetch all playlists created for the user."""
         url = f"{self.base_url}/1/user/{self.username}/playlists/createdfor"
         logger.info(f"Fetching ListenBrainz playlists created for user '{self.username}'...")
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
             resp = await client.get(url, headers=self._get_headers())
             resp.raise_for_status()
             data = resp.json()
@@ -116,7 +116,7 @@ class ListenBrainzClient:
         headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         headers["Pragma"] = "no-cache"
         headers["Expires"] = "0"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             data = resp.json()
@@ -158,7 +158,7 @@ class ListenBrainzClient:
         logger.info(f"Resolving MBID via MusicBrainz for '{artist} - {title}'...")
         # Note: MusicBrainz requires a proper User-Agent
         headers = {"User-Agent": "VeryDisco/1.0.0 ( contact@example.com )"}
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
             resp = await client.get(url, params=params, headers=headers)
             if resp.status_code != 200:
                 logger.warning(f"MusicBrainz API returned {resp.status_code}")
@@ -187,7 +187,7 @@ class ListenBrainzClient:
             params["score"] = score
 
         logger.info(f"Fetching user feedback from ListenBrainz for '{self.username}' (score={score})...")
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
             resp = await client.get(url, headers=self._get_headers(), params=params)
             resp.raise_for_status()
             data = resp.json()
@@ -232,7 +232,7 @@ class ListenBrainzClient:
             "score": score
         }
         logger.info(f"Submitting ListenBrainz feedback (score={score}) for MBID '{mbid}'")
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout, verify=False) as client:
             resp = await client.post(url, json=payload, headers=self._get_headers())
             if resp.status_code == 200:
                 logger.info(f"Feedback submitted successfully for '{artist} - {title}'.")
