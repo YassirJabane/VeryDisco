@@ -2335,6 +2335,15 @@ async def fix_multidisc_albums_endpoint(request: Request):
     asyncio.create_task(_run_multidisc_fix())
     return {"status": "ok", "message": "Multi-disc migration task started in background. Albums are being scanned and organized."}
 
+@app.get("/api/musicbrainz/inspect")
+async def inspect_musicbrainz_release_endpoint(artist: str, album: str, request: Request):
+    """Query MusicBrainz for candidate releases, score them, and return winner details."""
+    from backend.app.clients.musicbrainz import inspect_album_releases
+    if not artist or not album:
+        raise HTTPException(status_code=400, detail="Artist and Album query parameters are required.")
+    res = await inspect_album_releases(artist, album)
+    return res
+
 @app.post("/api/navidrome/sync_starred")
 async def trigger_navidrome_starred_sync(request: Request):
     """Manual trigger to sync starred tracks from Navidrome to ListenBrainz and download albums."""

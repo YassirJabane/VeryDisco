@@ -149,3 +149,35 @@ class DeezerClient:
         except Exception as e:
             logger.error(f"Failed to download cover art from '{cover_url}': {e}")
             return None
+
+    async def get_album_cover(self, artist: str, album: str) -> Optional[bytes]:
+        """Search Deezer for album cover_xl art bytes for given (artist, album)."""
+        clean_artist = artist.split('feat')[0].split('ft.')[0].strip()
+        clean_album = re.sub(r'[\(\[].*?[\)\]]', '', album).strip()
+        query = f"{clean_artist} {clean_album}".strip()
+
+        url = f"{self.base_url}/search/album?q={urllib.parse.quote(query)}&limit=5"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                data = resp.json()
+                results = data.get("data", [])
+                if not results:
+                    return None
+                best_cover_url = None
+                for res in results:
+                    r_title = _normalize(res.get("title", ""))
+                    a_title = _normalize(clean_album)
+                    if a_title in r_title or r_title in a_title:
+                        best_cover_url = res.get("cover_xl") or res.get("cover_big")
+                        break
+                if not best_cover_url and results:
+                    best_cover_url = results[0].get("cover_xl") or results[0].get("cover_big")
+
+                if best_cover_url:
+                    return await self.download_cover_art(best_cover_url)
+        except Exception as e:
+            logger.debug(f"Deezer get_album_cover failed for '{artist} - {album}': {e}")
+        return None
+

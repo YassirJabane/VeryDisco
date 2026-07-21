@@ -70,6 +70,129 @@ def _fuzzy_match(a: str, b: str) -> bool:
     return na in nb or nb in na or na == nb
 
 
+def score_release(r: dict, album: str) -> int:
+    """Score a MusicBrainz release for multi-disc / official tracklist matching."""
+    score = 0
+    title = r.get("title", "")
+    status = (r.get("status") or "").lower()
+    country = r.get("country") or r.get("release-event-count", "")
+    disambiguation = (r.get("disambiguation") or "").lower()
+    media = r.get("media") or []
+    formats = {(m.get("format") or "").lower() for m in media}
+    rg = r.get("release-group") or {}
+    secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
+
+    if status == "official":
+        score += 20
+    if "cd" in formats:
+        score += 15
+    elif "digital media" in formats and "cd" not in formats:
+        score -= 5
+
+    if isinstance(country, str):
+        if country.upper() == "XW":
+            score += 10
+        elif country.upper() in ("US", "GB"):
+            score += 5
+
+    if _normalize(title) == _normalize(album):
+        score += 10
+    elif _fuzzy_match(title, album):
+        score += 5
+
+    if "explicit" in disambiguation:
+        score += 5
+    if "clean" in disambiguation or "instrumental" in disambiguation or "karaoke" in disambiguation:
+        score -= 15
+
+    for bad_type in ("live", "compilation", "remix", "dj-mix", "spokenword", "mixtape"):
+        if bad_type in secondary_types:
+            score -= 20
+
+    return score
+
+
+async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
+    """Query MusicBrainz for candidate releases, score them, and return winner details."""
+    data = await _mb_get("/release", params={
+        "query": f'release:"{album}" AND artist:"{artist}"',
+        "limit": 20,
+        "inc": "artist-credits+media+release-groups",
+        "fmt": "json",
+    })
+    releases = data.get("releases", []) if data else []
+    if not releases:
+        return {"artist": artist, "album": album, "candidates": [], "winner": None}
+
+    candidates = [r for r in releases if _fuzzy_match(r.get("title", ""), album)]
+    if not candidates:
+        candidates = releases
+
+    scored_candidates = []
+    for r in candidates:
+        s = score_release(r, album)
+        media = r.get("media") or []
+        formats = [m.get("format") or "Unknown" for m in media]
+        rg = r.get("release-group") or {}
+        scored_candidates.append({
+            "id": r.get("id"),
+            "title": r.get("title"),
+            "status": r.get("status") or "Unknown",
+            "country": r.get("country") or "Unknown",
+            "score": s,
+            "formats": formats,
+            "disambiguation": r.get("disambiguation") or "",
+            "secondary_types": rg.get("secondary-types") or [],
+            "media_count": len(media)
+        })
+
+    scored_candidates.sort(key=lambda x: x["score"], reverse=True)
+    best_candidate = scored_candidates[0]
+
+    for c in scored_candidates:
+        c["is_winner"] = (c["id"] == best_candidate["id"])
+
+    winner_details = None
+    if best_candidate.get("id"):
+        full = await get_release_with_media(best_candidate["id"])
+        if full:
+            media_list = full.get("media", [])
+            discs = []
+            for m in media_list:
+                disc_num = m.get("position", 1)
+                tracks = []
+                for t in m.get("tracks", []):
+                    rec = t.get("recording") or {}
+                    tracks.append({
+                        "position": int(t.get("position") or t.get("number") or 0),
+                        "title": rec.get("title") or t.get("title"),
+                        "recording_id": rec.get("id")
+                    })
+                discs.append({
+                    "disc_num": disc_num,
+                    "format": m.get("format") or "CD",
+                    "track_count": len(tracks),
+                    "tracks": tracks
+                })
+            winner_details = {
+                "id": best_candidate["id"],
+                "title": full.get("title"),
+                "status": full.get("status"),
+                "country": full.get("country"),
+                "date": full.get("date"),
+                "disc_total": len(media_list),
+                "discs": discs
+            }
+
+    return {
+        "artist": artist,
+        "album": album,
+        "candidates": scored_candidates,
+        "winner": winner_details
+    }
+
+
+
 class MusicBrainzClient:
     """Thin wrapper around the MusicBrainz JSON API and Cover Art Archive."""
 
@@ -180,6 +303,45 @@ class MusicBrainzClient:
             "fmt": "json"
         })
 
+    async def get_album_tracklist(self, artist: str, album: str) -> Optional[Dict[str, Any]]:
+        """
+        Query MusicBrainz for candidate releases of (artist, album), score them,
+        and return a normalized dict with tracks list, release_date, release_mbid, etc.
+        """
+        res = await inspect_album_releases(artist, album)
+        winner = res.get("winner")
+        if not winner:
+            return None
+
+        flat_tracks = []
+        total_discs = winner.get("disc_total", 1)
+        total_tracks = 0
+        for d in winner.get("discs", []):
+            total_tracks += d.get("track_count", 0)
+
+        for d in winner.get("discs", []):
+            disc_num = d.get("disc_num", 1)
+            for t in d.get("tracks", []):
+                flat_tracks.append({
+                    "title": t.get("title"),
+                    "track_position": t.get("position"),
+                    "disk_number": disc_num,
+                    "disc_num": disc_num,
+                    "id": t.get("recording_id"),
+                    "release_mbid": winner.get("id"),
+                    "nb_tracks": total_tracks,
+                    "nb_discs": total_discs,
+                })
+
+        return {
+            "tracks": flat_tracks,
+            "release_date": winner.get("date") or "",
+            "release_mbid": winner.get("id"),
+            "nb_tracks": total_tracks,
+            "nb_discs": total_discs,
+            "title": winner.get("title", album),
+        }
+
     # -----------------------------------------------------------------------
     # Cover Art Archive
     # -----------------------------------------------------------------------
@@ -229,28 +391,14 @@ class MusicBrainzClient:
     ) -> Optional[Dict[str, Any]]:
         """
         High-level method: returns a dict with metadata for embed_metadata calls.
-
-        Returns:
-          - 'title'         canonical recording title
-          - 'artist'        full artist string (primary [feat. X])
-          - 'album_artist'  primary artist only
-          - 'album'         album/release title
-          - 'date'          release date string (YYYY or YYYY-MM-DD)
-          - 'track_num'     track position on release (int or None)
-          - 'release_mbid'  MusicBrainz Release ID for cover art
-          - 'recording_id'  MusicBrainz Recording ID
-        or None if no result found.
         """
-        # Clean featuring / joint info before searching MusicBrainz
         clean_art = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', artist, flags=re.IGNORECASE)[0].strip()
         clean_tit = re.split(r'[\(\[]\s*(?:feat|ft|featuring)', title, flags=re.IGNORECASE)[0].strip()
         
         recording = await self.search_recording(clean_art, clean_tit, album)
         if not recording and album:
-            # Fall back to searching without album restriction
             recording = await self.search_recording(clean_art, clean_tit, "")
         if not recording:
-            # Fall back to original raw artist & title
             recording = await self.search_recording(artist, title, album)
         if not recording:
             return None
@@ -273,12 +421,8 @@ class MusicBrainzClient:
 
         releases = recording.get("releases", [])
         best_release = None
-        for rel in releases:
-            if (rel.get("status") or "").lower() == "official":
-                best_release = rel
-                break
-        if not best_release and releases:
-            best_release = releases[0]
+        if releases:
+            best_release = sorted(releases, key=lambda r: score_release(r, album or title), reverse=True)[0]
 
         release_mbid = None
         release_title = album or recording.get("title", title)

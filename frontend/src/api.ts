@@ -684,9 +684,15 @@ export const apiService = {
     return resp.data;
   },
 
-  // AcoustID (full library scan, batch_size=0 = all remaining)
   async acoustidScanAll(): Promise<any> {
     const resp = await api.post('/api/acoustid/scan?batch_size=0');
+    return resp.data;
+  },
+
+  async inspectMusicBrainzRelease(artist: string, album: string): Promise<any> {
+    const resp = await api.get('/api/musicbrainz/inspect', {
+      params: { artist, album },
+    });
     return resp.data;
   },
 };

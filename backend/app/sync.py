@@ -787,24 +787,12 @@ async def relocate_and_tag_download(
     cover_bytes = meta_result.get("cover_bytes")
     dz_date = meta_result.get("date")
 
-    # If MB didn't give cover, try Deezer fallback cover
+    # If cover art wasn't retrieved yet, try Deezer get_album_cover
     if not cover_bytes:
         try:
-            dz_meta = await deezer_client.get_track_metadata(artist_clean, title_clean)
-            if dz_meta:
-                cover_url = dz_meta.get("album", {}).get("cover_xl")
-                if cover_url:
-                    cover_bytes = await deezer_client.download_cover_art(cover_url)
+            cover_bytes = await deezer_client.get_album_cover(artist_clean, dz_album)
         except Exception:
             pass
-        
-        album_id = dz_meta.get("album", {}).get("id")
-        if album_id:
-            album_meta = await deezer_client.get_album_metadata(album_id)
-            if album_meta:
-                dz_date = album_meta.get("release_date")
-                # Retrieve official joint album artist (e.g. Drake & 21 Savage)
-                _, dz_album_artist = deezer_client.resolve_joint_artists(album_meta)
 
     is_explore = dest_dir is not None
 
