@@ -375,6 +375,32 @@ async def fix_multidisc_library(music_dir: Path):
 
         logger.info(f"[MB] '{album_name}' → {disc_total} discs, {len(tracklist)} tracks total")
 
+        # --- Fetch canonical album metadata ONCE for all tracks ---
+        canonical_mbid_album = tracklist[0]["release_mbid"]
+        canonical_cover = None
+        canonical_date = None
+        canonical_album = album_name
+        canonical_album_artist = album_artist
+
+        # 1. Try Cover Art Archive via MBID
+        if canonical_mbid_album:
+            from backend.app.clients.musicbrainz import musicbrainz_client
+            canonical_cover = await musicbrainz_client.get_cover_art(canonical_mbid_album)
+
+        # 2. Try Deezer fallback to get date and cover (if missing)
+        try:
+            first_track_title = next((t["title"] for t in tag_list if t["title"]), "Track 1")
+            first_meta = await fetch_track_metadata_with_fallback(
+                deezer_client, artist, first_track_title, album_name
+            )
+            canonical_album = first_meta.get("album") or canonical_album
+            canonical_album_artist = first_meta.get("album_artist") or canonical_album_artist
+            canonical_date = first_meta.get("date")
+            if not canonical_cover:
+                canonical_cover = first_meta.get("cover_bytes")
+        except Exception as e:
+            logger.debug(f"Failed to fetch canonical album metadata for '{album_name}': {e}")
+
         # Match each file to its correct disc/track via MusicBrainz title
         albums_fixed += 1
         for file_tags in tag_list:
@@ -390,31 +416,27 @@ async def fix_multidisc_library(music_dir: Path):
             track_num = mb_entry["track_num"]
             track_total = mb_entry["track_total"]
             recording_id = mb_entry["recording_id"]
-            release_mbid = mb_entry["release_mbid"]
 
-            # Fetch full track metadata for cover/date/artist string
+            # Fetch track-specific metadata (artist, title)
             try:
                 meta_res = await fetch_track_metadata_with_fallback(
                     deezer_client, file_tags["artist"] or artist, file_title, album_name
                 )
                 dz_artist = meta_res.get("artist") or file_tags["artist"] or artist
-                dz_album_artist = meta_res.get("album_artist") or album_artist
-                dz_album = meta_res.get("album") or album_name
                 dz_title = meta_res.get("title") or file_title
-                cover_bytes = meta_res.get("cover_bytes")
-                dz_date = meta_res.get("date")
-                mbid_album = meta_res.get("mbid_album") or release_mbid
                 mbid_recording = meta_res.get("mbid_recording") or recording_id
             except Exception as e:
                 logger.error(f"Metadata fetch failed for '{file_title}': {e}")
                 dz_artist = file_tags["artist"] or artist
-                dz_album_artist = album_artist
-                dz_album = album_name
                 dz_title = file_title
-                cover_bytes = None
-                dz_date = None
-                mbid_album = release_mbid
                 mbid_recording = recording_id
+
+            # Force canonical album metadata to prevent Navidrome from splitting the album!
+            dz_album = canonical_album
+            dz_album_artist = canonical_album_artist
+            dz_date = canonical_date
+            cover_bytes = canonical_cover
+            mbid_album = canonical_mbid_album
 
             # Resolve target folder (creates Disc 01 / Disc 02 structure)
             target_folder, safe_artist, safe_album = resolve_album_dir(
