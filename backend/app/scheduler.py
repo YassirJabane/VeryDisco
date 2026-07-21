@@ -9,20 +9,87 @@ from backend.app.logger import get_logger
 
 logger = get_logger()
 
-def _promote_track_sync(explore_candidate_path, dest_folder, dest_path, playlists_dir):
+def _promote_track_sync(explore_candidate_path, user_music_dir, artist, title, album, playlists_dir, config):
     import shutil
+    import asyncio
+    from pathlib import Path
+    from backend.app.sync import resolve_album_dir, get_library_filename, embed_metadata, update_m3u_references
+    from backend.app.clients.deezer import deezer_client
+
+    # 1. Fetch full canonical metadata
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        from backend.app.album_sync import fetch_track_metadata_with_fallback
+        meta_result = loop.run_until_complete(fetch_track_metadata_with_fallback(deezer_client, artist, title, album))
+    except Exception as e:
+        logger.warning(f"Metadata fetch during promotion for '{artist} - {title}' failed: {e}")
+        meta_result = {}
+    finally:
+        loop.close()
+
+    dz_title = meta_result.get("title") or title
+    dz_artist = meta_result.get("artist") or artist
+    dz_album_artist = meta_result.get("album_artist") or artist
+    dz_album = meta_result.get("album") or album or f"{title} - Single"
+    track_num = meta_result.get("track_num")
+    track_total = meta_result.get("track_total")
+    disc_num = meta_result.get("disc_num", 1)
+    disc_total = meta_result.get("disc_total", 1)
+    mbid_album = meta_result.get("mbid_album")
+    mbid_recording = meta_result.get("mbid_recording")
+    cover_bytes = meta_result.get("cover_bytes")
+    dz_date = meta_result.get("date")
+
+    ext = explore_candidate_path.suffix
+    dest_folder, safe_artist, safe_album = resolve_album_dir(
+        user_music_dir, dz_artist, dz_album, dz_album_artist, disc_num=disc_num, disc_total=disc_total
+    )
+    safe_audio_name = get_library_filename(dz_artist, safe_album, track_num, dz_title, ext)
+    dest_path = dest_folder / safe_audio_name
+
     dest_folder.mkdir(parents=True, exist_ok=True)
     shutil.move(str(explore_candidate_path), str(dest_path))
+    
     explore_lrc = explore_candidate_path.with_suffix(".lrc")
     if explore_lrc.exists():
         shutil.move(str(explore_lrc), str(dest_path.with_suffix(".lrc")))
-        
+
+    # Read lyrics if present
+    lyrics_text = None
+    dest_lrc = dest_path.with_suffix(".lrc")
+    if dest_lrc.exists():
+        try:
+            with open(dest_lrc, "r", encoding="utf-8") as lf:
+                lyrics_text = lf.read()
+        except Exception:
+            pass
+
+    # Re-tag file with canonical album metadata (is_explore=False)
+    embed_metadata(
+        file_path=str(dest_path),
+        artist=dz_artist,
+        title=dz_title,
+        album=dz_album,
+        track_num=track_num,
+        track_total=track_total,
+        cover_bytes=cover_bytes,
+        lyrics_text=lyrics_text,
+        album_artist=dz_album_artist,
+        date=dz_date,
+        disc_num=disc_num,
+        disc_total=disc_total,
+        is_explore=False,
+        mbid_album=mbid_album,
+        mbid_recording=mbid_recording
+    )
+
     try:
-        from backend.app.sync import update_m3u_references
-        from pathlib import Path
-        update_m3u_references(Path(playlists_dir), explore_candidate_path.name, Path(dest_path))
+        update_m3u_references(Path(playlists_dir), explore_candidate_path.name, dest_path)
     except Exception as e:
         logger.error(f"Failed to update M3U references on promotion: {e}")
+
+    return dest_path
 
 def _check_album_dir_exists_sync(final_dir) -> bool:
     try:
@@ -508,9 +575,11 @@ class SchedulerManager:
                                 dest_folder = Path(user_music_dir) / safe_artist / safe_album
                                 dest_path = dest_folder / explore_candidate.name
                                 try:
-                                    await asyncio.to_thread(_promote_track_sync, explore_candidate, dest_folder, dest_path, user_playlists_dir)
+                                    dest_path = await asyncio.to_thread(_promote_track_sync, explore_candidate, user_music_dir, artist, title, album, user_playlists_dir, config)
                                     logger.info(f"Promoted '{artist} - {title}' from explore to library for user {username}: {dest_path}")
                                     promoted = True
+                                    if nd_client:
+                                        await nd_client.trigger_rescan()
                                 except Exception as move_err:
                                     logger.error(f"Failed to promote '{artist} - {title}' from explore to library for user {username}: {move_err}")
                                 break

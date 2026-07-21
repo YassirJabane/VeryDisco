@@ -263,3 +263,23 @@ class NavidromeClient:
             logger.error(f"Failed to fetch top albums from Navidrome: {e}")
             return []
 
+    async def trigger_rescan(self) -> bool:
+        """Trigger an immediate library rescan on Navidrome via startScan.view Subsonic API."""
+        if not self.url or not self.username or (not self.password and not (self.token and self.salt)):
+            return False
+        params = self._generate_auth_params()
+        url = f"{self.url}/rest/startScan.view"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+                sub = data.get("subsonic-response", {})
+                if sub.get("status") == "ok":
+                    logger.info("Successfully triggered Navidrome library rescan (startScan.view).")
+                    return True
+                return False
+        except Exception as e:
+            logger.warning(f"Failed to trigger Navidrome library rescan: {e}")
+            return False
+

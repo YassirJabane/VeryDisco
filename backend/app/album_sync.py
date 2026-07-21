@@ -37,8 +37,14 @@ async def fetch_track_metadata_with_fallback(
         "title": title,
         "artist": artist,
         "album_artist": artist,
+        "album": album or title,
         "date": None,
         "track_num": None,
+        "track_total": None,
+        "disc_num": 1,
+        "disc_total": 1,
+        "mbid_album": None,
+        "mbid_recording": None,
         "cover_bytes": None,
         "source": "none",
     }
@@ -52,8 +58,14 @@ async def fetch_track_metadata_with_fallback(
                 "title": mb.get("title", title),
                 "artist": mb.get("artist", artist),
                 "album_artist": mb.get("album_artist", artist),
+                "album": mb.get("album") or result["album"],
                 "date": mb.get("date"),
                 "track_num": mb.get("track_num"),
+                "track_total": mb.get("track_total"),
+                "disc_num": mb.get("disc_num", 1),
+                "disc_total": mb.get("disc_total", 1),
+                "mbid_album": mb.get("release_mbid"),
+                "mbid_recording": mb.get("recording_id"),
                 "source": "musicbrainz",
             })
             # Try Cover Art Archive
@@ -81,11 +93,15 @@ async def fetch_track_metadata_with_fallback(
                 result["artist"] = dz_artist
                 result["album_artist"] = dz_album_artist
                 result["track_num"] = dz_meta.get("track_position")
-                album_id = dz_meta.get("album", {}).get("id")
+                album_obj = dz_meta.get("album", {})
+                if album_obj and album_obj.get("title"):
+                    result["album"] = album_obj.get("title")
+                album_id = album_obj.get("id")
                 if album_id:
                     album_meta = await deezer_client.get_album_metadata(album_id)
                     if album_meta:
                         result["date"] = album_meta.get("release_date")
+                        result["track_total"] = album_meta.get("nb_tracks")
                         _, result["album_artist"] = deezer_client.resolve_joint_artists(album_meta)
                 result["source"] = "deezer"
 

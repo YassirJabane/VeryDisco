@@ -337,9 +337,9 @@ def find_existing_album_folder(artist_dir: Path, target_album: str) -> Optional[
 
     return None
 
-def resolve_album_dir(music_dir: Union[str, Path], artist: str, album: str, album_artist: str = "") -> Tuple[Path, str, str]:
+def resolve_album_dir(music_dir: Union[str, Path], artist: str, album: str, album_artist: str = "", disc_num: int = 1, disc_total: int = 1) -> Tuple[Path, str, str]:
     """
-    Resolves the target album directory under music_dir/Artist/Album.
+    Resolves the target album directory under music_dir/Artist/Album (or music_dir/Artist/Album/Disc 0X if disc_total > 1).
     Reuses an existing album directory if a case-insensitive or normalized match exists.
     Returns (target_folder_path, safe_artist_name, safe_album_name).
     """
@@ -362,12 +362,18 @@ def resolve_album_dir(music_dir: Union[str, Path], artist: str, album: str, albu
         except Exception:
             pass
 
+    album_dir = artist_dir / safe_album
     if artist_dir.exists() and artist_dir.is_dir():
         existing_album_dir = find_existing_album_folder(artist_dir, clean_folder_album)
         if existing_album_dir:
-            return existing_album_dir, safe_artist, existing_album_dir.name
+            album_dir = existing_album_dir
+            safe_album = existing_album_dir.name
 
-    target = artist_dir / safe_album
+    if disc_total > 1 and disc_num > 0:
+        target = album_dir / f"Disc {disc_num:02d}"
+    else:
+        target = album_dir
+    
     target.mkdir(parents=True, exist_ok=True)
     return target, safe_artist, safe_album
 
@@ -380,7 +386,7 @@ def get_library_filename(artist: str, album: str, track_num: Optional[int], titl
     safe_album = sanitize_filename(album)
     safe_title = sanitize_filename(title)
     
-    if track_num is not None and track_num > 0:
+    if track_num and track_num > 0:
         track_str = f"{track_num:02d}"
         return f"{safe_artist}_{safe_album}_{track_str}_{safe_title}{ext}"
     else:
@@ -392,33 +398,32 @@ def embed_metadata(
     title: str,
     album: Optional[str] = None,
     track_num: Optional[int] = None,
+    track_total: Optional[int] = None,
     cover_bytes: Optional[bytes] = None,
     lyrics_text: Optional[str] = None,
     album_artist: Optional[str] = None,
     date: Optional[str] = None,
     disc_num: int = 1,
-    disc_total: int = 1
+    disc_total: int = 1,
+    is_explore: bool = False,
+    mbid_album: Optional[str] = None,
+    mbid_recording: Optional[str] = None
 ):
     """Embed metadata, cover art, and lyrics directly into the audio file metadata."""
     ext = os.path.splitext(file_path)[1].lower()
     
-    # Resolve album_artist if not explicitly provided
-    if not album_artist:
-        try:
-            grandparent = Path(file_path).parent.parent
-            if grandparent.name and grandparent.name.lower() not in ["music", "staging", "explore", "playlists"]:
-                album_artist = grandparent.name
-        except Exception:
-            pass
-    if not album_artist:
-        # Fall back to stripping featuring/collaborators from track artist to get a clean primary album artist
-        album_artist = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', artist, flags=re.IGNORECASE)[0].strip()
-    if not album_artist:
-        album_artist = artist
+    if is_explore:
+        final_album = "Explore Tracks"
+        final_album_artist = "Various Artists"
+        compilation_val = "1"
+    else:
+        final_album = album or f"{title} - Single"
+        final_album_artist = album_artist or artist
+        compilation_val = "0"
 
     try:
         if ext == ".mp3":
-            from mutagen.id3 import ID3, USLT, APIC, TALB, TRCK, TPE1, TPE2, TIT2, TDRC, TDOR, TYER, TPOS
+            from mutagen.id3 import ID3, USLT, APIC, TALB, TRCK, TPE1, TPE2, TIT2, TDRC, TDOR, TYER, TPOS, TCMP, TXXX, UFID
             try:
                 tags = ID3(file_path)
             except Exception:
@@ -430,18 +435,25 @@ def embed_metadata(
                     tags.delall(key)
             
             tags.setall("TPE1", [TPE1(encoding=3, text=artist)])
-            tags.setall("TPE2", [TPE2(encoding=3, text=album_artist)])
+            tags.setall("TPE2", [TPE2(encoding=3, text=final_album_artist)])
             tags.setall("TIT2", [TIT2(encoding=3, text=title)])
+            tags.setall("TALB", [TALB(encoding=3, text=final_album)])
+            tags.setall("TCMP", [TCMP(encoding=3, text=compilation_val)])
             tags.delall("COMM")
             
             # Write disc number
             disc_str = f"{disc_num}/{disc_total}" if disc_total else str(disc_num)
             tags.setall("TPOS", [TPOS(encoding=3, text=disc_str)])
             
-            if album:
-                tags.setall("TALB", [TALB(encoding=3, text=album)])
             if track_num:
-                tags.setall("TRCK", [TRCK(encoding=3, text=str(track_num))])
+                trck_str = f"{track_num}/{track_total}" if track_total else str(track_num)
+                tags.setall("TRCK", [TRCK(encoding=3, text=trck_str)])
+            if not is_explore:
+                if mbid_album:
+                    tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
+                if mbid_recording:
+                    tags.add(UFID(owner="http://musicbrainz.org", data=mbid_recording.encode('utf-8')))
+
             if lyrics_text:
                 tags.setall("USLT", [USLT(encoding=3, lang='eng', desc='Lyrics', text=lyrics_text)])
             if date:
@@ -464,17 +476,24 @@ def embed_metadata(
                     del audio[key]
             
             audio["artist"] = artist
-            audio["albumartist"] = album_artist
-            audio["album artist"] = album_artist
+            audio["albumartist"] = final_album_artist
+            audio["album artist"] = final_album_artist
+            audio["album"] = final_album
             audio["title"] = title
+            audio["compilation"] = compilation_val
             audio["discnumber"] = str(disc_num)
             audio["disctotal"] = str(disc_total)
             if "comment" in audio:
                 del audio["comment"]
-            if album:
-                audio["album"] = album
             if track_num:
                 audio["tracknumber"] = str(track_num)
+            if track_total:
+                audio["tracktotal"] = str(track_total)
+            if not is_explore:
+                if mbid_album:
+                    audio["musicbrainz_albumid"] = mbid_album
+                if mbid_recording:
+                    audio["musicbrainz_trackid"] = mbid_recording
             if date:
                 audio["date"] = date
                 if len(date) >= 4:
@@ -500,15 +519,20 @@ def embed_metadata(
                     del audio[key]
             
             audio["\xa9ART"] = artist
-            audio["aART"] = album_artist
+            audio["aART"] = final_album_artist
             audio["\xa9nam"] = title
+            audio["\xa9alb"] = final_album
+            audio["cpil"] = True if is_explore else False
             audio["disk"] = [(disc_num, disc_total)]
             if "\xa9cmt" in audio:
                 del audio["\xa9cmt"]
-            if album:
-                audio["\xa9alb"] = album
             if track_num:
-                audio["trkn"] = [(int(track_num), 0)]
+                audio["trkn"] = [(int(track_num), int(track_total or 0))]
+            if not is_explore:
+                if mbid_album:
+                    audio["----:com.apple.iTunes:MusicBrainz Album Id"] = mbid_album.encode('utf-8')
+                if mbid_recording:
+                    audio["----:com.apple.iTunes:MusicBrainz Track Id"] = mbid_recording.encode('utf-8')
             if date:
                 audio["\xa9day"] = date
             if lyrics_text:
@@ -712,9 +736,13 @@ async def relocate_and_tag_download(
     dz_title = meta_result.get("title") or title_clean
     dz_artist = meta_result.get("artist") or artist_clean
     dz_album_artist = meta_result.get("album_artist") or artist_clean
-    dz_album = meta_result.get("album") or album or "Singles"
+    dz_album = meta_result.get("album") or album or f"{title_clean} - Single"
     track_num = meta_result.get("track_num")
-    track_num_str = f"{track_num:02d} - " if track_num and track_num > 0 else ""
+    track_total = meta_result.get("track_total")
+    disc_num = meta_result.get("disc_num", 1)
+    disc_total = meta_result.get("disc_total", 1)
+    mbid_album = meta_result.get("mbid_album")
+    mbid_recording = meta_result.get("mbid_recording")
     cover_bytes = meta_result.get("cover_bytes")
     dz_date = meta_result.get("date")
 
@@ -737,21 +765,18 @@ async def relocate_and_tag_download(
                 # Retrieve official joint album artist (e.g. Drake & 21 Savage)
                 _, dz_album_artist = deezer_client.resolve_joint_artists(album_meta)
 
-    # Sanitize path segments
-    clean_folder_artist = get_folder_artist_name(dz_artist, dz_album_artist)
-    clean_folder_album = get_clean_album_folder(dz_album, clean_folder_artist)
-    safe_artist = sanitize_filename(clean_folder_artist)
-    safe_album = sanitize_filename(clean_folder_album)
+    is_explore = dest_dir is not None
 
     if dest_dir:
         # Explore-only: flat file in dest_dir as 'Artist - Title.ext'
-        # This makes cleanup_explore_master able to delete it when it falls off the playlist.
         target_folder = Path(dest_dir)
         target_folder.mkdir(parents=True, exist_ok=True)
         safe_audio_name = get_safe_filename(dz_artist, dz_title, ext)
     else:
-        # Library: resolve target directory under main music_dir
-        target_folder, safe_artist, safe_album = resolve_album_dir(music_dir, dz_artist, dz_album, dz_album_artist)
+        # Library: resolve target directory under main music_dir (handling multi-disc)
+        target_folder, safe_artist, safe_album = resolve_album_dir(
+            music_dir, dz_artist, dz_album, dz_album_artist, disc_num=disc_num, disc_total=disc_total
+        )
         safe_audio_name = get_library_filename(dz_artist, safe_album, track_num, dz_title, ext)
 
     dest_audio_path = target_folder / safe_audio_name
@@ -779,34 +804,38 @@ async def relocate_and_tag_download(
     
     def _read_staged_lyrics():
         if cache_file.exists():
-            import json
-            with open(cache_file, "r", encoding="utf-8") as f:
-                staged_data = json.load(f)
-            if staged_key in staged_data:
-                lyrics_c = staged_data[staged_key]
-                del staged_data[staged_key]
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    json.dump(staged_data, f, ensure_ascii=False, indent=2)
-                return lyrics_c
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    staged = json.load(f)
+                    return staged.get(staged_key)
+            except Exception:
+                pass
         return None
 
     try:
-        cached_lyrics = await asyncio.to_thread(_read_staged_lyrics)
-        if cached_lyrics:
-            lyrics_content = cached_lyrics
-            l_type = "synced" if "[" in lyrics_content and "]" in lyrics_content else "plain"
-            logger.info(f"Using staged lyrics from cache for '{artist_clean} - {title_clean}' ({l_type})")
-            lyrics_status = l_type
+        staged_entry = await asyncio.to_thread(_read_staged_lyrics)
+        if staged_entry and staged_entry.get("lyrics"):
+            lyrics_content = staged_entry["lyrics"]
+            lyrics_status = staged_entry.get("status", "synced")
+            logger.info(f"Using staged {lyrics_status} lyrics for '{artist_clean} - {title_clean}'")
     except Exception as e:
-        logger.warning(f"Failed to read/process staged lyrics cache: {e}")
+        logger.warning(f"Failed reading staged lyrics: {e}")
 
-    # 2. Fallback to LRCLIB if not staged
-    if not lyrics_content:
+    # 2. If no staged lyrics, fetch from LRCLIB
+    if not lyrics_content and lrclib_client:
+        logger.info(f"Searching lyrics for '{artist_clean} - {title_clean}' on LRCLIB...")
         try:
-            lyrics_content, l_type = await lrclib_client.get_lyrics(artist_clean, title_clean)
-            if lyrics_content:
-                lyrics_status = l_type
+            l_res = await lrclib_client.get_lyrics(artist_clean, title_clean, dz_album)
+            if l_res and (l_res.get("syncedLyrics") or l_res.get("plainLyrics")):
+                if l_res.get("syncedLyrics"):
+                    lyrics_content = l_res["syncedLyrics"]
+                    lyrics_status = "synced"
+                else:
+                    lyrics_content = l_res["plainLyrics"]
+                    lyrics_status = "plain"
+                logger.info(f"Found {lyrics_status} lyrics for '{artist_clean} - {title_clean}'")
             else:
+                logger.info(f"No lyrics found on LRCLIB for '{artist_clean} - {title_clean}'")
                 lyrics_status = "missing"
         except Exception as lyrics_err:
             logger.warning(f"Could not retrieve lyrics for '{artist_clean} - {title_clean}': {lyrics_err}")
@@ -831,10 +860,16 @@ async def relocate_and_tag_download(
         title=dz_title,
         album=dz_album,
         track_num=track_num,
+        track_total=track_total,
         cover_bytes=cover_bytes,
         lyrics_text=lyrics_content,
         album_artist=dz_album_artist,
-        date=dz_date
+        date=dz_date,
+        disc_num=disc_num,
+        disc_total=disc_total,
+        is_explore=is_explore,
+        mbid_album=mbid_album,
+        mbid_recording=mbid_recording
     )
 
     return "downloaded", str(dest_audio_path), lyrics_status

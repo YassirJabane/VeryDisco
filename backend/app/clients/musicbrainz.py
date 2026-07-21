@@ -275,16 +275,27 @@ class MusicBrainzClient:
         release_title = album or recording.get("title", title)
         release_date = ""
         track_num = None
+        track_total = None
+        disc_num = 1
+        disc_total = 1
 
         if best_release:
             release_mbid = best_release.get("id")
             release_title = best_release.get("title", release_title)
             release_date = best_release.get("date", "")
-            for m in best_release.get("media", []):
-                for t in m.get("track", []):
+            media_list = best_release.get("media", [])
+            disc_total = len(media_list) if media_list else 1
+            for m_idx, m in enumerate(media_list, start=1):
+                tracks = m.get("track", []) or m.get("tracks", [])
+                for t in tracks:
                     rec_id = (t.get("recording") or {}).get("id") or t.get("id")
                     if rec_id == recording.get("id"):
-                        track_num = t.get("position") or t.get("number")
+                        try:
+                            track_num = int(t.get("position") or t.get("number") or 1)
+                        except (ValueError, TypeError):
+                            track_num = 1
+                        track_total = len(tracks)
+                        disc_num = m.get("position") or m_idx
                         break
 
         return {
@@ -294,6 +305,9 @@ class MusicBrainzClient:
             "album": release_title,
             "date": release_date,
             "track_num": track_num,
+            "track_total": track_total,
+            "disc_num": disc_num,
+            "disc_total": disc_total,
             "release_mbid": release_mbid,
             "recording_id": recording.get("id"),
         }
