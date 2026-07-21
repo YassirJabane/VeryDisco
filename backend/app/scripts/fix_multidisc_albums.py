@@ -26,6 +26,22 @@ from typing import Optional, Dict, List, Any
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
 
+# ── Auto-drop root → uid/gid 1000 ────────────────────────────────────────────
+# The Docker container is configured with `user: 1000:1000`, but when you run
+#   `docker exec -it verydisco python3 ...`
+# Docker overrides to root.  Files written by Filebrowser/Navidrome are owned
+# by 1000, so root gets EPERM when trying to modify them.
+# We silently drop privileges to 1000:1000 so this script always has write
+# access regardless of how it was launched.
+if os.getuid() == 0:
+    try:
+        os.setgid(1000)
+        os.setuid(1000)
+        sys.stderr.write("[INFO] Dropped root → uid/gid 1000\n")
+    except Exception as _priv_err:
+        sys.stderr.write(f"[WARNING] Could not drop privileges: {_priv_err}\n")
+# ─────────────────────────────────────────────────────────────────────────────
+
 from backend.app.config import ConfigManager
 from backend.app.logger import setup_logging
 from backend.app.clients.deezer import DeezerClient
