@@ -398,12 +398,7 @@ async def fix_multidisc_library(music_dir: Path):
         canonical_album = album_name
         canonical_album_artist = album_artist
 
-        # 1. Try Cover Art Archive via MBID
-        if canonical_mbid_album:
-            from backend.app.clients.musicbrainz import musicbrainz_client
-            canonical_cover = await musicbrainz_client.get_cover_art(canonical_mbid_album)
-
-        # 2. Try Deezer fallback to get date and cover (if missing)
+        # 1. Try Deezer first for high-definition 1000x1000 cover art (cover_xl)
         try:
             first_track_title = next((t["title"] for t in tag_list if t["title"]), "Track 1")
             first_meta = await fetch_track_metadata_with_fallback(
@@ -412,10 +407,18 @@ async def fix_multidisc_library(music_dir: Path):
             canonical_album = first_meta.get("album") or canonical_album
             canonical_album_artist = first_meta.get("album_artist") or canonical_album_artist
             canonical_date = first_meta.get("date")
-            if not canonical_cover:
-                canonical_cover = first_meta.get("cover_bytes")
+            canonical_cover = first_meta.get("cover_bytes")
+            if canonical_cover:
+                logger.info(f"[COVER] Retrieved Deezer HD cover art ({len(canonical_cover)} bytes) for '{album_name}'")
         except Exception as e:
-            logger.debug(f"Failed to fetch canonical album metadata for '{album_name}': {e}")
+            logger.debug(f"Failed to fetch Deezer album metadata for '{album_name}': {e}")
+
+        # 2. Fallback to MusicBrainz Cover Art Archive if Deezer cover is unavailable
+        if not canonical_cover and canonical_mbid_album:
+            from backend.app.clients.musicbrainz import musicbrainz_client
+            canonical_cover = await musicbrainz_client.get_cover_art(canonical_mbid_album)
+            if canonical_cover:
+                logger.info(f"[COVER] Retrieved MusicBrainz Cover Art Archive cover ({len(canonical_cover)} bytes) for '{album_name}'")
 
         # Match each file to its correct disc/track via MusicBrainz title
         albums_fixed += 1
