@@ -1260,10 +1260,7 @@ async def download_single_track_task(artist: str, title: str, album: str, config
                 )
                 fetched_artist = meta_result["artist"]
                 title_tag = meta_result["title"] or title
-                if meta_result.get("album"):
-                    fetched_album = meta_result["album"]
-                elif not fetched_album:
-                    fetched_album = album
+                fetched_album = album if album else (meta_result.get("album") or title)
                 track_num = meta_result["track_num"]
                 cover_bytes = meta_result["cover_bytes"]
                 dz_album_artist = meta_result["album_artist"]
@@ -1448,39 +1445,25 @@ async def grab_single_track_task(
         dz_meta = None
         fetched_album = album
         fetched_artist = artist
+        fetched_album = album
         track_num = None
         title_tag = title
         cover_bytes = None
-        
         dz_date = None
         dz_album_artist = None
         try:
-            dz_meta = await deezer_client.get_track_metadata(artist, title)
-            if dz_meta:
-                fetched_artist = dz_meta.get("artist", {}).get("name", artist)
-                title_tag = dz_meta.get("title", title)
-                if not fetched_album:
-                    fetched_album = dz_meta.get("album", {}).get("title")
-                track_num = dz_meta.get("track_position")
-                cover_url = dz_meta.get("album", {}).get("cover_xl")
-                if cover_url:
-                    cover_bytes = await deezer_client.download_cover_art(cover_url)
-                
-                track_id = dz_meta.get("id")
-                track_details = await deezer_client.get_track_details(track_id) if track_id else None
-                if track_details:
-                    fetched_artist, dz_album_artist = deezer_client.resolve_joint_artists(track_details)
-                else:
-                    fetched_artist, dz_album_artist = deezer_client.resolve_joint_artists(dz_meta)
-                
-                album_id = dz_meta.get("album", {}).get("id")
-                if album_id:
-                    album_meta = await deezer_client.get_album_metadata(album_id)
-                    if album_meta:
-                        dz_date = album_meta.get("release_date")
-                        _, dz_album_artist = deezer_client.resolve_joint_artists(album_meta)
+            meta_result = await fetch_track_metadata_with_fallback(
+                deezer_client, artist, title, album
+            )
+            fetched_artist = meta_result["artist"]
+            title_tag = meta_result["title"] or title
+            fetched_album = album if album else (meta_result.get("album") or title)
+            track_num = meta_result["track_num"]
+            cover_bytes = meta_result["cover_bytes"]
+            dz_album_artist = meta_result["album_artist"]
+            dz_date = meta_result["date"]
         except Exception as meta_err:
-            logger.warning(f"Could not retrieve Deezer metadata: {meta_err}")
+            logger.warning(f"Could not retrieve metadata: {meta_err}")
 
         from backend.app.sync import resolve_album_dir, get_library_filename
         dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, fetched_artist, fetched_album, dz_album_artist)

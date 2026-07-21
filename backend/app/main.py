@@ -3281,39 +3281,35 @@ async def get_library_album_tracks(folder_path: str, request: Request):
     album_name = target.name
     artist_name = target.parent.name if target.parent != music_dir else ""
     
-    deezer_tracks = []
+    official_tracks = []
     try:
-        query = f"{artist_name} {album_name}".strip()
-        url = f"https://api.deezer.com/search/album?q={urllib.parse.quote(query)}&limit=3"
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url)
-            if resp.status_code == 200:
-                data = resp.json().get("data", [])
-                if data:
-                    album_id = data[0].get("id")
-                    tracks_url = f"https://api.deezer.com/album/{album_id}/tracks"
-                    resp_tracks = await client.get(tracks_url)
-                    if resp_tracks.status_code == 200:
-                        deezer_tracks = resp_tracks.json().get("data", [])
+        from backend.app.clients.musicbrainz import musicbrainz_client
+        mb_res = await musicbrainz_client.get_album_tracklist(artist_name, album_name)
+        if mb_res:
+            official_tracks = mb_res.get("tracks", [])
     except Exception as e:
-        logger.warning(f"Failed to fetch tracklist from Deezer: {e}")
+        logger.warning(f"Failed to fetch tracklist from MusicBrainz for {artist_name} - {album_name}: {e}")
 
     results = []
-    if deezer_tracks:
-        for t in deezer_tracks:
+    if official_tracks:
+        for t in official_tracks:
             d_title = t.get("title", "")
             d_num = t.get("track_position", 0)
+            disc_num = t.get("disk_number", 1)
             d_norm = re.sub(r'[^\w]', '', d_title).lower()
             
             match = None
             for lt in local_tracks:
-                if lt["track_num"] == d_num or lt["normalized_title"] == d_norm:
+                lt_disc = lt.get("disc_num", 1)
+                # Match by track number & disc or by normalized title
+                if (lt["track_num"] == d_num and (lt_disc == disc_num or len(local_tracks) <= 15)) or lt.get("normalized_title") == d_norm:
                     match = lt
                     break
                     
             results.append({
                 "title": d_title,
                 "track_num": d_num,
+                "disc_num": disc_num,
                 "exists": match is not None,
                 "filepath": match["filepath"] if match else None
             })
