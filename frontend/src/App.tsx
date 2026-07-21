@@ -29,7 +29,8 @@ import {
   PlayArrow as PlayIcon,
   Pause as PauseIcon,
   Close as CloseIcon,
-  Fingerprint as FingerprintIcon
+  Fingerprint as FingerprintIcon,
+  Album as AlbumIcon
 } from '@mui/icons-material';
 import getTheme from './theme';
 import Dashboard from './components/Dashboard';
