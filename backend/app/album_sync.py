@@ -88,6 +88,9 @@ async def fetch_track_metadata_with_fallback(
                 track_details = await deezer_client.get_track_details(track_id) if track_id else None
                 if track_details:
                     dz_artist, dz_album_artist = deezer_client.resolve_joint_artists(track_details)
+                    # Deezer provides disc_number in track details
+                    if track_details.get("disk_number"):
+                        result["disc_num"] = int(track_details["disk_number"])
                 else:
                     dz_artist, dz_album_artist = deezer_client.resolve_joint_artists(dz_meta)
                 result["artist"] = dz_artist
@@ -103,6 +106,9 @@ async def fetch_track_metadata_with_fallback(
                         result["date"] = album_meta.get("release_date")
                         result["track_total"] = album_meta.get("nb_tracks")
                         _, result["album_artist"] = deezer_client.resolve_joint_artists(album_meta)
+                        # Deezer album may expose nb_discs
+                        if album_meta.get("nb_discs") and int(album_meta["nb_discs"]) > 1:
+                            result["disc_total"] = int(album_meta["nb_discs"])
                 result["source"] = "deezer"
 
             # Always try to get cover from Deezer if MB cover was unavailable

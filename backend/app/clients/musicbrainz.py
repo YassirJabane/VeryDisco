@@ -52,6 +52,15 @@ async def _mb_get(path: str, params: dict = None, timeout: int = 15) -> Optional
         return None
 
 
+async def get_release_with_media(release_mbid: str) -> Optional[dict]:
+    """Fetch a release with full media+recordings so disc and track positions are accurate."""
+    return await _mb_get(f"/release/{release_mbid}", params={
+        "inc": "media+recordings",
+        "fmt": "json"
+    })
+
+
+
 def _normalize(s: str) -> str:
     return re.sub(r"[^\w]", "", s).lower()
 
@@ -167,7 +176,7 @@ class MusicBrainzClient:
     async def get_release_details(self, release_mbid: str) -> Optional[Dict[str, Any]]:
         """Fetch full release details including track list and artist credits."""
         return await _mb_get(f"/release/{release_mbid}", params={
-            "inc": "recordings+artists+artist-credits",
+            "inc": "recordings+artists+artist-credits+media",
             "fmt": "json"
         })
 
@@ -283,7 +292,15 @@ class MusicBrainzClient:
             release_mbid = best_release.get("id")
             release_title = best_release.get("title", release_title)
             release_date = best_release.get("date", "")
+
+            # The search_recording endpoint does not include media data.
+            # Fetch the full release with inc=media+recordings to get disc/track positions.
             media_list = best_release.get("media", [])
+            if not media_list and release_mbid:
+                full_release = await get_release_with_media(release_mbid)
+                if full_release:
+                    media_list = full_release.get("media", [])
+
             disc_total = len(media_list) if media_list else 1
             for m_idx, m in enumerate(media_list, start=1):
                 tracks = m.get("track", []) or m.get("tracks", [])
