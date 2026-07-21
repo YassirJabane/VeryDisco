@@ -669,30 +669,55 @@ async def _download_album_task_internal(
                         
                         # 1. Fetch metadata (MusicBrainz primary, Deezer fallback)
                         track_num = None
+                        disc_num = 1
+                        disc_total = 1
+                        mbid_album = None
+                        mbid_recording = None
                         cover_bytes = None
                         lyrics_text = None
                         title_tag = clean_title
                         dz_date = None
                         dz_album_artist = None
                         dz_artist = artist
+
+                        filename_part = os.path.basename(str(existing_path))
+                        matched = match_file_to_official_track(filename_part, official_album_tracks)
+                        if matched:
+                            disc_num = matched.get("disk_number") or matched.get("disc_num") or 1
+                            track_num = matched.get("track_position")
+
+                        if official_album_tracks:
+                            max_disc_in_official = max((t.get("disk_number") or t.get("disc_num") or 1 for t in official_album_tracks), default=1)
+                            if max_disc_in_official > disc_total:
+                                disc_total = max_disc_in_official
+
                         try:
                             meta_result = await fetch_track_metadata_with_fallback(
                                 deezer_client, artist, clean_title, album
                             )
                             title_tag = meta_result["title"]
-                            track_num = meta_result["track_num"]
+                            track_num = meta_result["track_num"] or track_num
+                            if meta_result.get("disc_num"):
+                                disc_num = meta_result["disc_num"]
+                            if meta_result.get("disc_total"):
+                                disc_total = max(disc_total, meta_result["disc_total"])
                             cover_bytes = meta_result["cover_bytes"]
                             dz_artist = meta_result["artist"]
                             dz_album_artist = meta_result["album_artist"]
                             dz_date = meta_result["date"]
+                            mbid_album = meta_result.get("mbid_album")
+                            mbid_recording = meta_result.get("mbid_recording")
                         except Exception as e:
                             logger.error(f"Metadata lookup failed for existing '{clean_title}': {e}")
 
-
                         ext_ext = existing_path.suffix
-                        from backend.app.sync import get_library_filename
-                        clean_filename = get_library_filename(artist, album, track_num, title_tag, ext_ext)
-                        dest_path = final_dir / clean_filename
+                        from backend.app.sync import get_library_filename, resolve_album_dir
+                        dest_dir, safe_artist, safe_album = resolve_album_dir(
+                            music_dir, dz_artist or artist, album, dz_album_artist or artist,
+                            disc_num=disc_num, disc_total=disc_total
+                        )
+                        clean_filename = get_library_filename(dz_artist or artist, safe_album, track_num, title_tag, ext_ext)
+                        dest_path = dest_dir / clean_filename
                         
                         try:
                             # Copy from explore/playlists dir to final library dir.
@@ -712,14 +737,18 @@ async def _download_album_task_internal(
                             
                             embed_metadata(
                                 file_path=str(dest_path),
-                                artist=dz_artist,
+                                artist=dz_artist or artist,
                                 title=title_tag,
                                 album=album,
                                 track_num=track_num,
                                 cover_bytes=official_album_cover_bytes or cover_bytes,
                                 lyrics_text=lyrics_text,
-                                album_artist=artist,
-                                date=official_album_date or dz_date
+                                album_artist=dz_album_artist or artist,
+                                date=official_album_date or dz_date,
+                                disc_num=disc_num,
+                                disc_total=disc_total,
+                                mbid_album=mbid_album,
+                                mbid_recording=mbid_recording
                             )
 
                             # Update M3U references and clean up the old file in explore/playlists
@@ -884,17 +913,27 @@ async def _download_album_task_internal(
             if attempt_downloaded_files:
                 for f, local_path in attempt_downloaded_files:
                     basename = local_path.stem
+                    disc_num = 1
+                    disc_total = 1
+                    mbid_album = None
+                    mbid_recording = None
                     
                     matched = match_file_to_official_track(local_path.name, official_album_tracks)
                     if matched:
                         clean_title = matched["title"]
                         track_num = matched.get("track_position")
+                        disc_num = matched.get("disk_number") or matched.get("disc_num") or 1
                         title_tag = matched["title"]
                     else:
                         clean_title = clean_track_title(basename, artist, album)
                         track_num = f.get("track_num")
                         title_tag = f.get("title_tag", clean_title)
-                                     
+
+                    if official_album_tracks:
+                        max_disc_in_official = max((t.get("disk_number") or t.get("disc_num") or 1 for t in official_album_tracks), default=1)
+                        if max_disc_in_official > disc_total:
+                            disc_total = max_disc_in_official
+
                     # 1. Fetch metadata (MusicBrainz primary, Deezer fallback)
                     cover_bytes = None
                     lyrics_text = None
@@ -907,20 +946,30 @@ async def _download_album_task_internal(
                         )
                         title_tag = meta_result["title"] or title_tag or clean_title
                         track_num = meta_result["track_num"] or track_num
+                        if meta_result.get("disc_num"):
+                            disc_num = meta_result["disc_num"]
+                        if meta_result.get("disc_total"):
+                            disc_total = max(disc_total, meta_result["disc_total"])
                         cover_bytes = meta_result["cover_bytes"]
                         dz_artist = meta_result["artist"]
                         dz_album_artist = meta_result["album_artist"]
                         dz_date = meta_result["date"]
+                        mbid_album = meta_result.get("mbid_album")
+                        mbid_recording = meta_result.get("mbid_recording")
                     except Exception as e:
                         logger.error(f"Metadata lookup failed for '{clean_title}': {e}")
 
                         
                     # 2. Determine clean destination filename using library convention
                     ext_ext = local_path.suffix
-                    from backend.app.sync import get_library_filename
-                    clean_filename = get_library_filename(artist, album, track_num, title_tag, ext_ext)
-                    dest_path = final_dir / clean_filename
-                                     # 3. Move the file
+                    from backend.app.sync import get_library_filename, resolve_album_dir
+                    dest_dir, safe_artist, safe_album = resolve_album_dir(
+                        music_dir, dz_artist or artist, album, dz_album_artist or artist,
+                        disc_num=disc_num, disc_total=disc_total
+                    )
+                    clean_filename = get_library_filename(dz_artist or artist, safe_album, track_num, title_tag, ext_ext)
+                    dest_path = dest_dir / clean_filename
+                    # 3. Move the file
                     try:
                         shutil.move(str(local_path), str(dest_path))
                     except Exception as e:
@@ -937,14 +986,18 @@ async def _download_album_task_internal(
                         
                         embed_metadata(
                             file_path=str(dest_path),
-                            artist=dz_artist if 'dz_artist' in locals() else artist,
+                            artist=dz_artist or artist,
                             title=title_tag,
                             album=album,
                             track_num=track_num,
                             cover_bytes=official_album_cover_bytes or cover_bytes,
                             lyrics_text=lyrics_text,
-                            album_artist=artist,
-                            date=official_album_date or dz_date
+                            album_artist=dz_album_artist or artist,
+                            date=official_album_date or dz_date,
+                            disc_num=disc_num,
+                            disc_total=disc_total,
+                            mbid_album=mbid_album,
+                            mbid_recording=mbid_recording
                         )
                     except Exception as e:
                         logger.error(f"Failed to embed metadata/lyrics for {dest_path}: {e}")
