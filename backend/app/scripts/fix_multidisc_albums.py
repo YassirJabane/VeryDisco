@@ -153,12 +153,19 @@ async def fix_multidisc_library(music_dir: Path):
                     has_duplicate_track_nums = True
                 track_nums_seen.add(key)
 
-        # Also check if duplicate track numbers exist ignoring disc_num (e.g. flat folder with two Track 1s)
-        flat_track_nums = [m["track_num"] for m in file_meta_list if m["track_num"] is not None]
-        if len(flat_track_nums) > len(set(flat_track_nums)):
-            has_duplicate_track_nums = True
+        # Track occurrence counter to accurately infer disc 1 vs disc 2 for duplicate track numbers
+        seen_track_counts = {}
+        for meta in file_meta_list:
+            t_num = meta.get("track_num")
+            if t_num is not None:
+                seen_track_counts[t_num] = seen_track_counts.get(t_num, 0) + 1
+                meta["inferred_disc_num"] = seen_track_counts[t_num]
+            else:
+                meta["inferred_disc_num"] = meta.get("disc_num", 1)
 
-        if not has_multi_disc_tags and not has_duplicate_track_nums:
+        max_inferred_discs = max(seen_track_counts.values()) if seen_track_counts else 1
+
+        if not has_multi_disc_tags and max_inferred_discs < 2 and not has_duplicate_track_nums:
             continue
 
         logger.info(f"Found Multi-Disc album in '{root_path}' ({len(audio_files)} tracks). Re-organizing into 'Disc 01/Disc 02'...")
@@ -179,17 +186,28 @@ async def fix_multidisc_library(music_dir: Path):
                 dz_album = meta_res.get("album") or album
                 track_num = meta_res.get("track_num") or meta.get("track_num")
                 track_total = meta_res.get("track_total")
-                disc_num = meta_res.get("disc_num") or meta.get("disc_num", 1)
-                disc_total = meta_res.get("disc_total") or meta.get("disc_total", 1)
+                
+                mb_disc_num = meta_res.get("disc_num")
+                mb_disc_total = meta_res.get("disc_total")
+
+                # If MB gave multi-disc info (> 1), use MB. Otherwise use tag / inferred disc number
+                if mb_disc_total and mb_disc_total > 1:
+                    disc_num = mb_disc_num or 1
+                    disc_total = mb_disc_total
+                elif meta.get("disc_num") and meta.get("disc_num") > 1:
+                    disc_num = meta["disc_num"]
+                    disc_total = max(2, meta.get("disc_total", 2))
+                elif max_inferred_discs > 1:
+                    disc_num = meta.get("inferred_disc_num", 1)
+                    disc_total = max_inferred_discs
+                else:
+                    disc_num = 1
+                    disc_total = 1
+
                 mbid_album = meta_res.get("mbid_album")
                 mbid_recording = meta_res.get("mbid_recording")
                 cover_bytes = meta_res.get("cover_bytes")
                 dz_date = meta_res.get("date")
-
-                if disc_total < 2 and has_duplicate_track_nums:
-                    # If musicbrainz didn't return disc_total > 1, infer disc_num from meta
-                    disc_num = meta.get("disc_num", 1)
-                    disc_total = max(2, meta.get("disc_total", 1))
 
                 # Resolve target album dir (will create Disc 01 / Disc 02 if disc_total > 1)
                 target_folder, safe_artist, safe_album = resolve_album_dir(
