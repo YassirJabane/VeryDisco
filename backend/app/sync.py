@@ -442,10 +442,17 @@ def embed_metadata(
             tags.delall("COMM")
             
             if is_explore:
-                # Omit release date and disc_total for explore tracks so Navidrome merges ALL explore tracks into 1 single album
-                tags.delall("TDRC")
-                tags.delall("TDOR")
-                tags.delall("TYER")
+                # Keep strictly essential frames for explore tracks. Purge all TXXX, COMM, TDRC, TDOR, TYER, UFID etc.
+                allowed = {"TPE1", "TPE2", "TIT2", "TALB", "TCMP", "TPOS", "TRCK", "APIC", "USLT"}
+                for key in list(tags.keys()):
+                    frame_id = key.split(":")[0]
+                    if frame_id not in allowed:
+                        tags.delall(key)
+                tags.setall("TPE1", [TPE1(encoding=3, text=artist)])
+                tags.setall("TPE2", [TPE2(encoding=3, text=final_album_artist)])
+                tags.setall("TIT2", [TIT2(encoding=3, text=title)])
+                tags.setall("TALB", [TALB(encoding=3, text=final_album)])
+                tags.setall("TCMP", [TCMP(encoding=3, text=compilation_val)])
                 tags.setall("TPOS", [TPOS(encoding=3, text="1/1")])
             else:
                 disc_str = f"{disc_num}/{disc_total}" if disc_total else str(disc_num)
@@ -475,27 +482,29 @@ def embed_metadata(
             from mutagen.flac import FLAC, Picture
             audio = FLAC(file_path)
             
-            # Remove all MusicBrainz tags
-            for key in list(audio.keys()):
-                if "musicbrainz" in key.lower():
-                    del audio[key]
-            
-            audio["artist"] = artist
-            audio["albumartist"] = final_album_artist
-            audio["album artist"] = final_album_artist
-            audio["album"] = final_album
-            audio["title"] = title
-            audio["compilation"] = compilation_val
-            if "comment" in audio:
-                del audio["comment"]
-
             if is_explore:
-                for k in ["date", "year", "musicbrainz_albumid", "musicbrainz_trackid", "musicbrainz_artistid"]:
-                    if k in audio:
-                        del audio[k]
+                allowed_flac = {"artist", "albumartist", "album artist", "album", "title", "compilation", "discnumber", "disctotal", "tracknumber", "lyrics"}
+                for key in list(audio.keys()):
+                    if key.lower() not in allowed_flac:
+                        del audio[key]
+                audio["artist"] = artist
+                audio["albumartist"] = final_album_artist
+                audio["album artist"] = final_album_artist
+                audio["album"] = final_album
+                audio["title"] = title
+                audio["compilation"] = compilation_val
                 audio["discnumber"] = "1"
                 audio["disctotal"] = "1"
             else:
+                for key in list(audio.keys()):
+                    if "musicbrainz" in key.lower():
+                        del audio[key]
+                audio["artist"] = artist
+                audio["albumartist"] = final_album_artist
+                audio["album artist"] = final_album_artist
+                audio["album"] = final_album
+                audio["title"] = title
+                audio["compilation"] = compilation_val
                 audio["discnumber"] = str(disc_num)
                 audio["disctotal"] = str(disc_total)
                 if date:
@@ -527,24 +536,26 @@ def embed_metadata(
             from mutagen.mp4 import MP4, MP4Cover
             audio = MP4(file_path)
             
-            # Remove all MusicBrainz tags
-            for key in list(audio.keys()):
-                if "musicbrainz" in key.lower():
-                    del audio[key]
-            
-            audio["\xa9ART"] = artist
-            audio["aART"] = final_album_artist
-            audio["\xa9nam"] = title
-            audio["\xa9alb"] = final_album
-            audio["cpil"] = True if is_explore else False
-            if "\xa9cmt" in audio:
-                del audio["\xa9cmt"]
-
             if is_explore:
-                if "\xa9day" in audio:
-                    del audio["\xa9day"]
+                allowed_m4a = {"\xa9ART", "aART", "\xa9nam", "\xa9alb", "cpil", "disk", "trkn", "\xa9lyr", "covr"}
+                for key in list(audio.keys()):
+                    if key not in allowed_m4a:
+                        del audio[key]
+                audio["\xa9ART"] = artist
+                audio["aART"] = final_album_artist
+                audio["\xa9nam"] = title
+                audio["\xa9alb"] = final_album
+                audio["cpil"] = True
                 audio["disk"] = [(1, 1)]
             else:
+                for key in list(audio.keys()):
+                    if "musicbrainz" in key.lower():
+                        del audio[key]
+                audio["\xa9ART"] = artist
+                audio["aART"] = final_album_artist
+                audio["\xa9nam"] = title
+                audio["\xa9alb"] = final_album
+                audio["cpil"] = False
                 audio["disk"] = [(disc_num, disc_total)]
                 if date:
                     audio["\xa9day"] = date
@@ -560,6 +571,16 @@ def embed_metadata(
             if cover_bytes:
                 audio["covr"] = [MP4Cover(cover_bytes, imageformat=MP4Cover.FORMAT_JPEG)]
             audio.save()
+
+        # Touch file modification time so Navidrome's file watcher immediately notices changes
+        try:
+            os.utime(file_path, None)
+        except Exception:
+            pass
+
+        logger.info(f"Embedded metadata and cover art into: {file_path}")
+    except Exception as e:
+        logger.error(f"Failed to embed metadata into {file_path}: {e}")
             
         logger.info(f"Embedded metadata and cover art into: {file_path}")
     except Exception as e:

@@ -86,9 +86,9 @@ async def process_music_directory(music_dir: Path):
             if not artist or not title:
                 continue
 
-            # Case A: Explore folder tracks
-            if is_explore_folder or (album and album.lower() == "singles" and is_explore_folder):
-                logger.info(f"[EXPLORE] Tagging explore track '{artist} - {title}' under 'Explore Tracks'...")
+            # Case A: Explore folder tracks or tracks tagged as Explore Tracks
+            if is_explore_folder or (album and album.lower() in ["explore tracks", "singles"] and "playlists" in [p.lower() for p in root_path.parts]):
+                logger.info(f"[EXPLORE] Cleaning explore track tags for '{artist} - {title}' under 'Explore Tracks'...")
                 try:
                     embed_metadata(
                         file_path=str(file_path),
