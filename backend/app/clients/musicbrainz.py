@@ -86,8 +86,15 @@ def score_release(r: dict, album: str) -> int:
         score += 20
     if "cd" in formats:
         score += 15
+        if len(media) == 1:
+            score += 10  # Bonus for standard 1-CD release
     elif "digital media" in formats and "cd" not in formats:
         score -= 5
+
+    # Penalize video/multimedia formats (DVD, Blu-ray, etc.) in special box sets
+    video_formats = {"dvd", "dvd-video", "blu-ray", "vhs", "dvd-audio", "data track"}
+    if any(fmt in video_formats for fmt in formats):
+        score -= 20
 
     if isinstance(country, str):
         if country.upper() == "XW":
@@ -103,6 +110,11 @@ def score_release(r: dict, album: str) -> int:
     if "explicit" in disambiguation:
         score += 5
     if "clean" in disambiguation or "instrumental" in disambiguation or "karaoke" in disambiguation:
+        score -= 15
+
+    # Penalize collector/deluxe/bonus/expanded/reissue editions unless requested
+    special_edition_terms = ("collector", "deluxe", "special edition", "anniversary", "bonus", "expanded", "limited", "box set", "book", "misprint", "promo")
+    if any(term in disambiguation for term in special_edition_terms):
         score -= 15
 
     for bad_type in ("live", "compilation", "remix", "dj-mix", "spokenword", "mixtape"):
