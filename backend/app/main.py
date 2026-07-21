@@ -3339,26 +3339,49 @@ async def get_library_album_tracks(folder_path: str, request: Request):
 
     results = []
     if official_tracks:
-        for t in official_tracks:
+        from backend.app.clients.musicbrainz import _normalize, _fuzzy_match
+        used_local_indices = set()
+        matches = [None] * len(official_tracks)
+
+        # Pass 1: Title matching (exact normalized, substring, or fuzzy)
+        for idx, t in enumerate(official_tracks):
+            d_title = t.get("title", "")
+            d_norm = _normalize(d_title)
+            for l_idx, lt in enumerate(local_tracks):
+                if l_idx in used_local_indices:
+                    continue
+                lt_norm = _normalize(lt.get("title", ""))
+                if d_norm and lt_norm and (d_norm == lt_norm or d_norm in lt_norm or lt_norm in d_norm or _fuzzy_match(d_title, lt.get("title", ""))):
+                    matches[idx] = lt
+                    used_local_indices.add(l_idx)
+                    break
+
+        # Pass 2: Track number + Disc number matching for remaining un-matched
+        for idx, t in enumerate(official_tracks):
+            if matches[idx] is not None:
+                continue
+            d_num = t.get("track_position", 0)
+            disc_num = t.get("disk_number", 1)
+            for l_idx, lt in enumerate(local_tracks):
+                if l_idx in used_local_indices:
+                    continue
+                lt_disc = lt.get("disc_num", 1)
+                if lt.get("track_num") == d_num and lt_disc == disc_num:
+                    matches[idx] = lt
+                    used_local_indices.add(l_idx)
+                    break
+
+        for idx, t in enumerate(official_tracks):
             d_title = t.get("title", "")
             d_num = t.get("track_position", 0)
             disc_num = t.get("disk_number", 1)
-            d_norm = re.sub(r'[^\w]', '', d_title).lower()
-            
-            match = None
-            for lt in local_tracks:
-                lt_disc = lt.get("disc_num", 1)
-                # Match by (track_num & disc_num) or by normalized title
-                if (lt["track_num"] == d_num and lt_disc == disc_num) or (d_norm and lt.get("normalized_title") == d_norm):
-                    match = lt
-                    break
-                    
+            matched_lt = matches[idx]
             results.append({
                 "title": d_title,
                 "track_num": d_num,
                 "disc_num": disc_num,
-                "exists": match is not None,
-                "filepath": match["filepath"] if match else None
+                "exists": matched_lt is not None,
+                "filepath": matched_lt["filepath"] if matched_lt else None
             })
     else:
         local_tracks.sort(key=lambda x: (x.get("disc_num", 1), x["track_num"]))
