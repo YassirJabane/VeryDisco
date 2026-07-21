@@ -403,6 +403,42 @@ async def _download_album_task_internal(
         )
         deezer_client = DeezerClient(timeout=config.timeouts.http_seconds)
 
+        # Pre-fetch official tracklist, release date (MusicBrainz), and cover art (Deezer cover_xl / MB CAA)
+        official_album_tracks = []
+        official_album_cover_bytes = None
+        official_album_date = None
+        official_mb_release_mbid = None
+
+        # 1. Fetch official album tracklist and release date from MusicBrainz
+        try:
+            from backend.app.clients.musicbrainz import musicbrainz_client
+            logger.info(f"Pre-fetching official tracklist for album '{artist} - {album}' from MusicBrainz...")
+            mb_album = await musicbrainz_client.get_album_tracklist(artist, album)
+            if mb_album:
+                official_album_tracks = mb_album.get("tracks", [])
+                official_album_date = mb_album.get("release_date")
+                official_mb_release_mbid = mb_album.get("release_mbid")
+                logger.info(f"Fetched {len(official_album_tracks)} official tracks from MusicBrainz for '{album}' (MBID: {official_mb_release_mbid}).")
+        except Exception as e:
+            logger.warning(f"Could not pre-fetch official album tracklist from MusicBrainz for '{artist} - {album}': {e}")
+
+        # 2. Fetch HD cover art from Deezer (cover_xl), falling back to MusicBrainz Cover Art Archive
+        try:
+            logger.info(f"Pre-fetching HD album cover art for '{artist} - {album}' from Deezer...")
+            official_album_cover_bytes = await deezer_client.get_album_cover(artist, album)
+            if official_album_cover_bytes:
+                logger.info(f"Retrieved 1000x1000 HD cover art from Deezer for '{album}'.")
+        except Exception as e:
+            logger.debug(f"Deezer cover art pre-fetch failed for '{artist} - {album}': {e}")
+
+        if not official_album_cover_bytes and official_mb_release_mbid:
+            try:
+                from backend.app.clients.musicbrainz import musicbrainz_client
+                logger.info(f"Pre-fetching cover art from MusicBrainz Cover Art Archive for '{album}'...")
+                official_album_cover_bytes = await musicbrainz_client.get_cover_art(official_mb_release_mbid)
+            except Exception as e:
+                logger.debug(f"MusicBrainz cover art pre-fetch failed for '{album}': {e}")
+
         if chosen_username and chosen_folder and chosen_files:
             logger.info(f"Using manually chosen candidate from peer '{chosen_username}' for folder '{chosen_folder}'")
             candidates = [((chosen_username, chosen_folder), chosen_files)]
@@ -517,9 +553,27 @@ async def _download_album_task_internal(
                 if not directories:
                     continue
 
+                def count_matching_official_tracks(dir_files):
+                    if not official_album_tracks:
+                        return len(dir_files)
+                    cnt = 0
+                    seen_pos = set()
+                    for f_item in dir_files:
+                        fn = os.path.basename(f_item["filename"].replace("\\", "/"))
+                        matched_tr = match_file_to_official_track(fn, official_album_tracks)
+                        if matched_tr and matched_tr.get("track_position") not in seen_pos:
+                            seen_pos.add(matched_tr["track_position"])
+                            cnt += 1
+                    return cnt
+
                 sorted_dirs = sorted(
                     directories.items(),
-                    key=lambda item: (len(item[1]), filename_cleanliness_score(item[1]), -item[1][0].get("priority", 999)),
+                    key=lambda item: (
+                        count_matching_official_tracks(item[1]),
+                        len(item[1]),
+                        filename_cleanliness_score(item[1]),
+                        -item[1][0].get("priority", 999)
+                    ),
                     reverse=True
                 )
                 candidates = sorted_dirs
@@ -529,42 +583,6 @@ async def _download_album_task_internal(
                 logger.warning(f"No valid album directory found for '{artist} - {album}' after all fallback searches.")
                 await db.update_album_download_status(download_id, "failed")
                 return
-
-        # Pre-fetch official tracklist, release date (MusicBrainz), and cover art (Deezer cover_xl / MB CAA)
-        official_album_tracks = []
-        official_album_cover_bytes = None
-        official_album_date = None
-        official_mb_release_mbid = None
-
-        # 1. Fetch official album tracklist and release date from MusicBrainz
-        try:
-            from backend.app.clients.musicbrainz import musicbrainz_client
-            logger.info(f"Pre-fetching official tracklist for album '{artist} - {album}' from MusicBrainz...")
-            mb_album = await musicbrainz_client.get_album_tracklist(artist, album)
-            if mb_album:
-                official_album_tracks = mb_album.get("tracks", [])
-                official_album_date = mb_album.get("release_date")
-                official_mb_release_mbid = mb_album.get("release_mbid")
-                logger.info(f"Fetched {len(official_album_tracks)} official tracks from MusicBrainz for '{album}' (MBID: {official_mb_release_mbid}).")
-        except Exception as e:
-            logger.warning(f"Could not pre-fetch official album tracklist from MusicBrainz for '{artist} - {album}': {e}")
-
-        # 2. Fetch HD cover art from Deezer (cover_xl), falling back to MusicBrainz Cover Art Archive
-        try:
-            logger.info(f"Pre-fetching HD album cover art for '{artist} - {album}' from Deezer...")
-            official_album_cover_bytes = await deezer_client.get_album_cover(artist, album)
-            if official_album_cover_bytes:
-                logger.info(f"Retrieved 1000x1000 HD cover art from Deezer for '{album}'.")
-        except Exception as e:
-            logger.debug(f"Deezer cover art pre-fetch failed for '{artist} - {album}': {e}")
-
-        if not official_album_cover_bytes and official_mb_release_mbid:
-            try:
-                from backend.app.clients.musicbrainz import musicbrainz_client
-                logger.info(f"Pre-fetching cover art from MusicBrainz Cover Art Archive for '{album}'...")
-                official_album_cover_bytes = await musicbrainz_client.get_cover_art(official_mb_release_mbid)
-            except Exception as e:
-                logger.debug(f"MusicBrainz cover art pre-fetch failed for '{album}': {e}")
 
         max_attempts = getattr(config.schedule, "max_candidate_attempts", 3) or 3
         overall_downloaded = []
@@ -1029,17 +1047,68 @@ async def _download_album_task_internal(
                         except Exception as e:
                             logger.warning(f"Failed to delete completed download from slskd: {e}")
 
-            succeeded_count = sum(1 for f in to_download if f.get("download_status") == "succeeded")
-            if succeeded_count == len(to_download):
+            downloaded_official_positions = set()
+            for f_item, dest_path in overall_downloaded + overall_copied:
+                m_tr = match_file_to_official_track(dest_path.name, official_album_tracks)
+                if m_tr and m_tr.get("track_position"):
+                    downloaded_official_positions.add(m_tr["track_position"])
+
+            target_total = len(official_album_tracks) if official_album_tracks else len(to_download)
+            if official_album_tracks and len(downloaded_official_positions) >= target_total:
+                logger.info(f"Album '{artist} - {album}' is fully complete ({len(downloaded_official_positions)}/{target_total} official tracks).")
+                album_complete = True
+                break
+            elif not official_album_tracks and sum(1 for f in to_download if f.get("download_status") == "succeeded") == len(to_download):
                 album_complete = True
                 break
             else:
-                logger.warning(f"Only downloaded {succeeded_count}/{len(to_download)} tracks from peer '{best_username}'. Falling back to the next peer candidate...")
+                logger.warning(f"Attempt {attempt + 1} finished with {len(downloaded_official_positions)}/{target_total} official tracks. Trying next candidate peer for remaining tracks...")
 
         if not overall_downloaded and not overall_copied:
             logger.error(f"Failed to download or copy any tracks for '{artist} - {album}' across all peer candidates.")
             await db.update_album_download_status(download_id, "failed")
             return
+
+        # Auto-fallback: if official album tracks are still missing after all candidate attempts, queue single-track downloads
+        if official_album_tracks:
+            downloaded_official_positions = set()
+            for f_item, dest_path in overall_downloaded + overall_copied:
+                m_tr = match_file_to_official_track(dest_path.name, official_album_tracks)
+                if m_tr and m_tr.get("track_position"):
+                    downloaded_official_positions.add(m_tr["track_position"])
+
+            missing_official = [t for t in official_album_tracks if t.get("track_position") not in downloaded_official_positions]
+            if missing_official:
+                logger.warning(f"Album download for '{artist} - {album}' is missing {len(missing_official)} track(s) after checking peer candidates. Spawning automatic single-track fallback downloads...")
+                from backend.app.main import _create_tracked_task
+                for missing_t in missing_official:
+                    t_title = missing_t["title"]
+                    logger.info(f"Queuing automatic single-track fallback for missing track #{missing_t.get('track_position')} ('{artist} - {t_title}')...")
+                    try:
+                        _create_tracked_task(
+                            download_single_track_task(
+                                artist=artist,
+                                title=t_title,
+                                album=album,
+                                config=config,
+                                db=db,
+                                force=True,
+                                user_id=user_id
+                            ),
+                            task_id=f"track:{artist}:{t_title}",
+                            task_type="track",
+                            metadata={"artist": artist, "title": t_title, "album": album}
+                        )
+                    except Exception:
+                        asyncio.create_task(download_single_track_task(
+                            artist=artist,
+                            title=t_title,
+                            album=album,
+                            config=config,
+                            db=db,
+                            force=True,
+                            user_id=user_id
+                        ))
 
         # Trigger Navidrome scan at the end of album download
         if config.navidrome.url and config.navidrome.username and config.navidrome.password:
