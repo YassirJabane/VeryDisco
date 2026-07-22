@@ -213,7 +213,7 @@ const UserSettings: React.FC = () => {
                 onChange={e => setMusicDir(e.target.value)}
                 fullWidth
                 size="medium"
-                helperText="Where your personal album downloads are saved (e.g. /music/Yassir)"
+                helperText="Where your personal album downloads are saved (e.g. /music)"
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
 
@@ -223,7 +223,7 @@ const UserSettings: React.FC = () => {
                 onChange={e => setPlaylistDir(e.target.value)}
                 fullWidth
                 size="medium"
-                helperText="Where your Navidrome playlist files are written (e.g. /music/Yassir/Playlists)"
+                helperText="Where your Navidrome playlist files are written (e.g. /music/Playlists)"
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
 

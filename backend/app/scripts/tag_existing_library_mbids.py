@@ -124,6 +124,37 @@ def embed_mbid_into_file(file_path: Path, mbid_track: str, mbid_album: Optional[
         return False
 
 
+def parse_filename_metadata(filename_stem: str, raw_artist: Optional[str] = None, raw_album: Optional[str] = None) -> Tuple[str, str, str]:
+    """Extracts clean (artist, title, album) from filename stem when tags are missing or contain folder paths."""
+    art = raw_artist or ""
+    alb = raw_album or ""
+    tit = filename_stem
+    
+    # Generic logic: if raw_artist is not set or matches file path components/common root names
+    if "_" in filename_stem:
+        parts = [p.strip() for p in filename_stem.split("_") if p.strip()]
+        if len(parts) >= 3:
+            art = parts[0]
+            alb = parts[1]
+            if parts[2].isdigit():
+                tit = " ".join(parts[3:]) if len(parts) >= 4 else parts[2]
+            else:
+                tit = " ".join(parts[2:])
+        elif len(parts) == 2:
+            art = parts[0]
+            tit = parts[1]
+    elif " - " in filename_stem:
+        parts = [p.strip() for p in filename_stem.split(" - ") if p.strip()]
+        if len(parts) >= 2:
+            art = parts[0]
+            tit = parts[-1]
+            if len(parts) >= 3:
+                alb = parts[1]
+                
+    tit = re.sub(r'^(?:\d+[-._\s]+|\d+\.\s*)', '', tit).strip()
+    return art, tit, alb
+
+
 async def process_library(music_dir: str, dry_run: bool = False):
     """Main scanning and MBID tagging loop."""
     logger.info("=" * 70)
@@ -153,26 +184,44 @@ async def process_library(music_dir: str, dry_run: bool = False):
 
     for idx, file_path in enumerate(audio_files, 1):
         rel_path = file_path.relative_to(music_path)
-        artist, title, album, existing_mbid = extract_audio_tags(file_path)
-
-        # Fallback to path info if tags missing
-        if not artist or not title:
-            parts = rel_path.parts
-            if len(parts) >= 2:
-                artist = artist or parts[0]
-            title = title or file_path.stem
+        raw_artist, raw_title, raw_album, existing_mbid = extract_audio_tags(file_path)
 
         if existing_mbid:
-            logger.info(f"[{idx}/{total_files}] [SKIP] MBID present ({existing_mbid[:8]}...): {artist} - {title}")
+            logger.info(f"[{idx}/{total_files}] [SKIP] MBID present ({existing_mbid[:8]}...): {raw_artist or rel_path.stem} - {raw_title or ''}")
             skipped_count += 1
             sys.stdout.flush()
             continue
 
-        logger.info(f"[{idx}/{total_files}] [LOOKUP] Fetching MBID for: '{artist}' - '{title}' (Album: {album or 'N/A'})...")
+        # Extract & parse clean artist, title, album
+        artist, clean_title, parsed_album = parse_filename_metadata(
+            file_path.stem if not raw_title or "_" in raw_title else raw_title,
+            raw_artist=raw_artist or (rel_path.parts[0] if len(rel_path.parts) >= 2 else ""),
+            raw_album=raw_album
+        )
+
+        from backend.app.sync import extract_main_artist
+        PLACEHOLDER_ALBUMS = {"explore tracks", "explore", "n/a", "na", "unknown album", "unknown", "current", "staging", "playlists", "navidrome_playlists"}
+        clean_alb = parsed_album.strip() if parsed_album and parsed_album.lower().strip() not in PLACEHOLDER_ALBUMS else ""
+
+        logger.info(f"[{idx}/{total_files}] [LOOKUP] Fetching MBID for: '{artist}' - '{clean_title}' (Album: {clean_alb or 'N/A'})...")
         sys.stdout.flush()
 
         try:
-            mb_rec = await musicbrainz_client.search_recording(artist=artist, title=title, album=album or "")
+            # Multi-tier MusicBrainz Lookup
+            # Tier 1: Artist + Title + Album
+            mb_rec = await musicbrainz_client.search_recording(artist=artist, title=clean_title, album=clean_alb)
+            
+            # Tier 2: Artist + Title (omit album)
+            if not mb_rec and clean_alb:
+                mb_rec = await musicbrainz_client.search_recording(artist=artist, title=clean_title, album="")
+                
+            # Tier 3: Main Artist + Title
+            main_art = extract_main_artist(artist)
+            if not mb_rec and main_art and main_art.lower() != artist.lower():
+                mb_rec = await musicbrainz_client.search_recording(artist=main_art, title=clean_title, album=clean_alb)
+                if not mb_rec and clean_alb:
+                    mb_rec = await musicbrainz_client.search_recording(artist=main_art, title=clean_title, album="")
+
             if mb_rec and mb_rec.get("id"):
                 track_mbid = mb_rec["id"]
                 album_mbid = mb_rec.get("release_mbid")
@@ -190,11 +239,11 @@ async def process_library(music_dir: str, dry_run: bool = False):
                     logger.info(f"[{idx}/{total_files}] [DRY-RUN] Would embed MBID: {track_mbid}")
                     tagged_count += 1
             else:
-                logger.warning(f"[{idx}/{total_files}] [NOT FOUND] No MusicBrainz match for: {artist} - {title}")
+                logger.warning(f"[{idx}/{total_files}] [NOT FOUND] No MusicBrainz match for: {artist} - {clean_title}")
                 failed_count += 1
 
         except Exception as e:
-            logger.error(f"[{idx}/{total_files}] [ERROR] Exception looking up '{artist} - {title}': {e}")
+            logger.error(f"[{idx}/{total_files}] [ERROR] Exception looking up '{artist} - {clean_title}': {e}")
             failed_count += 1
 
         sys.stdout.flush()

@@ -457,7 +457,7 @@ async def fix_multidisc_library(music_dir: Path):
             cover_bytes = canonical_cover
             mbid_album = canonical_mbid_album
 
-            # Reorganize locally inside the album_root to preserve user folder structure (e.g. /music/Yassir)
+            # Reorganize locally inside the album_root to preserve user folder structure (e.g. /music/Artist)
             if disc_total > 1:
                 target_folder = album_root / f"Disc {disc_num:02d}"
             else:
