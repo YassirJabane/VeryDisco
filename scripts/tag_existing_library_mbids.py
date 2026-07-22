@@ -223,6 +223,13 @@ async def process_library(music_dir: str, dry_run: bool = False):
                 if not mb_rec and clean_alb:
                     mb_rec = await musicbrainz_client.search_recording(artist=main_art, title=clean_title, album="")
 
+            # Tier 4: Strip parenthetical live/bonus/remaster specs from title (e.g., "Human Nature (live at Wembley...)")
+            clean_title_core = re.sub(r'(?i)\s*[\(\[](?:live|remastered|deluxe|bonus|version).*?[\)\]]', '', clean_title).strip()
+            if not mb_rec and clean_title_core and clean_title_core.lower() != clean_title.lower():
+                mb_rec = await musicbrainz_client.search_recording(artist=artist, title=clean_title_core, album="")
+                if not mb_rec and main_art and main_art.lower() != artist.lower():
+                    mb_rec = await musicbrainz_client.search_recording(artist=main_art, title=clean_title_core, album="")
+
             if mb_rec and mb_rec.get("id"):
                 track_mbid = mb_rec["id"]
                 album_mbid = mb_rec.get("release_mbid")
