@@ -12,6 +12,7 @@ Usage:
 
 import sys
 import os
+import re
 import argparse
 import asyncio
 import logging
