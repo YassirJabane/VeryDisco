@@ -186,7 +186,10 @@ def check_album_match(album_title: str, folder_path: str) -> bool:
     This prevents matching "Culture II" when the user requested "Culture".
     """
     folder_name = folder_path.replace("\\", "/").split("/")[-1].lower()
-    album_lower = album_title.lower()
+    
+    # Strip optional edition descriptors from album_title so "Bad (Remastered)" matches "Michael Jackson - Bad"
+    alb_clean = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version|edition|anniversary|special|expanded|bonus|reissue)\b', '', album_title)
+    album_lower = alb_clean.lower()
     
     # 1. Strip year tags or quality descriptors from folder name
     clean_folder = re.sub(r'\(?\b\d{4}\b\)?', '', folder_name)
@@ -199,15 +202,18 @@ def check_album_match(album_title: str, folder_path: str) -> bool:
     numeric_digits = ["2", "3", "4", "5", "6"]
     
     for roman in roman_numerals:
-        if re.search(r'\b' + roman + r'\b', clean_folder) and not re.search(r'\b' + roman + r'\b', album_lower):
+        if re.search(r'\b' + roman + r'\b', clean_folder) and not re.search(r'\b' + roman + r'\b', album_title.lower()):
             return False
             
     for num in numeric_digits:
-        if re.search(r'\b' + num + r'\b', clean_folder) and not re.search(r'\b' + num + r'\b', album_lower):
+        if re.search(r'\b' + num + r'\b', clean_folder) and not re.search(r'\b' + num + r'\b', album_title.lower()):
             return False
             
-    # Verify core words
+    # Verify core words (ignoring optional edition annotations)
     album_words = [w for w in re.findall(r'\w+', album_lower) if len(w) > 1]
+    if not album_words:
+        album_words = [w for w in re.findall(r'\w+', album_title.lower()) if len(w) > 1]
+
     if not album_words:
         return bool(re.search(r'\b' + re.escape(album_lower) + r'\b', clean_folder))
         
