@@ -73,13 +73,13 @@ class AcoustIDClient:
 
     async def lookup_mbids(self, fingerprint: str, duration: int) -> List[str]:
         """Looks up the fingerprint and returns a list of recording MBIDs."""
-        data = await self.lookup_fingerprint(fingerprint, duration, "recordingids")
+        data = await self.lookup_fingerprint(fingerprint, duration, "recordings artists releasegroups")
         if not data:
             return []
         
         mbids = set()
         for result in data.get("results", []):
-            if result.get("score", 0) > 0.4:
+            if result.get("score", 0) >= 0.15:
                 for recording in result.get("recordings", []):
                     if "id" in recording:
                         mbids.add(recording["id"])
@@ -148,7 +148,7 @@ class AcoustIDClient:
             return False, "Failed to generate audio fingerprint (check if fpcalc is installed)"
 
         # 3. Lookup with recordings metadata
-        data = await self.lookup_fingerprint(fp_data["fingerprint"], fp_data["duration"], "recordings+artists")
+        data = await self.lookup_fingerprint(fp_data["fingerprint"], fp_data["duration"], "recordings artists releasegroups")
         if not data or not data.get("results"):
             return False, "No match found in AcoustID database"
 
@@ -157,7 +157,7 @@ class AcoustIDClient:
         # Check if there is any actual non-empty metadata in the results to compare against
         has_any_valid_metadata = False
         for result in results:
-            if result.get("score", 0.0) >= 0.4:
+            if result.get("score", 0.0) >= 0.15:
                 for rec in result.get("recordings", []):
                     if rec.get("title") and rec.get("title").strip():
                         has_any_valid_metadata = True
@@ -171,31 +171,46 @@ class AcoustIDClient:
         # 4. If we have a tagged MBID, check if it matches AcoustID
         if tagged_mbid:
             for result in results:
-                if result.get("score", 0) > 0.4:
+                if result.get("score", 0.0) >= 0.15:
                     for rec in result.get("recordings", []):
                         if rec.get("id") == tagged_mbid:
                             return True, f"Verified by MusicBrainz Recording ID match ({tagged_mbid})"
 
         # 5. Fallback: string matching
         import re
+        from backend.app.sync import extract_main_artist, clean_search_title, get_artist_aliases
         def norm(s: str) -> str:
             return re.sub(r'[^\w]', '', s).lower()
 
+        clean_tagged_title = norm(clean_search_title(tagged_title))
         norm_tagged_title = norm(tagged_title)
-        norm_tagged_artist = norm(tagged_artist)
+        
+        main_art = extract_main_artist(tagged_artist)
+        artist_aliases = get_artist_aliases(tagged_artist) + get_artist_aliases(main_art)
+        norm_aliases = [norm(a) for a in artist_aliases if a]
 
         best_match_desc = ""
         highest_score = 0.0
 
         for result in results:
             score = result.get("score", 0.0)
-            if score < 0.4:
+            if score < 0.15:
                 continue
 
             for rec in result.get("recordings", []):
                 rec_title = norm(rec.get("title", ""))
-                # Title check: either tagged contains AcoustID or vice-versa
-                if norm_tagged_title in rec_title or rec_title in norm_tagged_title:
+                clean_rec_title = norm(clean_search_title(rec.get("title", "")))
+
+                title_match = (
+                    clean_tagged_title in rec_title or 
+                    rec_title in clean_tagged_title or
+                    norm_tagged_title in rec_title or
+                    rec_title in norm_tagged_title or
+                    (clean_rec_title and clean_rec_title in clean_tagged_title) or
+                    (clean_rec_title and clean_tagged_title in clean_rec_title)
+                )
+
+                if title_match:
                     rec_artists = rec.get("artists", [])
                     artist_match = False
                     if not rec_artists:
@@ -203,7 +218,7 @@ class AcoustIDClient:
                     else:
                         for art in rec_artists:
                             rec_art = norm(art.get("name", ""))
-                            if norm_tagged_artist in rec_art or rec_art in norm_tagged_artist:
+                            if any(alias in rec_art or rec_art in alias for alias in norm_aliases if alias):
                                 artist_match = True
                                 break
 
