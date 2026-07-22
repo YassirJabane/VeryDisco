@@ -242,26 +242,38 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
         
     filename_lower = filename.lower()
     
-    # 1. Match by exact title substring (ignoring non-alphanumeric chars)
-    # Sort by title length descending to match longer titles first
+    # 1. Match by track number if present at the start or delimited (e.g., "01. ...", "01 - ...", "01 ...")
+    m_num = re.search(r'^(?:[a-zA-Z0-9_-]+[-_])?\s*(\d{1,2})\s*[-_\.\s]', filename_lower)
+    if not m_num:
+        m_num = re.search(r'\b(\d{1,2})\b', filename_lower)
+    if m_num:
+        try:
+            track_num_val = int(m_num.group(1))
+            for track in official_tracks:
+                if track.get("track_position") == track_num_val:
+                    return track
+        except Exception:
+            pass
+
+    # 2. Match by normalized title (normalizing Roman numerals I-V / VI-IX to 1-5 / 6-9)
+    def _norm(t_str):
+        s = t_str.lower()
+        s = re.sub(r'\bparts?\s+i[-–—]v\b', 'parts 1 5', s)
+        s = re.sub(r'\bparts?\s+vi[-–—]ix\b', 'parts 6 9', s)
+        s = re.sub(r'\bparts?\s+1[-–—]5\b', 'parts 1 5', s)
+        s = re.sub(r'\bparts?\s+6[-–—]9\b', 'parts 6 9', s)
+        return re.sub(r'[^\w]', '', s)
+
+    clean_filename = _norm(filename_lower)
     sorted_official = sorted(official_tracks, key=lambda t: len(t.get("title", "")), reverse=True)
     for track in sorted_official:
         t_title = track.get("title", "")
         if not t_title:
             continue
-        clean_t_title = re.sub(r'[^\w]', '', t_title.lower())
-        clean_filename = re.sub(r'[^\w]', '', filename_lower)
-        if clean_t_title and clean_t_title in clean_filename:
+        clean_t_title = _norm(t_title)
+        if clean_t_title and (clean_t_title in clean_filename or clean_filename in clean_t_title):
             return track
             
-    # 2. Match by track number if present in filename
-    numbers = re.findall(r'\b\d+\b', filename)
-    if numbers:
-        track_num_val = int(numbers[0])
-        for track in official_tracks:
-            if track.get("track_position") == track_num_val:
-                return track
-                
     return None
 
 def get_quality_priority(filename: str, bitrate: int, bit_depth: int, sample_rate: int, config) -> int:
@@ -728,7 +740,7 @@ async def _download_album_task_internal(
                                 date=official_album_date or dz_date,
                                 disc_num=disc_num,
                                 disc_total=disc_total,
-                                mbid_album=mbid_album,
+                                mbid_album=official_mb_release_mbid or mbid_album,
                                 mbid_recording=mbid_recording
                             )
 
@@ -979,7 +991,7 @@ async def _download_album_task_internal(
                             date=official_album_date or dz_date,
                             disc_num=disc_num,
                             disc_total=disc_total,
-                            mbid_album=mbid_album,
+                            mbid_album=official_mb_release_mbid or mbid_album,
                             mbid_recording=mbid_recording
                         )
                     except Exception as e:
