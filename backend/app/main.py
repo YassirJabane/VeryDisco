@@ -1703,9 +1703,11 @@ async def search_track_candidates(artist: str, title: str, album: Optional[str] 
         timeout=cfg.timeouts.http_seconds
     )
     
-    clean_title = re.sub(r'[\(\[].*?[\)\]]', '', title)
-    clean_artist = re.sub(r'[\(\[].*?[\)\]]', '', artist)
-    query = f"{clean_title} - {clean_artist}"
+    from backend.app.sync import extract_main_artist
+    clean_title = re.sub(r'[\(\[].*?[\)\]]', '', title).strip()
+    main_artist = extract_main_artist(artist)
+    
+    query = f"{clean_title} - {main_artist}"
     query = re.sub(r'[^\w\s-]', ' ', query)
     query = re.sub(r'\s+', ' ', query).strip()
     
