@@ -17,7 +17,8 @@ import {
   MusicNote as MusicIcon,
   Favorite as FavoriteIcon,
   HeartBroken as HeartBrokenIcon,
-  DeleteForever as DangerousIcon
+  DeleteForever as DangerousIcon,
+  LibraryMusic as LibraryIcon
 } from '@mui/icons-material';
 import apiService from '../api';
 import { useNotification } from '../context/NotificationContext';
@@ -281,8 +282,9 @@ export const MyArtists: React.FC = () => {
     }
   };
 
-  const albums = releases.filter(r => r && (r.record_type === 'album' || !r.record_type));
+  const albums = releases.filter(r => r && r.record_type === 'album');
   const singlesAndEps = releases.filter(r => r && (r.record_type === 'single' || r.record_type === 'ep'));
+  const otherReleases = releases.filter(r => r && ['live', 'compilation', 'mixtape', 'remix', 'demo', 'other', 'interview', 'soundtrack', 'broadcast'].includes(r.record_type));
 
   const filteredArtists = artists.filter(a => 
     a.artist_name.toLowerCase().includes(filterText.toLowerCase())
@@ -946,6 +948,101 @@ export const MyArtists: React.FC = () => {
                                   </List>
                                 </Box>
                               )}
+                            </React.Fragment>
+                          );
+                        })}
+                      </List>
+                    </Box>
+                  )}
+
+                  {otherReleases.length > 0 && <Divider />}
+
+                  {/* Category: Compilations, Live, Mixtapes & Demos */}
+                  {otherReleases.length > 0 && (
+                    <Box display="flex" flexDirection="column" gap={1.5}>
+                      <Typography variant="h6" sx={{ fontWeight: 800, display: 'flex', alignItems: 'center', gap: 1 }}>
+                        <LibraryIcon color="primary" /> Other Releases ({otherReleases.length})
+                      </Typography>
+                      
+                      <List sx={{ bgcolor: 'action.hover', borderRadius: 3, overflow: 'hidden' }}>
+                        {otherReleases.map((release) => {
+                          const dlKey = `album-${detailArtist.artist_name}-${release.title}`;
+                          const isDl = downloadingKeys.has(dlKey);
+                          const isExpanded = expandedAlbumId === release.id;
+                          return (
+                            <React.Fragment key={release.id}>
+                              <ListItem divider sx={{ py: 1.5, px: 2, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
+                                <Box 
+                                  display="flex" 
+                                  alignItems="center" 
+                                  gap={2}
+                                  onClick={() => setExpandedAlbumId(isExpanded ? null : release.id)}
+                                  sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 }, flexGrow: 1 }}
+                                >
+                                  <Avatar src={release.cover_medium} variant="rounded" sx={{ width: 50, height: 50 }} />
+                                  <ListItemText 
+                                    primary={<Typography sx={{ fontWeight: 700 }}>{release.title}</Typography>}
+                                    secondary={`${(release.record_type || 'other').toUpperCase()} ${release.release_date ? `• ${new Date(release.release_date).getFullYear()}` : ''}`}
+                                  />
+                                </Box>
+                                <Box display="flex" alignItems="center" gap={1.5}>
+                                  {release.checking ? (
+                                    <CircularProgress size={16} />
+                                  ) : (
+                                    (() => {
+                                      const status = release.albumStatus || 'missing';
+                                      const upgrade = release.upgradeAvailable || false;
+                                      if (status === 'full') {
+                                        return (
+                                          <Chip 
+                                            label={upgrade ? "Fully in Library (Upgrade)" : "Fully in Library"} 
+                                            size="small"
+                                            sx={{ 
+                                              bgcolor: upgrade ? 'rgba(237, 108, 2, 0.1)' : 'rgba(46, 125, 50, 0.1)', 
+                                              color: upgrade ? '#ed6c02' : '#2e7d32', 
+                                              fontWeight: 700,
+                                              border: upgrade ? '1px solid rgba(237, 108, 2, 0.3)' : '1px solid rgba(46, 125, 50, 0.3)'
+                                            }}
+                                          />
+                                        );
+                                      } else if (status === 'partial') {
+                                        return (
+                                          <Chip 
+                                            label="Partially in Library" 
+                                            size="small"
+                                            sx={{ 
+                                              bgcolor: 'rgba(25, 118, 210, 0.1)', 
+                                              color: '#1976d2', 
+                                              fontWeight: 700,
+                                              border: '1px solid rgba(25, 118, 210, 0.3)'
+                                            }}
+                                          />
+                                        );
+                                      } else {
+                                        return (
+                                          <Chip 
+                                            label="Not in Library" 
+                                            size="small"
+                                            sx={{ 
+                                              bgcolor: 'rgba(211, 47, 47, 0.1)', 
+                                              color: '#d32f2f', 
+                                              fontWeight: 700,
+                                              border: '1px solid rgba(211, 47, 47, 0.3)'
+                                            }}
+                                          />
+                                        );
+                                      }
+                                    })()
+                                  )}
+                                  <IconButton 
+                                    color="primary" 
+                                    disabled={isDl || release.checking} 
+                                    onClick={() => handleDownloadRelease(release)}
+                                  >
+                                    {isDl ? <CircularProgress size={20} color="inherit" /> : <DownloadIcon />}
+                                  </IconButton>
+                                </Box>
+                              </ListItem>
                             </React.Fragment>
                           );
                         })}

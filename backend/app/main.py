@@ -1867,6 +1867,20 @@ class PinArtistRequest(BaseModel):
     deezer_id: Optional[int] = None
     picture_url: Optional[str] = None
 
+async def fetch_deezer_artist_picture(artist_name: str) -> str:
+    """Fetch high-resolution artist portrait from Deezer."""
+    try:
+        url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
+        client = get_http_client()
+        resp = await client.get(url)
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            if data:
+                return data[0].get("picture_big") or data[0].get("picture_medium") or ""
+    except Exception as e:
+        logger.debug(f"Failed to fetch artist picture from Deezer for {artist_name}: {e}")
+    return ""
+
 @app.get("/api/pinned_artists")
 async def get_pinned_artists(request: Request):
     """Fetch all pinned/saved artists, automatically importing new ones from Navidrome or on-disk using MusicBrainz."""
@@ -1933,9 +1947,7 @@ async def get_pinned_artists(request: Request):
                         if mb_art:
                             mbid = mb_art.get("id")
                             art_name = mb_art.get("name", art_name)
-                            rgroups = await musicbrainz_client.get_artist_release_groups(mbid)
-                            if rgroups:
-                                pic_url = rgroups[0].get("cover_medium", "")
+                        pic_url = await fetch_deezer_artist_picture(art_name)
                     except Exception as mbe:
                         logger.warning(f"Failed to query MusicBrainz metadata for artist {art_name}: {mbe}")
                     await db.add_pinned_artist(art_name, mbid=mbid, picture_url=pic_url, user_id=user_id)
@@ -1971,9 +1983,7 @@ async def get_pinned_artists(request: Request):
                             if mb_art:
                                 mbid = mb_art.get("id")
                                 art_name = mb_art.get("name", art_name)
-                                rgroups = await musicbrainz_client.get_artist_release_groups(mbid)
-                                if rgroups:
-                                    pic_url = rgroups[0].get("cover_medium", "")
+                            pic_url = await fetch_deezer_artist_picture(art_name)
                         except Exception as mbe:
                             logger.warning(f"Failed to query MusicBrainz metadata for artist {art_name}: {mbe}")
                         await db.add_pinned_artist(art_name, mbid=mbid, picture_url=pic_url, user_id=user_id)
@@ -1988,7 +1998,7 @@ async def get_pinned_artists(request: Request):
 
 @app.post("/api/pinned_artists")
 async def pin_artist(req: PinArtistRequest, request: Request):
-    """Pin a new artist, searching MusicBrainz for canonical metadata."""
+    """Pin a new artist, searching MusicBrainz for canonical metadata and Deezer for high-res pictures."""
     from backend.app.auth import get_current_user
     from backend.app.clients.musicbrainz import musicbrainz_client
     user = await get_current_user(request)
@@ -2009,13 +2019,12 @@ async def pin_artist(req: PinArtistRequest, request: Request):
                 raise HTTPException(status_code=404, detail=f"Artist '{artist_name}' not found on MusicBrainz.")
             artist_name = mb_art.get("name", artist_name)
             mbid = mb_art.get("id")
-            if not picture_url:
-                rgroups = await musicbrainz_client.get_artist_release_groups(mbid)
-                if rgroups:
-                    picture_url = rgroups[0].get("cover_medium", "")
         except Exception as e:
             logger.error(f"MusicBrainz search for artist '{artist_name}' failed: {e}")
             raise HTTPException(status_code=502, detail=f"Failed to verify artist on MusicBrainz: {e}")
+
+    if not picture_url:
+        picture_url = await fetch_deezer_artist_picture(artist_name)
             
     try:
         artist_id = await db.add_pinned_artist(artist_name, deezer_id=req.deezer_id, picture_url=picture_url, user_id=user_id, mbid=mbid)

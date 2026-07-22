@@ -262,8 +262,8 @@ class MusicBrainzClient:
             names.add(sort_name)
     async def get_artist_release_groups(self, artist_mbid: str) -> List[Dict[str, Any]]:
         """
-        Fetch all release groups (albums, EPs, singles) for a MusicBrainz artist.
-        Returns a list of dictionaries with id, title, record_type, release_date, cover_medium.
+        Fetch all release groups for a MusicBrainz artist and strictly categorize
+        official studio albums vs compilations, live albums, mixtapes, EPs, and singles.
         """
         data = await _mb_get("/release-group", params={
             "artist": artist_mbid,
@@ -277,9 +277,32 @@ class MusicBrainzClient:
         result = []
         for rg in rgroups:
             rg_id = rg.get("id")
-            primary_type = (rg.get("primary-type") or "Album").lower()
-            if primary_type not in ["album", "single", "ep"]:
-                primary_type = "album"
+            primary_type = (rg.get("primary-type") or "").lower()
+            secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
+            
+            # Precise categorization using MusicBrainz primary and secondary types
+            if "live" in secondary_types:
+                record_type = "live"
+            elif "compilation" in secondary_types:
+                record_type = "compilation"
+            elif "remix" in secondary_types:
+                record_type = "remix"
+            elif "mixtape/streetwood" in secondary_types or "mixtape" in secondary_types:
+                record_type = "mixtape"
+            elif "demo" in secondary_types:
+                record_type = "demo"
+            elif "interview" in secondary_types:
+                record_type = "interview"
+            elif "soundtrack" in secondary_types:
+                record_type = "soundtrack"
+            elif primary_type == "album":
+                record_type = "album"
+            elif primary_type == "ep":
+                record_type = "ep"
+            elif primary_type == "single":
+                record_type = "single"
+            else:
+                record_type = "other"
             
             first_release_date = rg.get("first-release-date") or ""
             
@@ -287,7 +310,9 @@ class MusicBrainzClient:
                 "id": rg_id,
                 "mbid": rg_id,
                 "title": rg.get("title", ""),
-                "record_type": primary_type,
+                "record_type": record_type,
+                "primary_type": primary_type,
+                "secondary_types": secondary_types,
                 "release_date": first_release_date,
                 "cover_medium": f"https://coverartarchive.org/release-group/{rg_id}/front-250",
             })
