@@ -137,15 +137,15 @@ def clean_album_name(album: str) -> str:
     return s
 
 def clean_artist_name(artist: str) -> str:
-    s = re.sub(r'[\(\[].*?[\)\]]', '', artist)
+    s = re.sub(r'\$', 'S', artist)
+    s = re.sub(r'[\(\[].*?[\)\]]', '', s)
     s = re.sub(r'[^\w\s-]', ' ', s)
     s = re.sub(r'\s+', ' ', s).strip()
     return s
 
 def check_artist_match(artist: str, parent_dir: str, filename: str) -> bool:
-    main_artist = re.split(r'(?i)\b(?:feat\.?|ft\.?|and|&|with)\b', artist)[0].strip()
-    from backend.app.sync import get_artist_aliases
-    norm_aliases = get_artist_aliases(main_artist)
+    from backend.app.sync import extract_main_artist, get_artist_aliases
+    norm_aliases = get_artist_aliases(artist)
     norm_parent = re.sub(r'[^\w]', '', parent_dir).lower()
     norm_filename = re.sub(r'[^\w]', '', filename).lower()
     return any(alias in norm_parent or alias in norm_filename for alias in norm_aliases)
@@ -491,9 +491,10 @@ async def _download_album_task_internal(
             candidates = [((chosen_username, chosen_folder), chosen_files)]
         else:
             # Build album search strategies
+            from backend.app.sync import extract_main_artist
             clean_art = clean_artist_name(artist)
             clean_alb = clean_album_name(album)
-            main_art = re.split(r'(?i)\b(?:feat\.?|ft\.?|and|&|with)\b', clean_art)[0].strip()
+            main_art = extract_main_artist(artist)
             stripped_alb = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version)\b', '', album)
             stripped_alb = re.sub(r'\s+-\s+', ' ', stripped_alb)
             stripped_alb = re.sub(r'[^\w\s-]', ' ', stripped_alb)
@@ -509,13 +510,13 @@ async def _download_album_task_internal(
             elif alb_lower in art_lower:
                 queries.append((clean_art, False))
             else:
-                queries.append((f"{clean_art} {clean_alb}", False))
+                queries.append((f"{main_art} {clean_alb}", False))
                 if main_art != clean_art:
-                    queries.append((f"{main_art} {clean_alb}", False))
+                    queries.append((f"{clean_art} {clean_alb}", False))
                 if stripped_alb and stripped_alb != clean_alb:
-                    queries.append((f"{clean_art} {stripped_alb}", False))
-                if stripped_alb and stripped_alb != clean_alb and main_art != clean_art:
                     queries.append((f"{main_art} {stripped_alb}", False))
+                if stripped_alb and stripped_alb != clean_alb and main_art != clean_art:
+                    queries.append((f"{clean_art} {stripped_alb}", False))
                 queries.append((clean_alb, True))  # Broad query requires verifying the artist
 
             best_dir_key = None
@@ -1253,26 +1254,22 @@ async def download_single_track_task(artist: str, title: str, album: str, config
         deezer_client = DeezerClient(timeout=config.timeouts.http_seconds)
         
         # Clean artist and title
-        clean_title = re.sub(r'[\(\[].*?[\)\]]', '', title)
-        clean_artist = re.sub(r'[\(\[].*?[\)\]]', '', artist)
+        from backend.app.sync import extract_main_artist, wildcard_artist
+        clean_title = re.sub(r'[\(\[].*?[\)\]]', '', title).strip()
+        main_artist = extract_main_artist(artist)
+        clean_artist = re.sub(r'[\(\[].*?[\)\]]', '', artist).strip()
+        clean_artist = re.sub(r'\$', 'S', clean_artist)
         
-        # Query strategies
-        query_primary = f"{clean_title} - {clean_artist}"
-        query_primary = re.sub(r'[^\w\s-]', ' ', query_primary)
-        query_primary = re.sub(r'\s+', ' ', query_primary).strip()
-        
-        from backend.app.sync import wildcard_artist
-        w_artist = wildcard_artist(clean_artist)
-        query_fallback_1 = f"{clean_title} - {w_artist}"
-        query_fallback_1 = re.sub(r'[^\w\s\*-]', ' ', query_fallback_1)
-        query_fallback_1 = re.sub(r'\s+', ' ', query_fallback_1).strip()
-        
-        main_artist = re.split(r'(?i)\b(?:feat\.?|ft\.?)\b', clean_artist)[0].strip()
-        query_fallback_2 = f"{clean_title} - {main_artist}"
-        query_fallback_2 = re.sub(r'[^\w\s-]', ' ', query_fallback_2)
-        query_fallback_2 = re.sub(r'\s+', ' ', query_fallback_2).strip()
+        # Query strategies (prioritize main artist search query)
+        query_main = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {main_artist}")).strip()
+        query_full = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {clean_artist}")).strip()
+        w_artist = wildcard_artist(main_artist)
+        query_wildcard = re.sub(r'\s+', ' ', re.sub(r'[^\w\s\*-]', ' ', f"{clean_title} - {w_artist}")).strip()
 
-        search_queries = [query_primary, query_fallback_1, query_fallback_2]
+        search_queries = []
+        for q in [query_main, query_full, query_wildcard]:
+            if q and q not in search_queries:
+                search_queries.append(q)
         
         candidates = []
         for i, query in enumerate(search_queries):

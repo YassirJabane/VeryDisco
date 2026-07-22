@@ -621,21 +621,55 @@ def embed_metadata(
     except Exception as e:
         logger.error(f"Failed to embed metadata into {file_path}: {e}")
 
+def extract_main_artist(artist_name: str) -> str:
+    """
+    Extracts the primary main artist from a joint or featured artist string.
+    Handles 'ASAP Rocky and Tim Burton', 'A$AP Rocky x Tim Burton', 'A$AP Rocky & Tim Burton',
+    'A$AP Rocky feat. Tim Burton', etc.
+    """
+    if not artist_name:
+        return ""
+    # Normalize $ -> S (e.g. A$AP -> ASAP, Ke$ha -> Kesha)
+    art = re.sub(r'\$', 'S', artist_name)
+    # Remove parenthetical extras
+    art = re.sub(r'[\(\[].*?[\)\]]', '', art).strip()
+    # Split on feature/joint separators
+    parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring|and|with)\b|\s+&\s+|\s+[xX]\s+|,|/', art)
+    main = parts[0].strip() if parts else art
+    return main or art
+
 def get_artist_aliases(artist_name: str) -> list[str]:
     """Get list of normalized aliases and individual artist segments to handle joint/featured artists."""
-    # Split by joint separators
-    parts = re.split(r'&|feat\.?|ft\.?|and|,|/', artist_name, flags=re.IGNORECASE)
-    aliases = []
+    if not artist_name:
+        return []
+
+    aliases = set()
+
+    # 1. Convert $ to s / S so A$AP becomes ASAP
+    normalized_art = re.sub(r'\$', 's', artist_name, flags=re.IGNORECASE)
+    parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring|and|with)\b|\s+&\s+|\s+[xX]\s+|,|/', normalized_art)
     for p in parts:
         clean_p = re.sub(r'[^\w]', '', p).lower().strip()
         if clean_p:
-            aliases.append(clean_p)
-            
-    # Add standard Kanye West aliases
-    if "kanyewest" in aliases or "ye" in aliases or "kanye" in aliases:
-        aliases.extend(["kanyewest", "ye", "kanye"])
-        
-    return list(set(aliases))
+            aliases.add(clean_p)
+            words = [w for w in re.findall(r'\w+', p.lower()) if len(w) > 2]
+            for w in words:
+                aliases.add(w)
+
+    # 2. Also keep raw parts without $ conversion (e.g. A$AP -> aap)
+    raw_parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring|and|with)\b|\s+&\s+|\s+[xX]\s+|,|/', artist_name)
+    for rp in raw_parts:
+        clean_rp = re.sub(r'[^\w]', '', rp).lower().strip()
+        if clean_rp:
+            aliases.add(clean_rp)
+
+    # Special artist aliases
+    if any(k in aliases for k in ["kanyewest", "ye", "kanye"]):
+        aliases.update(["kanyewest", "ye", "kanye"])
+    if any(a in aliases for a in ["asaprocky", "aaprocky", "asap"]):
+        aliases.update(["asaprocky", "aaprocky", "asap", "rocky"])
+
+    return list(aliases)
 
 def find_existing_track_file(music_dir: str, playlist_dir: str, staging_dir: str, artist: str, title: str, library_index: Optional[Dict[str, Path]] = None) -> Tuple[Optional[Path], Optional[Path]]:
     """Check if track audio and lyrics already exist in staging, playlist dir, or broader music library."""
@@ -1359,17 +1393,18 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
 
               # C. Build search queries (de-duplicated)
               clean_title = clean_search_title(title)
-              clean_artist = clean_search_title(artist)
+              main_artist = extract_main_artist(artist)
+              clean_artist = re.sub(r'[\(\[].*?[\)\]]', '', artist).strip()
+              clean_artist = re.sub(r'\$', 'S', clean_artist)
 
-              query_primary = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {clean_artist}")).strip()
-              w_artist = wildcard_artist(clean_artist)
-              query_fallback_1 = re.sub(r'\s+', ' ', re.sub(r'[^\w\s\*-]', ' ', f"{clean_title} - {w_artist}")).strip()
-              main_artist = re.split(r'(?i)\b(?:feat\.?|ft\.?)\b', clean_artist)[0].strip()
-              query_fallback_2 = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {main_artist}")).strip()
+              query_main = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {main_artist}")).strip()
+              query_full = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {clean_artist}")).strip()
+              w_artist = wildcard_artist(main_artist)
+              query_wildcard = re.sub(r'\s+', ' ', re.sub(r'[^\w\s\*-]', ' ', f"{clean_title} - {w_artist}")).strip()
 
               search_queries = []
-              for q in [query_primary, query_fallback_1, query_fallback_2]:
-                  if q not in search_queries:
+              for q in [query_main, query_full, query_wildcard]:
+                  if q and q not in search_queries:
                       search_queries.append(q)
 
               # D. Search: only try next query if previous returned ZERO matching candidates
