@@ -618,17 +618,26 @@ async def _download_album_task_internal(
                 elapsed = 0
                 poll_interval = 3
                 search_completed = False
+                min_wait_seconds = 8
                 
                 while elapsed < config.timeouts.search_seconds:
-                    status = await slskd_client.get_search_status(search_id)
-                    if status and status[0]:
-                        search_completed = True
-                        break
                     await asyncio.sleep(poll_interval)
                     elapsed += poll_interval
 
+                    try:
+                        status = await slskd_client.get_search_status(search_id)
+                        if status:
+                            is_complete, file_count, _ = status
+                            # Only accept completion if responses arrived (file_count > 0) or minimum wait time elapsed
+                            if is_complete and (file_count > 0 or elapsed >= min_wait_seconds):
+                                search_completed = True
+                                logger.info(f"Search for '{query}' completed in {elapsed}s with {file_count} files found.")
+                                break
+                    except Exception as status_err:
+                        logger.debug(f"Error checking search status for '{query}': {status_err}")
+
                 if not search_completed:
-                    logger.warning(f"Search for '{query}' timed out. Continuing with available results.")
+                    logger.warning(f"Search for '{query}' timed out after {elapsed}s. Continuing with available results.")
 
                 results = await slskd_client.get_search_responses(search_id)
                 await slskd_client.delete_search(search_id)

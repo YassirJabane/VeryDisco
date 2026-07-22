@@ -1546,7 +1546,11 @@ async def search_album_candidates(artist: str, album: str, request: Request):
             all_complete = True
             for search_id, _ in active_searches:
                 status = await slskd_client.get_search_status(search_id)
-                if not status or not status[0]:
+                if not status:
+                    all_complete = False
+                    break
+                is_comp, f_count, _ = status
+                if not is_comp or (f_count == 0 and elapsed < 6):
                     all_complete = False
                     break
             if all_complete:
