@@ -1867,18 +1867,29 @@ class PinArtistRequest(BaseModel):
     deezer_id: Optional[int] = None
     picture_url: Optional[str] = None
 
+_artist_pic_semaphore = asyncio.Semaphore(2)
+
 async def fetch_deezer_artist_picture(artist_name: str) -> str:
-    """Fetch high-resolution artist portrait from Deezer."""
-    try:
-        url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
-        client = get_http_client()
-        resp = await client.get(url)
-        if resp.status_code == 200:
-            data = resp.json().get("data", [])
-            if data:
-                return data[0].get("picture_big") or data[0].get("picture_medium") or ""
-    except Exception as e:
-        logger.debug(f"Failed to fetch artist picture from Deezer for {artist_name}: {e}")
+    """Fetch high-resolution artist portrait from Deezer with rate limiting and retries."""
+    clean_name = artist_name.split('feat')[0].split('ft.')[0].strip()
+    url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(clean_name)}&limit=1"
+    async with _artist_pic_semaphore:
+        for attempt in range(3):
+            try:
+                client = get_http_client()
+                resp = await client.get(url)
+                if resp.status_code == 429:
+                    await asyncio.sleep(0.5 * (attempt + 1))
+                    continue
+                if resp.status_code == 200:
+                    data = resp.json().get("data", [])
+                    if data:
+                        pic = data[0].get("picture_big") or data[0].get("picture_medium") or data[0].get("picture") or ""
+                        if pic:
+                            return pic
+            except Exception as e:
+                logger.debug(f"Attempt {attempt+1} failed to fetch artist picture from Deezer for {artist_name}: {e}")
+                await asyncio.sleep(0.3)
     return ""
 
 @app.get("/api/pinned_artists")
@@ -1989,8 +2000,16 @@ async def get_pinned_artists(request: Request):
                         await db.add_pinned_artist(art_name, mbid=mbid, picture_url=pic_url, user_id=user_id)
                     
                     await asyncio.gather(*(resolve_and_save(a) for a in local_artists))
-                    artists = await db.get_pinned_artists(user_id)
-                
+        # Self-healing: Backfill missing artist picture_urls from Deezer
+        for a in artists:
+            if not a.get("picture_url"):
+                pic = await fetch_deezer_artist_picture(a["artist_name"])
+                if pic:
+                    a["picture_url"] = pic
+                    async with db.get_db() as conn:
+                        await conn.execute("UPDATE pinned_artists SET picture_url = ? WHERE id = ?", (pic, a["id"]))
+                        await conn.commit()
+
         return artists
     except Exception as e:
         logger.error(f"Failed to fetch pinned artists: {e}")

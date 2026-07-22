@@ -32,11 +32,12 @@ interface PinnedArtist {
 }
 
 interface Release {
-  id: number;
+  id: number | string;
   title: string;
   cover_medium: string;
   release_date: string;
-  record_type: 'album' | 'single' | 'ep';
+  record_type: string;
+  tracks?: any[];
   // Enriched properties
   exists?: boolean;
   albumStatus?: 'full' | 'partial' | 'missing';
@@ -66,7 +67,7 @@ export const MyArtists: React.FC = () => {
   const [releasesLoading, setReleasesLoading] = useState<boolean>(false);
   const [hideAlbums, setHideAlbums] = useState<boolean>(false);
   const [downloadingKeys, setDownloadingKeys] = useState<Set<string>>(new Set());
-  const [expandedAlbumId, setExpandedAlbumId] = useState<number | null>(null);
+  const [expandedAlbumId, setExpandedAlbumId] = useState<number | string | null>(null);
 
   const fetchArtists = async () => {
     setLoading(true);
@@ -282,9 +283,17 @@ export const MyArtists: React.FC = () => {
     }
   };
 
-  const albums = releases.filter(r => r && r.record_type === 'album');
-  const singlesAndEps = releases.filter(r => r && (r.record_type === 'single' || r.record_type === 'ep'));
-  const otherReleases = releases.filter(r => r && ['live', 'compilation', 'mixtape', 'remix', 'demo', 'other', 'interview', 'soundtrack', 'broadcast'].includes(r.record_type));
+  const sortByDate = (list: Release[]) => {
+    return [...list].sort((a, b) => {
+      const dateA = a.release_date || '9999-99-99';
+      const dateB = b.release_date || '9999-99-99';
+      return dateA.localeCompare(dateB);
+    });
+  };
+
+  const albums = sortByDate(releases.filter(r => r && r.record_type === 'album'));
+  const singlesAndEps = sortByDate(releases.filter(r => r && (r.record_type === 'single' || r.record_type === 'ep')));
+  const otherReleases = sortByDate(releases.filter(r => r && ['live', 'compilation', 'mixtape', 'remix', 'demo', 'other', 'interview', 'soundtrack', 'broadcast'].includes(r.record_type)));
 
   const filteredArtists = artists.filter(a => 
     a.artist_name.toLowerCase().includes(filterText.toLowerCase())

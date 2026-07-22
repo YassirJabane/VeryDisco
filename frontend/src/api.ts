@@ -282,8 +282,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async checkTrackExists(artist: string, title: string, albumId?: number): Promise<any> {
-    const albumParam = albumId ? `&album_id=${albumId}` : '';
+  async checkTrackExists(artist: string, title: string, albumId?: number | string): Promise<any> {
+    const albumParam = albumId ? `&album_id=${encodeURIComponent(albumId)}` : '';
     const resp = await api.get<any>(`/api/search/check?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}${albumParam}`);
     return resp.data;
   },

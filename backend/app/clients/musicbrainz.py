@@ -264,6 +264,7 @@ class MusicBrainzClient:
         """
         Fetch all release groups for a MusicBrainz artist and strictly categorize
         official studio albums vs compilations, live albums, mixtapes, EPs, and singles.
+        Sorts all items by release date ascending (oldest first).
         """
         data = await _mb_get("/release-group", params={
             "artist": artist_mbid,
@@ -280,21 +281,26 @@ class MusicBrainzClient:
             primary_type = (rg.get("primary-type") or "").lower()
             secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
             
-            # Precise categorization using MusicBrainz primary and secondary types
-            if "live" in secondary_types:
-                record_type = "live"
-            elif "compilation" in secondary_types:
-                record_type = "compilation"
-            elif "remix" in secondary_types:
-                record_type = "remix"
-            elif "mixtape/streetwood" in secondary_types or "mixtape" in secondary_types:
-                record_type = "mixtape"
-            elif "demo" in secondary_types:
-                record_type = "demo"
-            elif "interview" in secondary_types:
-                record_type = "interview"
-            elif "soundtrack" in secondary_types:
-                record_type = "soundtrack"
+            # Precise categorization using MusicBrainz primary and secondary types:
+            # If secondary_types is NOT empty (e.g. Mixtape, Live, Compilation, Remix, Demo, Interview, Soundtrack, Other),
+            # it CANNOT be classified as a clean Official Studio Album.
+            if secondary_types:
+                if any("mixtape" in t or "street" in t for t in secondary_types):
+                    record_type = "mixtape"
+                elif any("live" in t for t in secondary_types):
+                    record_type = "live"
+                elif any("compil" in t for t in secondary_types):
+                    record_type = "compilation"
+                elif any("remix" in t for t in secondary_types):
+                    record_type = "remix"
+                elif any("demo" in t for t in secondary_types):
+                    record_type = "demo"
+                elif any("interview" in t for t in secondary_types):
+                    record_type = "interview"
+                elif any("soundtrack" in t for t in secondary_types):
+                    record_type = "soundtrack"
+                else:
+                    record_type = "other"
             elif primary_type == "album":
                 record_type = "album"
             elif primary_type == "ep":
@@ -316,6 +322,9 @@ class MusicBrainzClient:
                 "release_date": first_release_date,
                 "cover_medium": f"https://coverartarchive.org/release-group/{rg_id}/front-250",
             })
+            
+        # Sort release groups by release date ascending (oldest first)
+        result.sort(key=lambda x: x.get("release_date") or "9999-99-99")
             
         return result
 
