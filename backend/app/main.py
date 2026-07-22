@@ -1467,6 +1467,8 @@ async def search_album_candidates(artist: str, album: str, request: Request):
     art_lower = clean_art.lower()
     alb_lower = clean_alb.lower()
     
+    art_wildcard = f"*{clean_art[1:]}" if len(clean_art) >= 3 else clean_art
+
     queries = []
     if art_lower == alb_lower:
         queries.append((clean_art, False))
@@ -1475,15 +1477,23 @@ async def search_album_candidates(artist: str, album: str, request: Request):
     elif alb_lower in art_lower:
         queries.append((clean_art, False))
     else:
-        queries.append((f"{clean_art} {clean_alb}", False))
-        
         stripped_alb = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version)\b', '', album)
         stripped_alb = re.sub(r'\s+-\s+', ' ', stripped_alb)
         stripped_alb = re.sub(r'[^\w\s-]', ' ', stripped_alb)
         stripped_alb = re.sub(r'\s+', ' ', stripped_alb).strip()
+
+        target_alb = stripped_alb if (stripped_alb and len(stripped_alb) >= 2) else clean_alb
+
+        if art_wildcard != clean_art:
+            queries.append((f"{art_wildcard} - {target_alb}", False))
+            queries.append((f"{art_wildcard} {target_alb}", False))
+        queries.append((f"{clean_art} - {target_alb}", False))
+        queries.append((f"{clean_art} {target_alb}", False))
         
         if stripped_alb and stripped_alb.lower() != clean_alb.lower():
-            queries.append((f"{clean_art} {stripped_alb}", False))
+            if art_wildcard != clean_art:
+                queries.append((f"{art_wildcard} - {clean_alb}", False))
+            queries.append((f"{clean_art} - {clean_alb}", False))
         
         queries.append((clean_alb, True))
         

@@ -534,6 +534,9 @@ async def _download_album_task_internal(
                     seen_q.add(q_text.strip())
                     queries.append((q_text.strip(), req_artist))
 
+            main_art_wildcard = f"*{main_art[1:]}" if len(main_art) >= 3 else main_art
+            clean_art_wildcard = f"*{clean_art[1:]}" if len(clean_art) >= 3 else clean_art
+
             if art_lower == alb_lower:
                 add_query(clean_art, False)
             elif art_lower in alb_lower:
@@ -541,18 +544,34 @@ async def _download_album_task_internal(
             elif alb_lower in art_lower:
                 add_query(clean_art, False)
             else:
-                # 1. Hyphenated "Artist - Album" patterns (Soulseek standard directory format)
+                # 1. Hyphenated "Artist - Album" patterns (with wildcard first to bypass banned artist filters!)
+                if main_art_wildcard != main_art:
+                    add_query(f"{main_art_wildcard} - {stripped_alb}", False)
                 add_query(f"{main_art} - {stripped_alb}", False)
+
                 if stripped_alb != clean_alb:
+                    if main_art_wildcard != main_art:
+                        add_query(f"{main_art_wildcard} - {clean_alb}", False)
                     add_query(f"{main_art} - {clean_alb}", False)
+
                 if main_art != clean_art:
+                    if clean_art_wildcard != clean_art:
+                        add_query(f"{clean_art_wildcard} - {stripped_alb}", False)
                     add_query(f"{clean_art} - {stripped_alb}", False)
 
                 # 2. Space-separated "Artist Album" patterns
+                if main_art_wildcard != main_art:
+                    add_query(f"{main_art_wildcard} {stripped_alb}", False)
                 add_query(f"{main_art} {stripped_alb}", False)
+
                 if stripped_alb != clean_alb:
+                    if main_art_wildcard != main_art:
+                        add_query(f"{main_art_wildcard} {clean_alb}", False)
                     add_query(f"{main_art} {clean_alb}", False)
+
                 if main_art != clean_art:
+                    if clean_art_wildcard != clean_art:
+                        add_query(f"{clean_art_wildcard} {stripped_alb}", False)
                     add_query(f"{clean_art} {stripped_alb}", False)
 
                 # 3. Album-only fallback
