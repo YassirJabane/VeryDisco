@@ -16,7 +16,7 @@ class LrcLibClient:
         retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
         reraise=True
     )
-    async def get_lyrics(self, artist: str, title: str) -> Tuple[Optional[str], str]:
+    async def get_lyrics(self, artist: str, title: str, album: Optional[str] = None) -> Tuple[Optional[str], str]:
         """
         Search for lyrics on LRCLIB.
         Returns a tuple (lyrics_content, type) where type can be 'synced', 'plain', or 'missing'.
@@ -26,6 +26,8 @@ class LrcLibClient:
             "artist_name": artist,
             "track_name": title
         }
+        if album:
+            params["album_name"] = album
         
         logger.info(f"Searching lyrics for '{artist} - {title}' on LRCLIB...")
         

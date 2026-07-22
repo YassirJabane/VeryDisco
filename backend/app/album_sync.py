@@ -15,6 +15,41 @@ from backend.app.clients.deezer import DeezerClient
 logger = get_logger()
 
 
+def safe_move_file(src: Any, dst: Any):
+    """
+    Safely moves or copies a file across filesystem boundaries (handling Docker mounts / sendfile Errno 5).
+    """
+    src_path = Path(src)
+    dst_path = Path(dst)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.move(str(src_path), str(dst_path))
+    except Exception as e:
+        logger.warning(f"Standard shutil.move failed ({e}) for {src_path} -> {dst_path}, using chunked fallback copy...")
+        with open(src_path, "rb") as fsrc:
+            with open(dst_path, "wb") as fdst:
+                shutil.copyfileobj(fsrc, fdst)
+        try:
+            os.remove(src_path)
+        except Exception:
+            pass
+
+def safe_copy_file(src: Any, dst: Any):
+    """
+    Safely copies a file across filesystem boundaries (handling Docker mounts / sendfile Errno 5).
+    """
+    src_path = Path(src)
+    dst_path = Path(dst)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(str(src_path), str(dst_path))
+    except Exception as e:
+        logger.warning(f"Standard shutil.copy2 failed ({e}) for {src_path} -> {dst_path}, using chunked fallback copy...")
+        with open(src_path, "rb") as fsrc:
+            with open(dst_path, "wb") as fdst:
+                shutil.copyfileobj(fsrc, fdst)
+
+
 async def fetch_track_metadata_with_fallback(
     deezer_client: "DeezerClient",
     artist: str,
@@ -716,7 +751,7 @@ async def _download_album_task_internal(
                             # Copy from explore/playlists dir to final library dir.
                             # Skip if they are already the same file.
                             if Path(existing_path).resolve() != Path(dest_path).resolve():
-                                shutil.copy2(str(existing_path), str(dest_path))
+                                safe_copy_file(existing_path, dest_path)
                             
                             # Fetch lyrics and embed metadata
                             lyrics_text = None
@@ -966,7 +1001,7 @@ async def _download_album_task_internal(
                     dest_path = dest_dir / clean_filename
                     # 3. Move the file
                     try:
-                        shutil.move(str(local_path), str(dest_path))
+                        safe_move_file(local_path, dest_path)
                     except Exception as e:
                         logger.error(f"Failed to move {local_path} to {dest_path}: {e}")
                         continue
@@ -1364,7 +1399,7 @@ async def download_single_track_task(artist: str, title: str, album: str, config
 
             # 2. Move file
             try:
-                shutil.move(str(downloaded_file), str(dest_audio_path))
+                safe_move_file(downloaded_file, dest_audio_path)
                 logger.info(f"Moved single track to library: '{dest_audio_path}'")
             except Exception as e:
                 logger.error(f"Failed to move single track to library: {e}")
@@ -1571,7 +1606,7 @@ async def grab_single_track_task(
 
         # 2. Move file
         try:
-            shutil.move(str(downloaded_file), str(dest_audio_path))
+            safe_move_file(downloaded_file, dest_audio_path)
             logger.info(f"Moved grabbed track to library: '{dest_audio_path}'")
         except Exception as e:
             logger.error(f"Failed to move grabbed track to library: {e}")

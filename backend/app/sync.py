@@ -18,6 +18,41 @@ from backend.app.clients.deezer import DeezerClient
 
 logger = app_logger.get_logger()
 
+
+def safe_move_file(src: Any, dst: Any):
+    """
+    Safely moves or copies a file across filesystem boundaries (handling Docker mounts / sendfile Errno 5).
+    """
+    src_path = Path(src)
+    dst_path = Path(dst)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.move(str(src_path), str(dst_path))
+    except Exception as e:
+        logger.warning(f"Standard shutil.move failed ({e}) for {src_path} -> {dst_path}, using chunked fallback copy...")
+        with open(src_path, "rb") as fsrc:
+            with open(dst_path, "wb") as fdst:
+                shutil.copyfileobj(fsrc, fdst)
+        try:
+            os.remove(src_path)
+        except Exception:
+            pass
+
+def safe_copy_file(src: Any, dst: Any):
+    """
+    Safely copies a file across filesystem boundaries (handling Docker mounts / sendfile Errno 5).
+    """
+    src_path = Path(src)
+    dst_path = Path(dst)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        shutil.copy2(str(src_path), str(dst_path))
+    except Exception as e:
+        logger.warning(f"Standard shutil.copy2 failed ({e}) for {src_path} -> {dst_path}, using chunked fallback copy...")
+        with open(src_path, "rb") as fsrc:
+            with open(dst_path, "wb") as fdst:
+                shutil.copyfileobj(fsrc, fdst)
+
 # Global state tracker for real-time dashboard updates
 is_syncing = False
 current_run_id: Optional[int] = None
@@ -812,16 +847,11 @@ async def relocate_and_tag_download(
 
     # Relocate
     try:
-        await asyncio.to_thread(shutil.move, str(downloaded_file), str(dest_audio_path))
+        await asyncio.to_thread(safe_move_file, downloaded_file, dest_audio_path)
         logger.info(f"Moved downloaded track to library: '{dest_audio_path}'")
     except Exception as e:
-        logger.warning(f"Failed moving file, attempting copy fallback: {e}")
-        try:
-            await asyncio.to_thread(shutil.copy2, str(downloaded_file), str(dest_audio_path))
-            await asyncio.to_thread(downloaded_file.unlink)
-        except Exception as copy_err:
-            logger.error(f"Failed to copy file to library: {copy_err}")
-            return "failed", None, None
+        logger.error(f"Failed to relocate file to library: {e}")
+        return "failed", None, None
 
     # Fetch and save lyrics
     lyrics_status = "none"
