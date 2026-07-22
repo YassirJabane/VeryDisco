@@ -88,32 +88,36 @@ def embed_mbid_into_file(file_path: Path, mbid_track: str, mbid_album: Optional[
     """Embed MusicBrainz track & album MBIDs into audio file tags."""
     ext = file_path.suffix.lower()
     str_path = str(file_path)
+    
+    # Ensure write permissions
+    if os.path.exists(str_path):
+        try:
+            os.chmod(str_path, 0o666)
+        except Exception:
+            pass
+
     try:
         if ext == ".mp3":
-            from mutagen.mp3 import MP3
             from mutagen.id3 import ID3, UFID, TXXX
             try:
-                audio = MP3(str_path)
-                if audio.tags is None:
-                    audio.add_tags()
-                if mbid_track:
-                    audio.tags.add(UFID(owner="http://musicbrainz.org", data=mbid_track.encode('utf-8')))
-                    audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[mbid_track]))
-                if mbid_album:
-                    audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
-                audio.save(v2_version=3)
-            except Exception as e1:
-                logger.debug(f"MP3 wrapper save failed for {file_path}, retrying direct ID3 save: {e1}")
-                try:
-                    tags = ID3(str_path)
-                except Exception:
-                    tags = ID3()
-                if mbid_track:
-                    tags.add(UFID(owner="http://musicbrainz.org", data=mbid_track.encode('utf-8')))
-                    tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[mbid_track]))
-                if mbid_album:
-                    tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
+                tags = ID3(str_path)
+            except Exception:
+                tags = ID3()
+
+            if mbid_track:
+                tags.add(UFID(owner="http://musicbrainz.org", data=mbid_track.encode('utf-8')))
+                tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[mbid_track]))
+            if mbid_album:
+                tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
+
+            # Strategy 1: Standard Mutagen save (atomic tempfile rename)
+            try:
                 tags.save(str_path, v2_version=3)
+            except Exception as e_save:
+                logger.warning(f"Standard save failed for {file_path} ({e_save}), retrying with direct file stream save...")
+                # Strategy 2: Direct in-place file stream save (bypasses tempfile / atomic rename issues on mounts)
+                with open(str_path, "r+b") as f:
+                    tags.save(f, v2_version=3)
 
         elif ext in (".flac", ".ogg"):
             from mutagen.flac import FLAC
@@ -122,7 +126,11 @@ def embed_mbid_into_file(file_path: Path, mbid_track: str, mbid_album: Optional[
                 audio["musicbrainz_trackid"] = mbid_track
             if mbid_album:
                 audio["musicbrainz_albumid"] = mbid_album
-            audio.save()
+            try:
+                audio.save()
+            except Exception:
+                with open(str_path, "r+b") as f:
+                    audio.save(f)
 
         elif ext in (".m4a", ".mp4"):
             from mutagen.mp4 import MP4
@@ -131,7 +139,11 @@ def embed_mbid_into_file(file_path: Path, mbid_track: str, mbid_album: Optional[
                 audio["----:com.apple.iTunes:MusicBrainz Track Id"] = mbid_track.encode('utf-8')
             if mbid_album:
                 audio["----:com.apple.iTunes:MusicBrainz Album Id"] = mbid_album.encode('utf-8')
-            audio.save()
+            try:
+                audio.save()
+            except Exception:
+                with open(str_path, "r+b") as f:
+                    audio.save(f)
 
         try:
             os.utime(str_path, None)
