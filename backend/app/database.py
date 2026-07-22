@@ -467,6 +467,14 @@ class Database:
             await db.execute("DELETE FROM pinned_artists WHERE id = ?", (id,))
             await db.commit()
 
+    async def purge_pinned_artists(self, user_id: Optional[str] = None):
+        async with self.get_db() as db:
+            if user_id:
+                await db.execute("DELETE FROM pinned_artists WHERE user_id = ?", (user_id,))
+            else:
+                await db.execute("DELETE FROM pinned_artists")
+            await db.commit()
+
     # Silenced Issues Operations
     async def get_silenced_issues(self) -> List[str]:
         async with self.get_db() as db:

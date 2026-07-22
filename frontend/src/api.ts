@@ -354,6 +354,11 @@ export const apiService = {
     return resp.data;
   },
 
+  async purgePinnedArtists(): Promise<any> {
+    const resp = await api.post<any>('/api/pinned_artists/purge');
+    return resp.data;
+  },
+
   async getArtistReleases(artistId: number): Promise<any[]> {
     const resp = await api.get<any[]>(`/api/deezer/artist/${artistId}/releases`);
     return resp.data;

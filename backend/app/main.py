@@ -1998,6 +1998,39 @@ async def pin_artist(req: PinArtistRequest, request: Request):
         logger.error(f"Failed to pin artist '{artist_name}': {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
 
+@app.post("/api/pinned_artists/purge")
+async def purge_pinned_artists_endpoint(request: Request):
+    """Purge all pinned artists from database and trigger library scan."""
+    try:
+        user_id = None
+        try:
+            from backend.app.auth import get_current_user
+            user = await get_current_user(request)
+            user_id = user["id"]
+            if user.get("is_admin"):
+                await db.purge_pinned_artists(None)
+            else:
+                await db.purge_pinned_artists(user_id)
+        except Exception:
+            await db.purge_pinned_artists(None)
+
+        logger.info("Purged all pinned artists from database.")
+        
+        # Trigger Navidrome rescan if configured
+        cfg = config_manager.config
+        if cfg and cfg.navidrome and cfg.navidrome.url:
+            try:
+                from backend.app.clients.navidrome import NavidromeClient
+                client = NavidromeClient(url=cfg.navidrome.url, username=cfg.navidrome.username, password=cfg.navidrome.password)
+                await client.trigger_scan()
+            except Exception as e:
+                logger.warning(f"Navidrome rescan trigger failed during purge: {e}")
+
+        return {"status": "success", "message": "All pinned artists purged successfully."}
+    except Exception as e:
+        logger.error(f"Failed to purge pinned artists: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/api/pinned_artists/{id}")
 async def unpin_artist(id: int, request: Request):
     """Unpin an artist by their database ID, deleting their music folder and triggering Navidrome rescan."""

@@ -16,9 +16,11 @@ import {
   VisibilityOff as HideIcon,
   MusicNote as MusicIcon,
   Favorite as FavoriteIcon,
-  HeartBroken as HeartBrokenIcon
+  HeartBroken as HeartBrokenIcon,
+  DeleteForever as DangerousIcon
 } from '@mui/icons-material';
 import apiService from '../api';
+import { useNotification } from '../context/NotificationContext';
 
 interface PinnedArtist {
   id: number;
@@ -44,6 +46,7 @@ interface Release {
 export const MyArtists: React.FC = () => {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const { notify, confirm } = useNotification();
   const [artists, setArtists] = useState<PinnedArtist[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [filterText, setFilterText] = useState<string>('');
@@ -113,22 +116,49 @@ export const MyArtists: React.FC = () => {
     try {
       await apiService.pinArtist(searchResult.name, searchResult.id, searchResult.picture_medium);
       setAddDialogOpen(false);
+      notify(`Pinned artist "${searchResult.name}"!`, "success");
       fetchArtists();
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to pin artist.");
+      notify(err.response?.data?.detail || "Failed to pin artist.", "error");
     }
   };
 
   const handleUnpinArtist = async (e: React.MouseEvent, id: number, name: string) => {
     e.stopPropagation(); // Prevent opening detail modal
-    if (window.confirm(`Are you sure you want to delete "${name}"? This will permanently delete their music files from disk and Navidrome.`)) {
-      try {
-        await apiService.unpinArtist(id);
-        fetchArtists();
-      } catch (err) {
-        alert("Failed to delete artist.");
+    confirm({
+      title: `Delete "${name}"?`,
+      message: `Are you sure you want to delete "${name}"? This will permanently delete their music files from disk and Navidrome.`,
+      confirmText: "Delete Artist",
+      isDangerous: true,
+      onConfirm: async () => {
+        try {
+          await apiService.unpinArtist(id);
+          notify(`Deleted "${name}".`, "info");
+          fetchArtists();
+        } catch (err) {
+          notify("Failed to delete artist.", "error");
+        }
       }
-    }
+    });
+  };
+
+  const handlePurgeAllClick = () => {
+    confirm({
+      title: "🚨 DANGER: Purge All Pinned Artists?",
+      message: "Are you sure you want to purge all pinned artists? This will wipe the artist database clean so you can recreate it from scratch. This action cannot be undone!",
+      confirmText: "Purge All Artists",
+      cancelText: "Cancel",
+      isDangerous: true,
+      onConfirm: async () => {
+        try {
+          await apiService.purgePinnedArtists();
+          notify("Successfully purged all artists and recreated artist database!", "success");
+          fetchArtists();
+        } catch (err: any) {
+          notify(err.response?.data?.detail || "Failed to purge artists.", "error");
+        }
+      }
+    });
   };
 
   const handleOpenDetail = async (artist: PinnedArtist) => {
@@ -270,6 +300,24 @@ export const MyArtists: React.FC = () => {
             sx={{ fontWeight: 700, flexShrink: 0 }}
           >
             Add Artist
+          </Button>
+          <Button 
+            variant="contained" 
+            color="error" 
+            startIcon={<DangerousIcon />} 
+            onClick={handlePurgeAllClick}
+            sx={{ 
+              fontWeight: 700, 
+              flexShrink: 0,
+              bgcolor: '#d32f2f',
+              boxShadow: '0 0 12px rgba(211, 47, 47, 0.4)',
+              '&:hover': {
+                bgcolor: '#b71c1c',
+                boxShadow: '0 0 18px rgba(211, 47, 47, 0.8)'
+              }
+            }}
+          >
+            Purge All
           </Button>
         </Box>
       </Box>

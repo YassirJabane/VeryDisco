@@ -14,9 +14,11 @@ import {
 } from '@mui/icons-material';
 import { apiService } from '../api';
 import LyricsPreviewDialog from './LyricsPreviewDialog';
+import { useNotification } from '../context/NotificationContext';
 
 export const SearchMusic: React.FC = () => {
   const theme = useTheme();
+  const { notify, confirm } = useNotification();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchType, setSearchType] = useState<'track' | 'album'>('track');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -48,7 +50,7 @@ export const SearchMusic: React.FC = () => {
       const results = await apiService.searchAlbumCandidates(artist, album);
       setCandidates(results);
     } catch (err: any) {
-      alert("Failed to search album candidates on Slskd.");
+      notify("Failed to search album candidates on Slskd.", "error");
     } finally {
       setSearchingCandidates(false);
     }
@@ -78,10 +80,10 @@ export const SearchMusic: React.FC = () => {
         cand.folder,
         cand.files
       );
-      alert(`Manual grab initiated from "${cand.username}" for "${manualGrabAlbum}".`);
+      notify(`Manual grab initiated from "${cand.username}" for "${manualGrabAlbum}".`, "success");
       setManualGrabOpen(false);
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to initiate grab.");
+      notify(err.response?.data?.detail || "Failed to initiate grab.", "error");
     } finally {
       setGrabbingKey(null);
     }
@@ -176,30 +178,20 @@ export const SearchMusic: React.FC = () => {
         }));
         setSearchResults(enriched);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Deezer search failed", err);
-      alert("Failed to perform Deezer search.");
+      notify("Failed to perform Deezer search.", "error");
     } finally {
       setSearchLoading(false);
     }
   };
 
-  const handleDownloadTrack = async (artist: string, title: string, album: string, existingExists?: boolean, existingQualityStatus?: string) => {
-    const key = `track-${artist}-${title}`;
-    let force = false;
-    
-    if (existingExists && existingQualityStatus !== 'worse') {
-      const confirm = window.confirm(`You already have "${artist} - ${title}" in the desired quality. Do you want to download/overwrite it anyway?`);
-      if (!confirm) return;
-      force = true;
-    }
-    
+  const executeDownloadTrack = async (artist: string, title: string, album: string, force: boolean, key: string) => {
     setDownloadingKeys(prev => new Set(prev).add(key));
     try {
       await apiService.downloadTrack(artist, title, album, force);
-      alert(`Single track search/download queued for "${artist} - ${title}".`);
+      notify(`Single track search/download queued for "${artist} - ${title}".`, "success");
       
-      // Update local state
       setSearchResults(prev => prev.map(item => {
         if (item.artist?.name === artist && item.title === title) {
           return { ...item, exists: true, qualityStatus: 'same' };
@@ -207,7 +199,37 @@ export const SearchMusic: React.FC = () => {
         return item;
       }));
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to queue track download.");
+      notify(err.response?.data?.detail || "Failed to queue track download.", "error");
+    } finally {
+      setDownloadingKeys(prev => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  const handleDownloadTrack = async (artist: string, title: string, album: string, existingExists?: boolean, existingQualityStatus?: string) => {
+    const key = `track-${artist}-${title}`;
+    if (existingExists && existingQualityStatus !== 'worse') {
+      confirm({
+        title: "Re-download Track?",
+        message: `You already have "${artist} - ${title}" in the desired quality. Do you want to download/overwrite it anyway?`,
+        confirmText: "Download Anyway",
+        onConfirm: () => executeDownloadTrack(artist, title, album, true, key)
+      });
+      return;
+    }
+    executeDownloadTrack(artist, title, album, false, key);
+  };
+
+  const executeDownloadAlbum = async (artist: string, album: string, force: boolean, key: string) => {
+    setDownloadingKeys(prev => new Set(prev).add(key));
+    try {
+      await apiService.downloadAlbum(artist, album, force);
+      notify(`Full album download queued for "${artist} - ${album}".`, "success");
+    } catch (err: any) {
+      notify(err.response?.data?.detail || "Failed to queue album download.", "error");
     } finally {
       setDownloadingKeys(prev => {
         const next = new Set(prev);
@@ -219,27 +241,16 @@ export const SearchMusic: React.FC = () => {
 
   const handleDownloadAlbum = async (artist: string, album: string, existingStatus?: string, existingUpgradeAvailable?: boolean) => {
     const key = `album-${artist}-${album}`;
-    let force = false;
-    
     if (existingStatus === 'full' && !existingUpgradeAvailable) {
-      const confirm = window.confirm(`You already have the album "${artist} - ${album}" fully in the desired quality. Do you want to download/overwrite it anyway?`);
-      if (!confirm) return;
-      force = true;
-    }
-    
-    setDownloadingKeys(prev => new Set(prev).add(key));
-    try {
-      await apiService.downloadAlbum(artist, album, force);
-      alert(`Full album download queued for "${artist} - ${album}".`);
-    } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to queue album download.");
-    } finally {
-      setDownloadingKeys(prev => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
+      confirm({
+        title: "Re-download Album?",
+        message: `You already have the album "${artist} - ${album}" fully in the desired quality. Do you want to download/overwrite it anyway?`,
+        confirmText: "Download Anyway",
+        onConfirm: () => executeDownloadAlbum(artist, album, true, key)
       });
+      return;
     }
+    executeDownloadAlbum(artist, album, false, key);
   };
 
   return (
@@ -595,7 +606,7 @@ export const SearchMusic: React.FC = () => {
           defaultAlbum={selectedLyricsTrack.album}
           localDuration={selectedLyricsTrack.duration}
           onDownloadQueued={() => {
-            alert(`Staged lyrics & queued search/download for "${selectedLyricsTrack.artist} - ${selectedLyricsTrack.title}".`);
+            notify(`Staged lyrics & queued search/download for "${selectedLyricsTrack.artist} - ${selectedLyricsTrack.title}".`, "success");
           }}
         />
       )}

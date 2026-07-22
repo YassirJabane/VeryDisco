@@ -538,6 +538,8 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
   );
 };
 
+import { NotificationProvider } from './context/NotificationContext';
+
 export const App: React.FC = () => {
   const [mode, setMode] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('verydisco-theme-mode');
@@ -554,7 +556,9 @@ export const App: React.FC = () => {
     <ThemeProvider theme={activeTheme}>
       <CssBaseline />
       <AuthProvider>
-        <AppInner mode={mode} toggleMode={toggleMode} />
+        <NotificationProvider>
+          <AppInner mode={mode} toggleMode={toggleMode} />
+        </NotificationProvider>
       </AuthProvider>
     </ThemeProvider>
   );
