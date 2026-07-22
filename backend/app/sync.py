@@ -778,8 +778,10 @@ def find_existing_track_file(music_dir: str, playlist_dir: str, staging_dir: str
     return None, None
 
 def find_downloaded_file(downloads_dir: str, target_filename: str, target_size: int) -> Optional[Path]:
-    """Search recursively for downloaded file by exact basename and file size."""
-    # Convert slskd paths (which might be Windows format) to a standard path and extract basename
+    """Search recursively for downloaded file using 4 robust strategies."""
+    import time
+    import re
+
     basename = os.path.basename(target_filename.replace("\\", "/"))
     
     downloads_path = Path(downloads_dir)
@@ -787,19 +789,60 @@ def find_downloaded_file(downloads_dir: str, target_filename: str, target_size: 
         logger.error(f"slskd downloads directory does not exist: {downloads_dir}")
         return None
 
-    for path in downloads_path.rglob("*"):
-        if path.is_file():
-            # Exclude incomplete directories
-            if any("incomplete" in part.lower() for part in path.parts):
-                continue
-            if path.name.lower() == basename.lower():
-                try:
-                    actual_size = path.stat().st_size
-                    # Allow up to 5% size difference as slskd/soulseek sizes can sometimes vary slightly
-                    if actual_size > 0 and abs(actual_size - target_size) / target_size < 0.05:
-                        return path
-                except Exception:
-                    pass
+    audio_exts = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".alac"}
+    now = time.time()
+
+    candidates = []
+    try:
+        for path in downloads_path.rglob("*"):
+            if path.is_file() and path.suffix.lower() in audio_exts:
+                if any("incomplete" in part.lower() for part in path.parts):
+                    continue
+                candidates.append(path)
+    except Exception as e:
+        logger.error(f"Error scanning downloads directory {downloads_dir}: {e}")
+        return None
+
+    # Strategy 1: Exact basename + size within 15%
+    for path in candidates:
+        if path.name.lower() == basename.lower():
+            try:
+                actual_size = path.stat().st_size
+                if actual_size > 0 and (target_size == 0 or abs(actual_size - target_size) / target_size < 0.15):
+                    return path
+            except Exception:
+                pass
+
+    # Strategy 2: Exact basename match (ignoring size variance)
+    for path in candidates:
+        if path.name.lower() == basename.lower():
+            return path
+
+    # Strategy 3: Cleaned basename matching (strip punctuation/accents)
+    def norm_name(s: str) -> str:
+        name_no_ext = os.path.splitext(s)[0]
+        return re.sub(r'[^\w]', '', name_no_ext).lower()
+
+    target_norm = norm_name(basename)
+    if target_norm:
+        for path in candidates:
+            if norm_name(path.name) == target_norm:
+                return path
+
+    # Strategy 4: Fallback to most recently modified audio file (within last 180s)
+    recent_files = []
+    for path in candidates:
+        try:
+            mtime = path.stat().st_mtime
+            if (now - mtime) <= 180:
+                recent_files.append((mtime, path))
+        except Exception:
+            pass
+
+    if recent_files:
+        recent_files.sort(key=lambda x: x[0], reverse=True)
+        return recent_files[0][1]
+
     return None
 
 async def relocate_and_tag_download(
