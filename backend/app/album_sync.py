@@ -1513,11 +1513,15 @@ async def grab_single_track_task(
     logger.info(f"Starting grab single track task for {artist} - {title} from peer {username}")
     
     music_dir = config.paths.music_dir
+    playlists_dir = config.paths.navidrome_playlists_dir
     if user_id and db:
         try:
             user_row = await db.get_user_by_id(user_id)
-            if user_row and user_row.get("music_dir"):
-                music_dir = user_row["music_dir"]
+            if user_row:
+                if user_row.get("music_dir"):
+                    music_dir = user_row["music_dir"]
+                if user_row.get("playlist_dir"):
+                    playlists_dir = user_row["playlist_dir"]
         except Exception:
             pass
 
