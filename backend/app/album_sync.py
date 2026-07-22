@@ -287,21 +287,7 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
         return None
         
     filename_lower = filename.lower()
-    
-    # 1. Match by track number if present at the start or delimited (e.g., "01. ...", "01 - ...", "01 ...")
-    m_num = re.search(r'^(?:[a-zA-Z0-9_-]+[-_])?\s*(\d{1,2})\s*[-_\.\s]', filename_lower)
-    if not m_num:
-        m_num = re.search(r'\b(\d{1,2})\b', filename_lower)
-    if m_num:
-        try:
-            track_num_val = int(m_num.group(1))
-            for track in official_tracks:
-                if track.get("track_position") == track_num_val:
-                    return track
-        except Exception:
-            pass
 
-    # 2. Match by normalized title (normalizing Roman numerals I-V / VI-IX to 1-5 / 6-9)
     def _norm(t_str):
         s = t_str.lower()
         s = re.sub(r'\bparts?\s+i[-–—]v\b', 'parts 1 5', s)
@@ -311,15 +297,42 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
         return re.sub(r'[^\w]', '', s)
 
     clean_filename = _norm(filename_lower)
+    
+    # 1. Match by normalized title FIRST (most specific and immune to multi-disc prefixes like 2-01)
     sorted_official = sorted(official_tracks, key=lambda t: len(t.get("title", "")), reverse=True)
     for track in sorted_official:
         t_title = track.get("title", "")
-        if not t_title:
+        if not t_title or len(t_title.strip()) < 2:
             continue
         clean_t_title = _norm(t_title)
-        if clean_t_title and (clean_t_title in clean_filename or clean_filename in clean_t_title):
+        if clean_t_title and len(clean_t_title) >= 3 and clean_t_title in clean_filename:
             return track
-            
+
+    # 2. Multi-disc track pattern (e.g., "2-01 ...", "2.01 ...", "cd1-05 ...", "disc 2 - 01 ...")
+    m_disc_tr = re.search(r'^(?:cd|disc)?\s*(\d{1,2})[-_\.](\d{1,2})\b', filename_lower)
+    if m_disc_tr:
+        try:
+            d_num = int(m_disc_tr.group(1))
+            t_num = int(m_disc_tr.group(2))
+            for track in official_tracks:
+                if track.get("disc_number") == d_num and track.get("track_position") == t_num:
+                    return track
+                elif track.get("track_position") == t_num:
+                    return track
+        except Exception:
+            pass
+
+    # 3. Single track number match at start (e.g., "01. ...", "01 - ...")
+    m_num = re.search(r'^\s*(\d{1,2})\s*[-_\.\s]', filename_lower)
+    if m_num:
+        try:
+            track_num_val = int(m_num.group(1))
+            for track in official_tracks:
+                if track.get("track_position") == track_num_val:
+                    return track
+        except Exception:
+            pass
+
     return None
 
 def get_quality_priority(filename: str, bitrate: int, bit_depth: int, sample_rate: int, config) -> int:
@@ -677,11 +690,15 @@ async def _download_album_task_internal(
                 else:
                     clean_title = clean_track_title(basename, artist, album)
                 
-                norm_title = re.sub(r'[^\w]', '', clean_title).lower()
-                if norm_title in seen_tracks:
+                if matched and matched.get("track_position"):
+                    track_key = (matched.get("disc_number", 1), matched.get("track_position"))
+                else:
+                    track_key = re.sub(r'[^\w]', '', clean_title).lower()
+
+                if track_key in seen_tracks:
                     logger.info(f"Skipping duplicate track in search result folder: {filename_part}")
                     continue
-                seen_tracks.add(norm_title)
+                seen_tracks.add(track_key)
 
                 existing_path = None
                 if not force:
