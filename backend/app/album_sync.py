@@ -125,6 +125,17 @@ async def fetch_track_metadata_with_fallback(
         except Exception:
             pass
 
+    # If cover is still missing, search track directly on Deezer
+    if not result["cover_bytes"]:
+        try:
+            dz_tr = await deezer_client.get_track_metadata(target_artist, title)
+            if dz_tr:
+                cov_url = dz_tr.get("album", {}).get("cover_xl") or dz_tr.get("album", {}).get("cover_big")
+                if cov_url:
+                    result["cover_bytes"] = await deezer_client.download_cover_art(cov_url)
+        except Exception as e:
+            logger.debug(f"Deezer track cover fallback failed for '{target_artist} - {title}': {e}")
+
     return result
 
 

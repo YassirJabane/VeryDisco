@@ -153,7 +153,8 @@ class DeezerClient:
 
     async def get_album_cover(self, artist: str, album: str) -> Optional[bytes]:
         """Search Deezer for album cover_xl art bytes for given (artist, album)."""
-        clean_artist = artist.split('feat')[0].split('ft.')[0].strip()
+        from backend.app.sync import extract_main_artist
+        clean_artist = extract_main_artist(artist)
         clean_album = re.sub(r'[\(\[].*?[\)\]]', '', album).strip()
         query = f"{clean_artist} {clean_album}".strip()
 
@@ -165,6 +166,12 @@ class DeezerClient:
             data = resp.json()
             results = data.get("data", [])
             if not results:
+                # Fallback: try searching tracks directly on Deezer to extract album cover
+                dz_tr = await self.get_track_metadata(clean_artist, clean_album)
+                if dz_tr:
+                    cover_url = dz_tr.get("album", {}).get("cover_xl") or dz_tr.get("album", {}).get("cover_big")
+                    if cover_url:
+                        return await self.download_cover_art(cover_url)
                 return None
             best_cover_url = None
             for res in results:
