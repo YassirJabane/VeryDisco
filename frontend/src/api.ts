@@ -288,8 +288,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async downloadTrack(artist: string, title: string, album: string, force: boolean = false): Promise<{ status: string; message: string }> {
-    const resp = await api.post<{ status: string; message: string }>('/api/download/track', { artist, title, album, force });
+  async downloadTrack(artist: string, title: string, album: string, force: boolean = false, is_explore: boolean = false): Promise<{ status: string; message: string }> {
+    const resp = await api.post<{ status: string; message: string }>('/api/download/track', { artist, title, album, force, is_explore });
     return resp.data;
   },
 
@@ -314,8 +314,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async grabTrack(artist: string, title: string, album: string, username: string, filename: string, size: number): Promise<{ status: string; message: string }> {
-    const resp = await api.post<{ status: string; message: string }>('/api/download/track/grab', { artist, title, album, username, filename, size });
+  async grabTrack(artist: string, title: string, album: string, username: string, filename: string, size: number, is_explore: boolean = false): Promise<{ status: string; message: string }> {
+    const resp = await api.post<{ status: string; message: string }>('/api/download/track/grab', { artist, title, album, username, filename, size, is_explore });
     return resp.data;
   },
 

@@ -1213,7 +1213,7 @@ async def _download_album_task_internal(
         except Exception as e:
             logger.debug(f"Failed to clear playlist cache: {e}")
 
-async def download_single_track_task(artist: str, title: str, album: str, config: 'AppConfig', db=None, force: bool = False, user_id: Optional[str] = None):
+async def download_single_track_task(artist: str, title: str, album: str, config: 'AppConfig', db=None, force: bool = False, user_id: Optional[str] = None, is_explore: bool = False, dest_dir_override: Optional[str] = None):
     """Background task to search, download and organize a single track."""
     logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
     
@@ -1397,14 +1397,24 @@ async def download_single_track_task(artist: str, title: str, album: str, config
             except Exception as meta_err:
                 logger.warning(f"Could not retrieve metadata: {meta_err}")
 
-            from backend.app.sync import resolve_album_dir, get_library_filename
-            dest_dir, safe_artist, safe_album = resolve_album_dir(
-                music_dir, fetched_artist, fetched_album, dz_album_artist or artist,
-                disc_num=disc_num, disc_total=disc_total
-            )
-
-            clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
-            dest_audio_path = dest_dir / clean_filename
+            from backend.app.sync import resolve_album_dir, get_library_filename, get_safe_filename
+            if dest_dir_override:
+                dest_dir = Path(dest_dir_override)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
+                dest_audio_path = dest_dir / clean_filename
+            elif is_explore:
+                dest_dir = Path(playlists_dir) / "explore"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
+                dest_audio_path = dest_dir / clean_filename
+            else:
+                dest_dir, safe_artist, safe_album = resolve_album_dir(
+                    music_dir, fetched_artist, fetched_album, dz_album_artist or artist,
+                    disc_num=disc_num, disc_total=disc_total
+                )
+                clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
+                dest_audio_path = dest_dir / clean_filename
 
             # 2. Move file
             try:
@@ -1495,7 +1505,9 @@ async def grab_single_track_task(
     size: int,
     config: 'AppConfig',
     db=None,
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None,
+    is_explore: bool = False,
+    dest_dir_override: Optional[str] = None
 ):
     """Background task to download a chosen single track candidate and process it."""
     logger.info(f"Starting grab single track task for {artist} - {title} from peer {username}")
@@ -1605,13 +1617,24 @@ async def grab_single_track_task(
         except Exception as meta_err:
             logger.warning(f"Could not retrieve metadata: {meta_err}")
 
-        from backend.app.sync import resolve_album_dir, get_library_filename
-        dest_dir, safe_artist, safe_album = resolve_album_dir(
-            music_dir, fetched_artist, fetched_album, dz_album_artist or artist,
-            disc_num=disc_num, disc_total=disc_total
-        )
-        clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
-        dest_audio_path = dest_dir / clean_filename
+        from backend.app.sync import resolve_album_dir, get_library_filename, get_safe_filename
+        if dest_dir_override:
+            dest_dir = Path(dest_dir_override)
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
+            dest_audio_path = dest_dir / clean_filename
+        elif is_explore:
+            dest_dir = Path(playlists_dir) / "explore"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
+            dest_audio_path = dest_dir / clean_filename
+        else:
+            dest_dir, safe_artist, safe_album = resolve_album_dir(
+                music_dir, fetched_artist, fetched_album, dz_album_artist or artist,
+                disc_num=disc_num, disc_total=disc_total
+            )
+            clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
+            dest_audio_path = dest_dir / clean_filename
 
         # 2. Move file
         try:

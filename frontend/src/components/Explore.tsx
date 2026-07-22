@@ -75,7 +75,8 @@ export const Explore: React.FC = () => {
         searchTrack.album || '',
         cand.username,
         cand.filename,
-        cand.size
+        cand.size,
+        true
       );
       alert(`Manual grab initiated from "${cand.username}" for "${searchTrack.title}".`);
       setManualSearchOpen(false);

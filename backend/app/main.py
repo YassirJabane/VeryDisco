@@ -1363,6 +1363,7 @@ class DownloadTrackRequest(BaseModel):
     title: str
     album: str
     force: Optional[bool] = False
+    is_explore: Optional[bool] = False
 
 @app.post("/api/download/track")
 async def download_single_track(req: DownloadTrackRequest, request: Request = None):
@@ -1390,7 +1391,8 @@ async def download_single_track(req: DownloadTrackRequest, request: Request = No
             config=cfg,
             db=db,
             force=req.force,
-            user_id=user_id
+            user_id=user_id,
+            is_explore=req.is_explore or False
         ),
         task_id=f"track:{req.artist}:{req.title}",
         task_type="track",
@@ -1684,6 +1686,7 @@ class GrabTrackRequest(BaseModel):
     username: str
     filename: str
     size: int
+    is_explore: Optional[bool] = False
 
 
 @app.get("/api/download/track/search")
@@ -1762,7 +1765,8 @@ async def grab_single_track(req: GrabTrackRequest, request: Request = None):
             size=req.size,
             config=cfg,
             db=db,
-            user_id=user_id
+            user_id=user_id,
+            is_explore=req.is_explore or False
         ),
         task_id=f"track:grab:{req.artist}:{req.title}",
         task_type="track",
