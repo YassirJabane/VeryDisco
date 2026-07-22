@@ -344,8 +344,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async pinArtist(artistName: string, deezerId?: number, pictureUrl?: string): Promise<any> {
-    const resp = await api.post<any>('/api/pinned_artists', { artist_name: artistName, deezer_id: deezerId, picture_url: pictureUrl });
+  async pinArtist(artistName: string, mbid?: string, pictureUrl?: string, deezerId?: number): Promise<any> {
+    const resp = await api.post<any>('/api/pinned_artists', { artist_name: artistName, mbid: mbid, deezer_id: deezerId, picture_url: pictureUrl });
     return resp.data;
   },
 
@@ -359,8 +359,9 @@ export const apiService = {
     return resp.data;
   },
 
-  async getArtistReleases(artistId: number): Promise<any[]> {
-    const resp = await api.get<any[]>(`/api/deezer/artist/${artistId}/releases`);
+  async getArtistReleases(artistIdOrMbid: string | number, mbid?: string): Promise<any[]> {
+    const target = mbid || artistIdOrMbid;
+    const resp = await api.get<any[]>(`/api/artist/${target}/releases`);
     return resp.data;
   },
 

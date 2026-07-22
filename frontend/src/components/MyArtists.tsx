@@ -25,7 +25,8 @@ import { useNotification } from '../context/NotificationContext';
 interface PinnedArtist {
   id: number;
   artist_name: string;
-  deezer_id: number;
+  mbid?: string;
+  deezer_id?: number;
   picture_url: string;
 }
 
@@ -167,60 +168,71 @@ export const MyArtists: React.FC = () => {
     setReleases([]);
     setExpandedAlbumId(null);
     try {
-      const data = await apiService.getArtistReleases(artist.deezer_id);
+      const data = await apiService.getArtistReleases(artist.mbid || artist.deezer_id || artist.id, artist.mbid);
       const listData = Array.isArray(data) ? data : [];
       
       // Initially set checking=true for all releases
-      const initialReleases = listData.map((r: any) => ({
-        id: r.id,
-        title: r.title,
-        cover_medium: r.cover_medium,
-        release_date: r.release_date,
-        record_type: r.record_type,
-        checking: true,
-        tracks: []
-      }));
+      const initialReleases = listData
+        .filter((r: any) => r && typeof r === 'object')
+        .map((r: any) => ({
+          id: r.id || Math.random(),
+          title: r.title || 'Unknown Title',
+          cover_medium: r.cover_medium || r.cover_small || r.cover || '',
+          release_date: r.release_date || '',
+          record_type: (r.record_type || 'album').toLowerCase(),
+          checking: true,
+          tracks: []
+        }));
       setReleases(initialReleases);
 
-      // Perform library existence checks in parallel
-      await Promise.all(initialReleases.map(async (r: Release, index: number) => {
-        try {
-          const isAlbum = r.record_type === 'album' || r.record_type === 'ep';
-          const check = await apiService.checkTrackExists(
-            artist.artist_name, 
-            r.title, 
-            isAlbum ? r.id : undefined
-          );
-          
-          setReleases(prev => {
-            const next = [...prev];
-            if (isAlbum) {
-              next[index] = {
-                ...next[index],
-                exists: check.exists,
-                albumStatus: check.status,
-                upgradeAvailable: check.upgrade_available,
-                tracks: check.tracks || [],
-                checking: false
-              };
-            } else {
-              next[index] = {
-                ...next[index],
-                exists: check.exists,
-                qualityStatus: check.quality_status,
-                checking: false
-              };
-            }
-            return next;
-          });
-        } catch {
-          setReleases(prev => {
-            const next = [...prev];
-            next[index].checking = false;
-            return next;
-          });
-        }
-      }));
+      // Perform library existence checks in throttled batches of 5
+      const batchSize = 5;
+      for (let i = 0; i < initialReleases.length; i += batchSize) {
+        const batch = initialReleases.slice(i, i + batchSize);
+        await Promise.all(batch.map(async (r: Release) => {
+          const index = initialReleases.findIndex(item => item.id === r.id);
+          try {
+            const isAlbum = r.record_type === 'album' || r.record_type === 'ep';
+            const check = await apiService.checkTrackExists(
+              artist.artist_name, 
+              r.title, 
+              isAlbum ? r.id : undefined
+            );
+            
+            setReleases(prev => {
+              const next = [...prev];
+              if (index >= 0 && next[index]) {
+                if (isAlbum) {
+                  next[index] = {
+                    ...next[index],
+                    exists: check.exists,
+                    albumStatus: check.status,
+                    upgradeAvailable: check.upgrade_available,
+                    tracks: check.tracks || [],
+                    checking: false
+                  };
+                } else {
+                  next[index] = {
+                    ...next[index],
+                    exists: check.exists,
+                    qualityStatus: check.quality_status,
+                    checking: false
+                  };
+                }
+              }
+              return next;
+            });
+          } catch {
+            setReleases(prev => {
+              const next = [...prev];
+              if (index >= 0 && next[index]) {
+                next[index] = { ...next[index], checking: false };
+              }
+              return next;
+            });
+          }
+        }));
+      }
 
     } catch (err) {
       console.error("Failed to load artist releases", err);
@@ -269,8 +281,8 @@ export const MyArtists: React.FC = () => {
     }
   };
 
-  const albums = releases.filter(r => r.record_type === 'album');
-  const singlesAndEps = releases.filter(r => r.record_type === 'single' || r.record_type === 'ep');
+  const albums = releases.filter(r => r && (r.record_type === 'album' || !r.record_type));
+  const singlesAndEps = releases.filter(r => r && (r.record_type === 'single' || r.record_type === 'ep'));
 
   const filteredArtists = artists.filter(a => 
     a.artist_name.toLowerCase().includes(filterText.toLowerCase())
@@ -733,7 +745,7 @@ export const MyArtists: React.FC = () => {
                                   <Avatar src={release.cover_medium} variant="rounded" sx={{ width: 50, height: 50 }} />
                                   <ListItemText 
                                     primary={<Typography sx={{ fontWeight: 700 }}>{release.title}</Typography>}
-                                    secondary={`${release.record_type.toUpperCase()} ${release.release_date ? `• ${new Date(release.release_date).getFullYear()}` : ''}`}
+                                    secondary={`${(release.record_type || 'single').toUpperCase()} ${release.release_date ? `• ${new Date(release.release_date).getFullYear()}` : ''}`}
                                   />
                                 </Box>
                                 <Box display="flex" alignItems="center" gap={1.5}>

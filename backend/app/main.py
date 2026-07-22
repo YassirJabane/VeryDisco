@@ -1863,14 +1863,16 @@ async def deezer_artist_albums(artist_id: int):
 
 class PinArtistRequest(BaseModel):
     artist_name: str
+    mbid: Optional[str] = None
     deezer_id: Optional[int] = None
     picture_url: Optional[str] = None
 
 @app.get("/api/pinned_artists")
 async def get_pinned_artists(request: Request):
-    """Fetch all pinned/saved artists, automatically importing new ones from Navidrome or on-disk."""
+    """Fetch all pinned/saved artists, automatically importing new ones from Navidrome or on-disk using MusicBrainz."""
     try:
         from backend.app.auth import get_current_user
+        from backend.app.clients.musicbrainz import musicbrainz_client
         user = await get_current_user(request)
         user_id = user["id"]
         
@@ -1921,23 +1923,22 @@ async def get_pinned_artists(request: Request):
             new_artists = list(new_artists_set)
             
             if new_artists:
-                logger.info(f"Importing {len(new_artists)} new artists from Navidrome: {new_artists}")
+                logger.info(f"Importing {len(new_artists)} new artists from Navidrome via MusicBrainz: {new_artists}")
                 
                 async def resolve_and_save(art_name):
-                    d_id = 0
+                    mbid = None
                     pic_url = ""
                     try:
-                        url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(art_name)}&limit=1"
-                        async with httpx.AsyncClient(timeout=10) as cl:
-                            resp = await cl.get(url)
-                            if resp.status_code == 200:
-                                d = resp.json().get("data", [])
-                                if d:
-                                    d_id = d[0].get("id", 0)
-                                    pic_url = d[0].get("picture_medium", "")
-                    except Exception as de:
-                        logger.warning(f"Failed to query Deezer metadata for artist {art_name}: {de}")
-                    await db.add_pinned_artist(art_name, d_id, pic_url, user_id=user_id)
+                        mb_art = await musicbrainz_client.search_artist(art_name)
+                        if mb_art:
+                            mbid = mb_art.get("id")
+                            art_name = mb_art.get("name", art_name)
+                            rgroups = await musicbrainz_client.get_artist_release_groups(mbid)
+                            if rgroups:
+                                pic_url = rgroups[0].get("cover_medium", "")
+                    except Exception as mbe:
+                        logger.warning(f"Failed to query MusicBrainz metadata for artist {art_name}: {mbe}")
+                    await db.add_pinned_artist(art_name, mbid=mbid, picture_url=pic_url, user_id=user_id)
                 
                 await asyncio.gather(*(resolve_and_save(a) for a in new_artists))
                 artists = await db.get_pinned_artists(user_id)
@@ -1961,22 +1962,21 @@ async def get_pinned_artists(request: Request):
                 local_artists = list(local_artists_set)
                 
                 if local_artists:
-                    logger.info(f"Importing {len(local_artists)} local artists from on-disk directory: {local_artists}")
+                    logger.info(f"Importing {len(local_artists)} local artists from on-disk directory via MusicBrainz: {local_artists}")
                     async def resolve_and_save(art_name):
-                        d_id = 0
+                        mbid = None
                         pic_url = ""
                         try:
-                            url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(art_name)}&limit=1"
-                            async with httpx.AsyncClient(timeout=10) as cl:
-                                resp = await cl.get(url)
-                                if resp.status_code == 200:
-                                    d = resp.json().get("data", [])
-                                    if d:
-                                        d_id = d[0].get("id", 0)
-                                        pic_url = d[0].get("picture_medium", "")
-                        except Exception as de:
-                            logger.warning(f"Failed to query Deezer metadata for artist {art_name}: {de}")
-                        await db.add_pinned_artist(art_name, d_id, pic_url, user_id=user_id)
+                            mb_art = await musicbrainz_client.search_artist(art_name)
+                            if mb_art:
+                                mbid = mb_art.get("id")
+                                art_name = mb_art.get("name", art_name)
+                                rgroups = await musicbrainz_client.get_artist_release_groups(mbid)
+                                if rgroups:
+                                    pic_url = rgroups[0].get("cover_medium", "")
+                        except Exception as mbe:
+                            logger.warning(f"Failed to query MusicBrainz metadata for artist {art_name}: {mbe}")
+                        await db.add_pinned_artist(art_name, mbid=mbid, picture_url=pic_url, user_id=user_id)
                     
                     await asyncio.gather(*(resolve_and_save(a) for a in local_artists))
                     artists = await db.get_pinned_artists(user_id)
@@ -1988,8 +1988,9 @@ async def get_pinned_artists(request: Request):
 
 @app.post("/api/pinned_artists")
 async def pin_artist(req: PinArtistRequest, request: Request):
-    """Pin a new artist, searching Deezer if metadata isn't provided."""
+    """Pin a new artist, searching MusicBrainz for canonical metadata."""
     from backend.app.auth import get_current_user
+    from backend.app.clients.musicbrainz import musicbrainz_client
     user = await get_current_user(request)
     user_id = user["id"]
 
@@ -1997,30 +1998,28 @@ async def pin_artist(req: PinArtistRequest, request: Request):
     if not artist_name:
         raise HTTPException(status_code=400, detail="Artist name cannot be empty.")
         
-    deezer_id = req.deezer_id
+    mbid = req.mbid
     picture_url = req.picture_url
     
-    # Resolve metadata via Deezer if not provided
-    if not deezer_id:
+    # Resolve metadata via MusicBrainz if MBID not provided
+    if not mbid:
         try:
-            url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(artist_name)}&limit=1"
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json().get("data", [])
-                if not data:
-                    raise HTTPException(status_code=404, detail=f"Artist '{artist_name}' not found on Deezer.")
-                first = data[0]
-                artist_name = first.get("name", artist_name)
-                deezer_id = first.get("id")
-                picture_url = first.get("picture_medium")
-        except httpx.HTTPError as e:
-            logger.error(f"Deezer search for artist '{artist_name}' failed: {e}")
-            raise HTTPException(status_code=502, detail=f"Failed to verify artist on Deezer: {e}")
+            mb_art = await musicbrainz_client.search_artist(artist_name)
+            if not mb_art:
+                raise HTTPException(status_code=404, detail=f"Artist '{artist_name}' not found on MusicBrainz.")
+            artist_name = mb_art.get("name", artist_name)
+            mbid = mb_art.get("id")
+            if not picture_url:
+                rgroups = await musicbrainz_client.get_artist_release_groups(mbid)
+                if rgroups:
+                    picture_url = rgroups[0].get("cover_medium", "")
+        except Exception as e:
+            logger.error(f"MusicBrainz search for artist '{artist_name}' failed: {e}")
+            raise HTTPException(status_code=502, detail=f"Failed to verify artist on MusicBrainz: {e}")
             
     try:
-        artist_id = await db.add_pinned_artist(artist_name, deezer_id, picture_url, user_id=user_id)
-        return {"status": "success", "id": artist_id, "artist_name": artist_name, "deezer_id": deezer_id, "picture_url": picture_url}
+        artist_id = await db.add_pinned_artist(artist_name, deezer_id=req.deezer_id, picture_url=picture_url, user_id=user_id, mbid=mbid)
+        return {"status": "success", "id": artist_id, "artist_name": artist_name, "mbid": mbid, "picture_url": picture_url}
     except Exception as e:
         logger.error(f"Failed to pin artist '{artist_name}': {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
@@ -2101,15 +2100,39 @@ async def unpin_artist(id: int, request: Request):
         logger.error(f"Failed to delete artist '{id}': {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete artist: {e}")
 
-@app.get("/api/deezer/artist/{artist_id}/releases")
-async def get_deezer_artist_releases(artist_id: int):
-    """Fetch releases for a given artist ID from Deezer."""
-    from backend.app.clients.deezer import DeezerClient
-    dz = DeezerClient(timeout=10)
-    releases = await dz.get_artist_releases(artist_id)
-    if releases is None:
-        raise HTTPException(status_code=502, detail="Failed to fetch artist releases from Deezer.")
+@app.get("/api/artist/{artist_identifier}/releases")
+async def get_artist_releases_mb(artist_identifier: str):
+    """Fetch official release groups (albums, EPs, singles) for an artist from MusicBrainz."""
+    from backend.app.clients.musicbrainz import musicbrainz_client
+    mbid = artist_identifier
+
+    # Check if artist_identifier is a database ID or name
+    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', artist_identifier, re.IGNORECASE):
+        async with db.get_db() as conn:
+            cursor = await conn.execute("SELECT mbid, artist_name FROM pinned_artists WHERE id = ? OR deezer_id = ?", (artist_identifier, artist_identifier))
+            row = await cursor.fetchone()
+            if row and row["mbid"]:
+                mbid = row["mbid"]
+            elif row and row["artist_name"]:
+                mb_art = await musicbrainz_client.search_artist(row["artist_name"])
+                if mb_art:
+                    mbid = mb_art.get("id")
+
+    if not mbid or not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', mbid, re.IGNORECASE):
+        mb_art = await musicbrainz_client.search_artist(artist_identifier)
+        if mb_art:
+            mbid = mb_art.get("id")
+
+    if not mbid:
+        raise HTTPException(status_code=404, detail="Artist MBID not found on MusicBrainz.")
+
+    releases = await musicbrainz_client.get_artist_release_groups(mbid)
     return releases
+
+@app.get("/api/deezer/artist/{artist_id}/releases")
+async def get_deezer_artist_releases_legacy(artist_id: str):
+    """Legacy alias redirecting to MusicBrainz artist release groups endpoint."""
+    return await get_artist_releases_mb(artist_id)
 
 class LikeRequest(BaseModel):
     artist: str

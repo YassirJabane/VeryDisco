@@ -700,6 +700,8 @@ async def _download_album_task_internal(
                 if not directories:
                     continue
 
+                official_len = len(official_album_tracks) if official_album_tracks else 0
+
                 def count_matching_official_tracks(dir_files):
                     if not official_album_tracks:
                         return len(dir_files)
@@ -713,16 +715,36 @@ async def _download_album_task_internal(
                             cnt += 1
                     return cnt
 
-                sorted_dirs = sorted(
-                    directories.items(),
-                    key=lambda item: (
-                        count_matching_official_tracks(item[1]),
-                        len(item[1]),
-                        filename_cleanliness_score(item[1]),
-                        -item[1][0].get("priority", 999)
-                    ),
-                    reverse=True
-                )
+                def directory_score(item):
+                    dir_key, dir_files = item
+                    folder_name = dir_key[1].replace("\\", "/").split("/")[-1].lower()
+                    album_lower = album.lower()
+                    
+                    matches = count_matching_official_tracks(dir_files)
+                    
+                    # Track count distance penalty (closer to official track count is better)
+                    if official_len > 0:
+                        count_diff_penalty = -abs(len(dir_files) - official_len)
+                    else:
+                        count_diff_penalty = len(dir_files)
+
+                    # Edition match bonus / penalty
+                    edition_score = 0
+                    if "remaster" in album_lower and "remaster" in folder_name:
+                        edition_score += 5
+                    if "25" not in album_lower and ("25" in folder_name or "anniversary" in folder_name):
+                        edition_score -= 10
+                    if "deluxe" not in album_lower and "deluxe" in folder_name:
+                        edition_score -= 5
+                    if "special" not in album_lower and "special" in folder_name:
+                        edition_score -= 5
+
+                    cleanliness = filename_cleanliness_score(dir_files)
+                    prio = -dir_files[0].get("priority", 999) if dir_files else -999
+
+                    return (matches, count_diff_penalty, edition_score, cleanliness, prio)
+
+                sorted_dirs = sorted(directories.items(), key=directory_score, reverse=True)
                 candidates = sorted_dirs
                 break
 

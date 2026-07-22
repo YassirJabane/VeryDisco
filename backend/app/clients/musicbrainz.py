@@ -260,7 +260,39 @@ class MusicBrainzClient:
         sort_name = artist.get("sort-name")
         if sort_name:
             names.add(sort_name)
-        return list(names)
+    async def get_artist_release_groups(self, artist_mbid: str) -> List[Dict[str, Any]]:
+        """
+        Fetch all release groups (albums, EPs, singles) for a MusicBrainz artist.
+        Returns a list of dictionaries with id, title, record_type, release_date, cover_medium.
+        """
+        data = await _mb_get("/release-group", params={
+            "artist": artist_mbid,
+            "limit": 100,
+            "fmt": "json"
+        })
+        if not data:
+            return []
+        
+        rgroups = data.get("release-groups", [])
+        result = []
+        for rg in rgroups:
+            rg_id = rg.get("id")
+            primary_type = (rg.get("primary-type") or "Album").lower()
+            if primary_type not in ["album", "single", "ep"]:
+                primary_type = "album"
+            
+            first_release_date = rg.get("first-release-date") or ""
+            
+            result.append({
+                "id": rg_id,
+                "mbid": rg_id,
+                "title": rg.get("title", ""),
+                "record_type": primary_type,
+                "release_date": first_release_date,
+                "cover_medium": f"https://coverartarchive.org/release-group/{rg_id}/front-250",
+            })
+            
+        return result
 
     # -----------------------------------------------------------------------
     # Recording / track lookup

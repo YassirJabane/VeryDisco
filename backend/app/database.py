@@ -267,7 +267,15 @@ class Database:
                     await db.commit()
                 except Exception:
                     pass
-            # Add playlist_dir to users table if upgrading from old schema
+            # Add mbid column to pinned_artists if missing
+            try:
+                await db.execute("SELECT mbid FROM pinned_artists LIMIT 1")
+            except Exception:
+                try:
+                    await db.execute("ALTER TABLE pinned_artists ADD COLUMN mbid TEXT")
+                    await db.commit()
+                except Exception:
+                    pass
             try:
                 await db.execute("SELECT playlist_dir FROM users LIMIT 1")
             except Exception:
@@ -453,11 +461,11 @@ class Database:
                     rows = await cursor.fetchall()
                     return [dict(r) for r in rows]
 
-    async def add_pinned_artist(self, artist_name: str, deezer_id: int, picture_url: Optional[str], user_id: Optional[str] = None) -> int:
+    async def add_pinned_artist(self, artist_name: str, deezer_id: Optional[int] = 0, picture_url: Optional[str] = None, user_id: Optional[str] = None, mbid: Optional[str] = None) -> int:
         async with self.get_db() as db:
             cursor = await db.execute(
-                "INSERT OR REPLACE INTO pinned_artists (artist_name, deezer_id, picture_url, user_id) VALUES (?, ?, ?, ?)",
-                (artist_name, deezer_id, picture_url, user_id)
+                "INSERT OR REPLACE INTO pinned_artists (artist_name, deezer_id, picture_url, user_id, mbid) VALUES (?, ?, ?, ?, ?)",
+                (artist_name, deezer_id or 0, picture_url, user_id, mbid)
             )
             await db.commit()
             return cursor.lastrowid

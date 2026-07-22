@@ -28,6 +28,10 @@ def _result_matches(result: dict, artist: str, title: str) -> bool:
     artist_match = any(w in r_artist for w in artist_words) if artist_words else (n_artist in r_artist)
     return artist_match
 
+import asyncio
+
+_deezer_semaphore = asyncio.Semaphore(5)
+
 class DeezerClient:
     def __init__(self, timeout: int = 15):
         self.base_url = "https://api.deezer.com"
@@ -71,13 +75,20 @@ class DeezerClient:
     async def get_album_tracks(self, album_id: int) -> Optional[Dict[str, Any]]:
         """Fetch tracks of a given album from Deezer."""
         url = f"{self.base_url}/album/{album_id}/tracks?limit=100"
-        try:
-            client = get_http_client()
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch album tracks for {album_id} from Deezer: {e}")
+        async with _deezer_semaphore:
+            for attempt in range(3):
+                try:
+                    client = get_http_client()
+                    resp = await client.get(url)
+                    if resp.status_code == 429:
+                        await asyncio.sleep(0.8 * (attempt + 1))
+                        continue
+                    resp.raise_for_status()
+                    return resp.json()
+                except Exception as e:
+                    if attempt == 2:
+                        logger.error(f"Failed to fetch album tracks for {album_id} from Deezer: {e}")
+                    await asyncio.sleep(0.4)
             return None
 
     async def get_album_metadata(self, album_id: int) -> Optional[Dict[str, Any]]:
