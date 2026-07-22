@@ -527,21 +527,36 @@ async def _download_album_task_internal(
             queries = []
             art_lower = clean_art.lower()
             alb_lower = clean_alb.lower()
+
+            seen_q = set()
+            def add_query(q_text, req_artist):
+                if q_text and q_text.strip() and q_text.strip() not in seen_q:
+                    seen_q.add(q_text.strip())
+                    queries.append((q_text.strip(), req_artist))
+
             if art_lower == alb_lower:
-                queries.append((clean_art, False))
+                add_query(clean_art, False)
             elif art_lower in alb_lower:
-                queries.append((clean_alb, False))
+                add_query(clean_alb, False)
             elif alb_lower in art_lower:
-                queries.append((clean_art, False))
+                add_query(clean_art, False)
             else:
-                queries.append((f"{main_art} {clean_alb}", False))
+                # 1. Hyphenated "Artist - Album" patterns (Soulseek standard directory format)
+                add_query(f"{main_art} - {stripped_alb}", False)
+                if stripped_alb != clean_alb:
+                    add_query(f"{main_art} - {clean_alb}", False)
                 if main_art != clean_art:
-                    queries.append((f"{clean_art} {clean_alb}", False))
-                if stripped_alb and stripped_alb != clean_alb:
-                    queries.append((f"{main_art} {stripped_alb}", False))
-                if stripped_alb and stripped_alb != clean_alb and main_art != clean_art:
-                    queries.append((f"{clean_art} {stripped_alb}", False))
-                queries.append((clean_alb, True))  # Broad query requires verifying the artist
+                    add_query(f"{clean_art} - {stripped_alb}", False)
+
+                # 2. Space-separated "Artist Album" patterns
+                add_query(f"{main_art} {stripped_alb}", False)
+                if stripped_alb != clean_alb:
+                    add_query(f"{main_art} {clean_alb}", False)
+                if main_art != clean_art:
+                    add_query(f"{clean_art} {stripped_alb}", False)
+
+                # 3. Album-only fallback
+                add_query(stripped_alb or clean_alb, True)
 
             best_dir_key = None
             best_files = []
