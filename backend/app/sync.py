@@ -918,14 +918,14 @@ async def relocate_and_tag_download(
     if not lyrics_content and lrclib_client:
         logger.info(f"Searching lyrics for '{artist_clean} - {title_clean}' on LRCLIB...")
         try:
-            l_res = await lrclib_client.get_lyrics(artist_clean, title_clean, dz_album)
-            if l_res and (l_res.get("syncedLyrics") or l_res.get("plainLyrics")):
-                if l_res.get("syncedLyrics"):
-                    lyrics_content = l_res["syncedLyrics"]
-                    lyrics_status = "synced"
-                else:
-                    lyrics_content = l_res["plainLyrics"]
-                    lyrics_status = "plain"
+            search_art = extract_main_artist(artist_clean)
+            lyrics_text, l_type = await lrclib_client.get_lyrics(search_art, title_clean, dz_album)
+            if not lyrics_text and search_art != artist_clean:
+                lyrics_text, l_type = await lrclib_client.get_lyrics(artist_clean, title_clean, dz_album)
+                
+            if lyrics_text and l_type != "missing":
+                lyrics_content = lyrics_text
+                lyrics_status = l_type
                 logger.info(f"Found {lyrics_status} lyrics for '{artist_clean} - {title_clean}'")
             else:
                 logger.info(f"No lyrics found on LRCLIB for '{artist_clean} - {title_clean}'")
