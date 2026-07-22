@@ -87,23 +87,33 @@ def extract_audio_tags(file_path: Path) -> Tuple[Optional[str], Optional[str], O
 def embed_mbid_into_file(file_path: Path, mbid_track: str, mbid_album: Optional[str] = None) -> bool:
     """Embed MusicBrainz track & album MBIDs into audio file tags."""
     ext = file_path.suffix.lower()
+    str_path = str(file_path)
     try:
         if ext == ".mp3":
+            from mutagen.mp3 import MP3
             from mutagen.id3 import ID3, UFID, TXXX
             try:
-                tags = ID3(file_path)
+                audio = MP3(str_path)
+                if audio.tags is None:
+                    audio.add_tags()
+                tags = audio.tags
             except Exception:
-                tags = ID3()
+                try:
+                    tags = ID3(str_path)
+                except Exception:
+                    tags = ID3()
+
             if mbid_track:
                 tags.add(UFID(owner="http://musicbrainz.org", data=mbid_track.encode('utf-8')))
                 tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[mbid_track]))
             if mbid_album:
                 tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
-            tags.save(file_path, v2_version=3)
+
+            tags.save(str_path, v2_version=3)
 
         elif ext in (".flac", ".ogg"):
             from mutagen.flac import FLAC
-            audio = FLAC(file_path)
+            audio = FLAC(str_path)
             if mbid_track:
                 audio["musicbrainz_trackid"] = mbid_track
             if mbid_album:
@@ -112,12 +122,17 @@ def embed_mbid_into_file(file_path: Path, mbid_track: str, mbid_album: Optional[
 
         elif ext in (".m4a", ".mp4"):
             from mutagen.mp4 import MP4
-            audio = MP4(file_path)
+            audio = MP4(str_path)
             if mbid_track:
                 audio["----:com.apple.iTunes:MusicBrainz Track Id"] = mbid_track.encode('utf-8')
             if mbid_album:
                 audio["----:com.apple.iTunes:MusicBrainz Album Id"] = mbid_album.encode('utf-8')
             audio.save()
+
+        try:
+            os.utime(str_path, None)
+        except Exception:
+            pass
 
         return True
     except Exception as e:
