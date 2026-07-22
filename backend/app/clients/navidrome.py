@@ -162,6 +162,10 @@ class NavidromeClient:
             logger.error(f"Failed to fetch Navidrome artists list: {e}")
             return []
 
+    async def get_all_artists(self) -> list[str]:
+        """Alias for get_artists_list."""
+        return await self.get_artists_list()
+
     async def get_starred_tracks(self) -> list[dict]:
         """Fetch all starred/liked tracks from Navidrome."""
         if not self.url or not self.username or (not self.password and not (self.token and self.salt)):

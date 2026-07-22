@@ -1880,7 +1880,7 @@ async def get_pinned_artists(request: Request):
         if user.get("is_admin") and cfg and cfg.navidrome and cfg.navidrome.url:
             from backend.app.clients.navidrome import NavidromeClient
             client = NavidromeClient(url=cfg.navidrome.url, username=cfg.navidrome.username, password=cfg.navidrome.password)
-            nd_artists = await client.get_all_artists()
+            nd_artists = await client.get_artists_list()
             
             pinned_names = {a["artist_name"].lower() for a in artists}
             new_artists_set = set()
