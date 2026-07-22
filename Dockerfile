@@ -37,8 +37,9 @@ RUN mkdir -p /data /app/frontend/dist /slskd_downloads /music && \
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy FastAPI backend code
+# Copy FastAPI backend code and scripts
 COPY backend/app/ /app/backend/app/
+COPY scripts/ /app/scripts/
 
 # Copy React compiled assets from stage 1
 COPY --from=frontend-builder /build/dist/ /app/frontend/dist/
