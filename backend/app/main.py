@@ -1264,7 +1264,7 @@ async def deezer_search(query: str, type: str = "track"):
         raise HTTPException(status_code=502, detail=f"Deezer search failed: {e}")
 
 @app.get("/api/search/check")
-async def check_existence(artist: str, title: str, request: Request, album_id: Optional[int] = None):
+async def check_existence(artist: str, title: str, request: Request, album_id: Optional[str] = None):
     """Check if track or album exists in staging, playlist dir, or music library, and check for upgrades."""
     if not config_manager.is_configured or not config_manager.config:
         return {"exists": False, "status": "missing", "upgrade_available": False, "tracks": []}
@@ -1315,20 +1315,42 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
         }
 
     if album_id:
-        from backend.app.clients.deezer import DeezerClient
-        dz = DeezerClient(timeout=10)
-        tracks_data = await dz.get_album_tracks(album_id)
-        if not tracks_data or "data" not in tracks_data:
-            return {"exists": False, "status": "missing", "upgrade_available": False, "tracks": []}
+        tracks = []
+        album_id_str = str(album_id).strip()
+        
+        # Check if album_id is a MusicBrainz MBID UUID (contains hyphen and length > 20)
+        if '-' in album_id_str and len(album_id_str) > 20:
+            from backend.app.clients.musicbrainz import musicbrainz_client
+            mb_tracks = await musicbrainz_client.get_album_tracklist(album_id_str)
+            if mb_tracks:
+                tracks = [{"title": t.get("title", ""), "artist": artist} for t in mb_tracks]
+        else:
+            from backend.app.clients.deezer import DeezerClient
+            dz = DeezerClient(timeout=10)
+            try:
+                tracks_data = await dz.get_album_tracks(int(album_id_str))
+                if tracks_data and "data" in tracks_data:
+                    tracks = [{"title": t.get("title", ""), "artist": t.get("artist", {}).get("name", artist)} for t in tracks_data["data"]]
+            except Exception as e:
+                logger.warning(f"Deezer album tracks lookup failed for {album_id}: {e}")
+
+        # Fallback: If no tracks retrieved via API, perform track check on album title
+        if not tracks:
+            res = check_track(artist, title)
+            return {
+                "exists": res["exists"],
+                "status": "full" if res["exists"] else "missing",
+                "upgrade_available": res["quality_status"] == "worse",
+                "tracks": []
+            }
             
-        tracks = tracks_data["data"]
         checked_tracks = []
         exists_count = 0
         upgrade_available = False
         
         for t in tracks:
             t_title = t.get("title", "")
-            t_artist = t.get("artist", {}).get("name", artist)
+            t_artist = t.get("artist", artist)
             
             res = check_track(t_artist, t_title)
             res["title"] = t_title
@@ -1870,26 +1892,20 @@ class PinArtistRequest(BaseModel):
 _artist_pic_semaphore = asyncio.Semaphore(2)
 
 async def fetch_deezer_artist_picture(artist_name: str) -> str:
-    """Fetch high-resolution artist portrait from Deezer with rate limiting and retries."""
-    clean_name = artist_name.split('feat')[0].split('ft.')[0].strip()
-    url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(clean_name)}&limit=1"
-    async with _artist_pic_semaphore:
-        for attempt in range(3):
-            try:
-                client = get_http_client()
-                resp = await client.get(url)
-                if resp.status_code == 429:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-                if resp.status_code == 200:
-                    data = resp.json().get("data", [])
-                    if data:
-                        pic = data[0].get("picture_big") or data[0].get("picture_medium") or data[0].get("picture") or ""
-                        if pic:
-                            return pic
-            except Exception as e:
-                logger.debug(f"Attempt {attempt+1} failed to fetch artist picture from Deezer for {artist_name}: {e}")
-                await asyncio.sleep(0.3)
+    """Fetch official artist picture_medium directly from Deezer using standard HTTP client."""
+    try:
+        clean_name = artist_name.split('feat')[0].split('ft.')[0].strip()
+        url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(clean_name)}&limit=1"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        async with httpx.AsyncClient(timeout=10, headers=headers) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                data = resp.json().get("data", [])
+                if data and data[0]:
+                    first = data[0]
+                    return first.get("picture_medium") or first.get("picture_big") or first.get("picture") or ""
+    except Exception as e:
+        logger.warning(f"Failed to fetch Deezer artist picture for '{artist_name}': {e}")
     return ""
 
 @app.get("/api/pinned_artists")
@@ -2000,6 +2016,9 @@ async def get_pinned_artists(request: Request):
                         await db.add_pinned_artist(art_name, mbid=mbid, picture_url=pic_url, user_id=user_id)
                     
                     await asyncio.gather(*(resolve_and_save(a) for a in local_artists))
+        
+        artists = await db.get_pinned_artists(user_id)
+
         # Self-healing: Backfill missing artist picture_urls from Deezer
         for a in artists:
             if not a.get("picture_url"):
