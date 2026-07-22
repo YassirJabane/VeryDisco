@@ -1153,7 +1153,8 @@ async def _download_album_task_internal(
                                 config=config,
                                 db=db,
                                 force=True,
-                                user_id=user_id
+                                user_id=user_id,
+                                mbid_album_override=official_mb_release_mbid
                             ),
                             task_id=f"track:{artist}:{t_title}",
                             task_type="track",
@@ -1167,7 +1168,8 @@ async def _download_album_task_internal(
                             config=config,
                             db=db,
                             force=True,
-                            user_id=user_id
+                            user_id=user_id,
+                            mbid_album_override=official_mb_release_mbid
                         ))
 
         # Trigger Navidrome scan at the end of album download
@@ -1213,7 +1215,18 @@ async def _download_album_task_internal(
         except Exception as e:
             logger.debug(f"Failed to clear playlist cache: {e}")
 
-async def download_single_track_task(artist: str, title: str, album: str, config: 'AppConfig', db=None, force: bool = False, user_id: Optional[str] = None, is_explore: bool = False, dest_dir_override: Optional[str] = None):
+async def download_single_track_task(
+    artist: str,
+    title: str,
+    album: str,
+    config: 'AppConfig',
+    db=None,
+    force: bool = False,
+    user_id: Optional[str] = None,
+    is_explore: bool = False,
+    dest_dir_override: Optional[str] = None,
+    mbid_album_override: Optional[str] = None
+):
     """Background task to search, download and organize a single track."""
     logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
     
@@ -1449,7 +1462,7 @@ async def download_single_track_task(artist: str, title: str, album: str, config
                     disc_num=disc_num,
                     disc_total=disc_total,
                     is_explore=is_explore,
-                    mbid_album=mbid_album,
+                    mbid_album=mbid_album_override or mbid_album,
                     mbid_recording=mbid_recording
                 )
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
