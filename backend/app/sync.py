@@ -1307,8 +1307,8 @@ def _build_library_index(music_dir: str) -> Dict[str, Any]:
     music_path = Path(music_dir)
     if music_path.exists() and music_path.is_dir():
         for root, dirs, files in os.walk(music_dir):
-            # Skip playlists, explore, and hidden directories
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in ["playlists", "navidrome_playlists", "explore"]]
+            # Skip hidden directories
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
                 if f.lower().endswith((".mp3", ".flac", ".m4a")):
                     full_path = Path(root) / f

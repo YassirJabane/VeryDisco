@@ -1291,14 +1291,17 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
         pass
         
     from pathlib import Path
-    from backend.app.sync import find_existing_track_file, get_file_audio_info, check_quality_status
+    from backend.app.sync import find_existing_track_file, get_file_audio_info, check_quality_status, _build_library_index
     
     playlist_dirs = [os.path.join(playlists_dir, p) for p in active_playlists]
     
-    def check_track(t_artist: str, t_title: str) -> dict:
+    # Pre-build library index for fast MBID & filename matching
+    library_index = await asyncio.to_thread(_build_library_index, music_dir)
+    
+    def check_track(t_artist: str, t_title: str, target_mbid: Optional[str] = None) -> dict:
         found_path = None
         for playlist_output_dir in playlist_dirs:
-            audio_path, _ = find_existing_track_file(music_dir, playlist_output_dir, "", t_artist, t_title)
+            audio_path, _ = find_existing_track_file(music_dir, playlist_output_dir, "", t_artist, t_title, library_index=library_index, target_mbid=target_mbid)
             if audio_path:
                 found_path = audio_path
                 break
@@ -1323,7 +1326,7 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
             from backend.app.clients.musicbrainz import musicbrainz_client
             mb_data = await musicbrainz_client.get_album_tracklist(artist, title)
             if mb_data and mb_data.get("tracks"):
-                tracks = [{"title": t.get("title", ""), "artist": artist} for t in mb_data["tracks"]]
+                tracks = [{"title": t.get("title", ""), "artist": artist, "id": t.get("id")} for t in mb_data["tracks"]]
         except Exception as e:
             logger.warning(f"MusicBrainz tracklist lookup failed for {artist} - {title}: {e}")
 
@@ -1337,7 +1340,7 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
             except Exception as e:
                 logger.warning(f"Deezer album tracks lookup failed for {album_id}: {e}")
 
-        # Fallback: If no tracks retrieved via API, scan local music directory for matching album folder
+        # Fallback: If no tracks retrieved via API, scan local music directory for matching album folder (including disc subfolders)
         if not tracks:
             clean_art = re.sub(r'[^\w\s]', '', artist).strip().lower()
             clean_alb = re.sub(r'[^\w\s]', '', title).strip().lower()
@@ -1345,14 +1348,18 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
             track_count = 0
             
             if os.path.exists(music_dir):
-                for root, _, files in os.walk(music_dir):
-                    root_name = Path(root).name.lower()
-                    clean_root = re.sub(r'[^\w\s]', '', root_name).strip()
-                    if clean_alb and (clean_alb in clean_root or clean_root in clean_alb):
-                        audio_files = [f for f in files if f.lower().endswith(('.mp3', '.flac', '.m4a', '.wav', '.ogg'))]
-                        if audio_files:
-                            folder_found = True
-                            track_count += len(audio_files)
+                music_p = Path(music_dir)
+                for root, _, files in os.walk(music_p):
+                    try:
+                        rel = Path(root).relative_to(music_p)
+                        rel_parts = [re.sub(r'[^\w\s]', '', p.lower()).strip() for p in rel.parts]
+                        if clean_alb and any(clean_alb == part or (len(clean_alb) >= 3 and clean_alb in part) for part in rel_parts if len(part) >= 2):
+                            audio_files = [f for f in files if f.lower().endswith(('.mp3', '.flac', '.m4a', '.wav', '.ogg'))]
+                            if audio_files:
+                                folder_found = True
+                                track_count += len(audio_files)
+                    except Exception:
+                        pass
                             
             if folder_found:
                 return {
@@ -1377,8 +1384,9 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
         for t in tracks:
             t_title = t.get("title", "")
             t_artist = t.get("artist", artist)
+            t_mbid = t.get("id")
             
-            res = check_track(t_artist, t_title)
+            res = check_track(t_artist, t_title, target_mbid=t_mbid)
             res["title"] = t_title
             checked_tracks.append(res)
             
