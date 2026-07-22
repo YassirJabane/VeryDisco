@@ -804,19 +804,20 @@ async def _download_album_task_internal(
 
             url = f"{slskd_client.base_url}/api/v0/transfers/downloads/{urllib.parse.quote(best_username)}"
             
-            # Queue downloads in throttled batches of 3
-            BATCH_SIZE = 3
+            # Queue downloads in throttled batches of 5
+            BATCH_SIZE = 5
             queue_failed = False
-            async with httpx.AsyncClient(timeout=config.timeouts.http_seconds) as client:
-                for batch_start in range(0, len(to_download), BATCH_SIZE):
-                    batch = to_download[batch_start:batch_start + BATCH_SIZE]
-                    download_payload = [{"filename": f["filename"], "size": f["size"]} for f in batch]
-                    resp = await client.post(url, json=download_payload, headers=slskd_client._get_headers())
-                    if resp.status_code not in [200, 201, 202]:
-                        logger.error(f"Failed to queue album download batch from '{best_username}': {resp.status_code} {resp.text}")
-                        queue_failed = True
-                        break
-                    await asyncio.sleep(2.0)
+            from backend.app.clients.http_client import get_http_client
+            client = get_http_client()
+            for batch_start in range(0, len(to_download), BATCH_SIZE):
+                batch = to_download[batch_start:batch_start + BATCH_SIZE]
+                download_payload = [{"filename": f["filename"], "size": f["size"]} for f in batch]
+                resp = await client.post(url, json=download_payload, headers=slskd_client._get_headers())
+                if resp.status_code not in [200, 201, 202]:
+                    logger.error(f"Failed to queue album download batch from '{best_username}': {resp.status_code} {resp.text}")
+                    queue_failed = True
+                    break
+                await asyncio.sleep(0.2)
             
             if queue_failed:
                 continue

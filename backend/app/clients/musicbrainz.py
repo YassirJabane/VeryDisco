@@ -39,16 +39,17 @@ async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional
             _last_request_time = time.monotonic()
 
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, verify=False) as client:
-                resp = await client.get(url, params=params, headers=headers)
-                if resp.status_code == 404:
-                    return None
-                if resp.status_code in (503, 429):
-                    logger.warning(f"MusicBrainz rate-limited ({resp.status_code}). Sleeping 3s before retry {attempt+1}/3.")
-                    await asyncio.sleep(3)
-                    continue
-                resp.raise_for_status()
-                return resp.json()
+            from backend.app.clients.http_client import get_http_client
+            client = get_http_client()
+            resp = await client.get(url, params=params, headers=headers)
+            if resp.status_code == 404:
+                return None
+            if resp.status_code in (503, 429):
+                logger.warning(f"MusicBrainz rate-limited ({resp.status_code}). Sleeping 3s before retry {attempt+1}/3.")
+                await asyncio.sleep(3)
+                continue
+            resp.raise_for_status()
+            return resp.json()
         except Exception as e:
             logger.warning(f"MusicBrainz request failed ({path}, attempt {attempt+1}/3): {e}")
             if attempt < 2:
@@ -366,18 +367,15 @@ class MusicBrainzClient:
         """Download the front cover art for a release from the Cover Art Archive."""
         url = f"{_CAA_BASE}/release/{release_mbid}/front"
         try:
-            async with httpx.AsyncClient(
-                timeout=15,
-                follow_redirects=True,
-                headers={"User-Agent": _USER_AGENT}
-            ) as client:
-                resp = await client.get(url)
-                if resp.status_code in (200,):
-                    return resp.content if resp.content else None
-                if resp.status_code == 404:
-                    return None
-                logger.debug(f"CAA returned {resp.status_code} for {release_mbid}")
+            from backend.app.clients.http_client import get_http_client
+            client = get_http_client()
+            resp = await client.get(url, headers={"User-Agent": _USER_AGENT})
+            if resp.status_code in (200,):
+                return resp.content if resp.content else None
+            if resp.status_code == 404:
                 return None
+            logger.debug(f"CAA returned {resp.status_code} for {release_mbid}")
+            return None
         except Exception as e:
             logger.debug(f"Failed to fetch cover art from CAA for {release_mbid}: {e}")
             return None

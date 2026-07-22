@@ -1675,7 +1675,7 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           # 6. Generate M3U playlist
           m3u_path = output_path / f"{playlist_source}.m3u"
           try:
-              library_index = _build_library_index(music_dir)
+              library_index = await asyncio.to_thread(_build_library_index, music_dir)
 
               if m3u_path.exists():
                   try:

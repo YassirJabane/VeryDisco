@@ -3,6 +3,7 @@ from typing import Dict, Any, Optional, List
 import urllib.parse
 import re
 from backend.app.logger import get_logger
+from backend.app.clients.http_client import get_http_client
 
 logger = get_logger()
 
@@ -44,24 +45,24 @@ class DeezerClient:
         url = f"{self.base_url}/search?q={urllib.parse.quote(query)}&limit=5"
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
+            client = get_http_client()
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
 
-                results = data.get("data", [])
-                if not results:
-                    logger.warning(f"Deezer search returned no results for '{artist} - {title}'")
-                    return None
+            results = data.get("data", [])
+            if not results:
+                logger.warning(f"Deezer search returned no results for '{artist} - {title}'")
+                return None
 
-                # Find the first result that is a reasonable match
-                for result in results:
-                    if _result_matches(result, clean_artist, clean_title):
-                        return result
+            # Find the first result that is a reasonable match
+            for result in results:
+                if _result_matches(result, clean_artist, clean_title):
+                    return result
 
-                # Fallback: return first result if nothing matches strictly
-                logger.warning(f"Deezer: no strong match found for '{artist} - {title}', using first result")
-                return results[0]
+            # Fallback: return first result if nothing matches strictly
+            logger.warning(f"Deezer: no strong match found for '{artist} - {title}', using first result")
+            return results[0]
 
         except Exception as e:
             logger.error(f"Failed to fetch metadata from Deezer for '{artist} - {title}': {e}")
@@ -71,10 +72,10 @@ class DeezerClient:
         """Fetch tracks of a given album from Deezer."""
         url = f"{self.base_url}/album/{album_id}/tracks?limit=100"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.json()
+            client = get_http_client()
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
         except Exception as e:
             logger.error(f"Failed to fetch album tracks for {album_id} from Deezer: {e}")
             return None
@@ -83,10 +84,10 @@ class DeezerClient:
         """Fetch album details (including release date) from Deezer."""
         url = f"{self.base_url}/album/{album_id}"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.json()
+            client = get_http_client()
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
         except Exception as e:
             logger.error(f"Failed to fetch album metadata for {album_id}: {e}")
             return None
@@ -95,10 +96,10 @@ class DeezerClient:
         """Fetch full track details (including contributors) from Deezer."""
         url = f"{self.base_url}/track/{track_id}"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp.json()
+            client = get_http_client()
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.json()
         except Exception as e:
             logger.error(f"Failed to fetch track details for {track_id}: {e}")
             return None
@@ -127,11 +128,11 @@ class DeezerClient:
         """Fetch all releases (albums, EPs, singles) for a given artist ID from Deezer."""
         url = f"{self.base_url}/artist/{artist_id}/albums?limit=100"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
-                return data.get("data", [])
+            client = get_http_client()
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("data", [])
         except Exception as e:
             logger.error(f"Failed to fetch artist releases for {artist_id} from Deezer: {e}")
             return None
@@ -142,10 +143,10 @@ class DeezerClient:
             return None
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(cover_url)
-                resp.raise_for_status()
-                return resp.content
+            client = get_http_client()
+            resp = await client.get(cover_url)
+            resp.raise_for_status()
+            return resp.content
         except Exception as e:
             logger.error(f"Failed to download cover art from '{cover_url}': {e}")
             return None
@@ -158,25 +159,25 @@ class DeezerClient:
 
         url = f"{self.base_url}/search/album?q={urllib.parse.quote(query)}&limit=5"
         try:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
-                results = data.get("data", [])
-                if not results:
-                    return None
-                best_cover_url = None
-                for res in results:
-                    r_title = _normalize(res.get("title", ""))
-                    a_title = _normalize(clean_album)
-                    if a_title in r_title or r_title in a_title:
-                        best_cover_url = res.get("cover_xl") or res.get("cover_big")
-                        break
-                if not best_cover_url and results:
-                    best_cover_url = results[0].get("cover_xl") or results[0].get("cover_big")
+            client = get_http_client()
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("data", [])
+            if not results:
+                return None
+            best_cover_url = None
+            for res in results:
+                r_title = _normalize(res.get("title", ""))
+                a_title = _normalize(clean_album)
+                if a_title in r_title or r_title in a_title:
+                    best_cover_url = res.get("cover_xl") or res.get("cover_big")
+                    break
+            if not best_cover_url and results:
+                best_cover_url = results[0].get("cover_xl") or results[0].get("cover_big")
 
-                if best_cover_url:
-                    return await self.download_cover_art(best_cover_url)
+            if best_cover_url:
+                return await self.download_cover_art(best_cover_url)
         except Exception as e:
             logger.debug(f"Deezer get_album_cover failed for '{artist} - {album}': {e}")
         return None

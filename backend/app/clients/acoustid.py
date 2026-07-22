@@ -57,15 +57,16 @@ class AcoustIDClient:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(self.base_url, data=params)
-                response.raise_for_status()
-                data = response.json()
-                if data.get("status") == "ok":
-                    return data
-                else:
-                    logger.warning(f"AcoustID API error: {data.get('error', 'Unknown')}")
-                    return None
+            from backend.app.clients.http_client import get_http_client
+            client = get_http_client()
+            response = await client.post(self.base_url, data=params)
+            response.raise_for_status()
+            data = response.json()
+            if data.get("status") == "ok":
+                return data
+            else:
+                logger.warning(f"AcoustID API error: {data.get('error', 'Unknown')}")
+                return None
         except Exception as e:
             logger.error(f"AcoustID lookup failed: {e}")
             return None

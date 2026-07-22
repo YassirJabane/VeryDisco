@@ -6,6 +6,7 @@ import os
 from typing import List, Dict, Any, Optional, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from backend.app.logger import get_logger
+from backend.app.clients.http_client import get_http_client
 
 logger = get_logger()
 
@@ -35,14 +36,14 @@ class SlskdClient:
         url = f"{self.base_url}/api/v0/searches"
         payload = {"searchText": query}
         logger.info(f"Triggering slskd search for query: '{query}'")
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, json=payload, headers=self._get_headers())
-            resp.raise_for_status()
-            data = resp.json()
-            search_id = data.get("id")
-            if not search_id:
-                raise ValueError("slskd did not return a search ID")
-            return search_id
+        client = get_http_client()
+        resp = await client.post(url, json=payload, headers=self._get_headers())
+        resp.raise_for_status()
+        data = resp.json()
+        search_id = data.get("id")
+        if not search_id:
+            raise ValueError("slskd did not return a search ID")
+        return search_id
 
     @retry(
         stop=stop_after_attempt(3),
@@ -53,11 +54,11 @@ class SlskdClient:
     async def get_search_status(self, search_id: str) -> Tuple[bool, int, int]:
         """Check if search is complete. Returns (isComplete, fileCount, lockedFileCount)."""
         url = f"{self.base_url}/api/v0/searches/{search_id}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url, headers=self._get_headers())
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("isComplete", False), data.get("fileCount", 0), data.get("lockedFileCount", 0)
+        client = get_http_client()
+        resp = await client.get(url, headers=self._get_headers())
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("isComplete", False), data.get("fileCount", 0), data.get("lockedFileCount", 0)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -68,10 +69,10 @@ class SlskdClient:
     async def get_search_responses(self, search_id: str) -> List[Dict[str, Any]]:
         """Retrieve results for a search ID."""
         url = f"{self.base_url}/api/v0/searches/{search_id}/responses"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url, headers=self._get_headers())
-            resp.raise_for_status()
-            return resp.json()
+        client = get_http_client()
+        resp = await client.get(url, headers=self._get_headers())
+        resp.raise_for_status()
+        return resp.json()
 
     def _parse_candidates(
         self,
@@ -334,12 +335,12 @@ class SlskdClient:
         }]
         
         logger.info(f"Requesting download from peer '{username}' for file '{filename}' ({size} bytes)")
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, json=payload, headers=self._get_headers())
-            if resp.status_code in [200, 201, 202]:
-                return True
-            logger.error(f"Failed to request download for '{filename}' from '{username}'. Status: {resp.status_code}, Response: {resp.text}")
-            return False
+        client = get_http_client()
+        resp = await client.post(url, json=payload, headers=self._get_headers())
+        if resp.status_code in [200, 201, 202]:
+            return True
+        logger.error(f"Failed to request download for '{filename}' from '{username}'. Status: {resp.status_code}, Response: {resp.text}")
+        return False
  
     @retry(
         stop=stop_after_attempt(3),
@@ -355,11 +356,57 @@ class SlskdClient:
         encoded_user = urllib.parse.quote(username)
         url = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}"
         
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        client = get_http_client()
+        resp = await client.get(url, headers=self._get_headers())
+        
+        if resp.status_code == 404:
+            return "failed", None
+        resp.raise_for_status()
+        
+        data = resp.json()
+        transfers = data if isinstance(data, list) else [data]
+        
+        matched_state = "downloading"
+        matched_id = None
+        found = False
+        for transfer in transfers:
+            for directory in transfer.get("directories", []):
+                for file_info in directory.get("files", []):
+                    if file_info.get("filename") == filename:
+                        actual_size = file_info.get("size", 0)
+                        size_ok = True
+                        if size > 0 and actual_size > 0:
+                            size_ok = abs(actual_size - size) / size < 0.05
+                        
+                        if size_ok:
+                            matched_state = file_info.get("state", "").lower()
+                            matched_id = file_info.get("id")
+                            found = True
+                            break
+                        
+        if found:
+            if "succeeded" in matched_state:
+                return "succeeded", matched_id
+            elif any(x in matched_state for x in ["error", "abort", "cancel", "fail", "time"]):
+                logger.warning(f"Download state for '{filename}' from '{username}' is '{matched_state}'")
+                return "failed", matched_id
+            return "downloading", matched_id
+                        
+        return "downloading", None
+
+    async def get_download_progress(self, username: str, filename: str, size: int) -> Tuple[str, Optional[str], int]:
+        """
+        Check progress of a specific download.
+        Returns (status_string, file_id, bytes_transferred).
+        """
+        encoded_user = urllib.parse.quote(username)
+        url = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}"
+        
+        try:
+            client = get_http_client()
             resp = await client.get(url, headers=self._get_headers())
-            
             if resp.status_code == 404:
-                return "failed", None
+                return "failed", None, 0
             resp.raise_for_status()
             
             data = resp.json()
@@ -367,6 +414,7 @@ class SlskdClient:
             
             matched_state = "downloading"
             matched_id = None
+            bytes_tx = 0
             found = False
             for transfer in transfers:
                 for directory in transfer.get("directories", []):
@@ -380,69 +428,22 @@ class SlskdClient:
                             if size_ok:
                                 matched_state = file_info.get("state", "").lower()
                                 matched_id = file_info.get("id")
+                                bytes_tx = file_info.get("bytesTransferred", 0)
                                 found = True
                                 break
-                            
+                                
             if found:
                 if "succeeded" in matched_state:
-                    return "succeeded", matched_id
+                    return "succeeded", matched_id, bytes_tx
                 elif any(x in matched_state for x in ["error", "abort", "cancel", "fail", "time"]):
                     logger.warning(f"Download state for '{filename}' from '{username}' is '{matched_state}'")
-                    return "failed", matched_id
-                return "downloading", matched_id
+                    return "failed", matched_id, bytes_tx
+                return "downloading", matched_id, bytes_tx
                             
-            return "downloading", None
-
-    async def get_download_progress(self, username: str, filename: str, size: int) -> Tuple[str, Optional[str], int]:
-        """
-        Check progress of a specific download.
-        Returns (status_string, file_id, bytes_transferred).
-        """
-        encoded_user = urllib.parse.quote(username)
-        url = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}"
-        
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                resp = await client.get(url, headers=self._get_headers())
-                if resp.status_code == 404:
-                    return "failed", None, 0
-                resp.raise_for_status()
-                
-                data = resp.json()
-                transfers = data if isinstance(data, list) else [data]
-                
-                matched_state = "downloading"
-                matched_id = None
-                bytes_tx = 0
-                found = False
-                for transfer in transfers:
-                    for directory in transfer.get("directories", []):
-                        for file_info in directory.get("files", []):
-                            if file_info.get("filename") == filename:
-                                actual_size = file_info.get("size", 0)
-                                size_ok = True
-                                if size > 0 and actual_size > 0:
-                                    size_ok = abs(actual_size - size) / size < 0.05
-                                
-                                if size_ok:
-                                    matched_state = file_info.get("state", "").lower()
-                                    matched_id = file_info.get("id")
-                                    bytes_tx = file_info.get("bytesTransferred", 0)
-                                    found = True
-                                    break
-                                    
-                if found:
-                    if "succeeded" in matched_state:
-                        return "succeeded", matched_id, bytes_tx
-                    elif any(x in matched_state for x in ["error", "abort", "cancel", "fail", "time"]):
-                        logger.warning(f"Download state for '{filename}' from '{username}' is '{matched_state}'")
-                        return "failed", matched_id, bytes_tx
-                    return "downloading", matched_id, bytes_tx
-                                
-                return "downloading", None, 0
-            except Exception as e:
-                logger.warning(f"Failed to check progress: {e}")
-                return "downloading", None, 0
+            return "downloading", None, 0
+        except Exception as e:
+            logger.warning(f"Failed to check progress: {e}")
+            return "downloading", None, 0
 
 
     @retry(
@@ -454,50 +455,50 @@ class SlskdClient:
     async def get_all_downloads(self) -> List[Dict[str, Any]]:
         """Fetch all downloads across all users from slskd."""
         url = f"{self.base_url}/api/v0/transfers/downloads"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url, headers=self._get_headers())
-            if resp.status_code == 404:
-                return []
-            resp.raise_for_status()
-            data = resp.json()
-            return data if isinstance(data, list) else [data]
+        client = get_http_client()
+        resp = await client.get(url, headers=self._get_headers())
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else [data]
 
     async def get_peer_downloads(self, username: str) -> List[Dict[str, Any]]:
         """Fetch downloads for a specific peer from slskd."""
         encoded_user = urllib.parse.quote(username)
         url = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url, headers=self._get_headers())
-            if resp.status_code == 404:
-                return []
-            resp.raise_for_status()
-            data = resp.json()
-            return data if isinstance(data, list) else [data]
+        client = get_http_client()
+        resp = await client.get(url, headers=self._get_headers())
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else [data]
 
     async def delete_search(self, search_id: str) -> bool:
         """Delete a search from slskd to clean up."""
         url = f"{self.base_url}/api/v0/searches/{search_id}"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                resp = await client.delete(url, headers=self._get_headers())
-                return resp.status_code in [200, 204]
-            except Exception as e:
-                logger.warning(f"Failed to delete search {search_id}: {e}")
-                return False
+        client = get_http_client()
+        try:
+            resp = await client.delete(url, headers=self._get_headers())
+            return resp.status_code in [200, 204]
+        except Exception as e:
+            logger.warning(f"Failed to delete search {search_id}: {e}")
+            return False
 
     async def delete_download(self, username: str, file_id: str) -> bool:
         """Cancel and remove a download from slskd transfers."""
         encoded_user = urllib.parse.quote(username)
         url_soft = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}/{file_id}?remove=false"
         url_hard = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}/{file_id}?remove=true"
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                # 1. Cancel / soft delete
-                await client.delete(url_soft, headers=self._get_headers())
-                await asyncio.sleep(1)
-                # 2. Hard remove from transfer list
-                resp = await client.delete(url_hard, headers=self._get_headers())
-                return resp.status_code in [200, 204]
-            except Exception as e:
-                logger.warning(f"Failed to delete download {file_id}: {e}")
-                return False
+        client = get_http_client()
+        try:
+            # 1. Cancel / soft delete
+            await client.delete(url_soft, headers=self._get_headers())
+            await asyncio.sleep(1)
+            # 2. Hard remove from transfer list
+            resp = await client.delete(url_hard, headers=self._get_headers())
+            return resp.status_code in [200, 204]
+        except Exception as e:
+            logger.warning(f"Failed to delete download {file_id}: {e}")
+            return False
