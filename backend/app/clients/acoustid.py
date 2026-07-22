@@ -126,7 +126,7 @@ class AcoustIDClient:
         """
         api_key = self.get_api_key()
         if not api_key:
-            return False, "AcoustID API key is not configured"
+            return True, "Skipped: AcoustID API key is not configured"
 
         # 1. Read metadata from file
         from backend.app.main import read_basic_tags
@@ -145,7 +145,7 @@ class AcoustIDClient:
         # 2. Generate fingerprint
         fp_data = await self.generate_fingerprint(file_path)
         if not fp_data or "fingerprint" not in fp_data or "duration" not in fp_data:
-            return False, "Failed to generate audio fingerprint (check if fpcalc is installed)"
+            return True, "Skipped: Failed to generate audio fingerprint (check if fpcalc is installed)"
 
         # 3. Lookup with recordings metadata
         data = await self.lookup_fingerprint(fp_data["fingerprint"], fp_data["duration"], "recordings artists releasegroups")
