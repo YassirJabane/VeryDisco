@@ -690,8 +690,10 @@ async def _download_album_task_internal(
                 else:
                     clean_title = clean_track_title(basename, artist, album)
                 
-                if matched and matched.get("track_position"):
-                    track_key = (matched.get("disc_number", 1), matched.get("track_position"))
+                if matched and (matched.get("track_position") or matched.get("position") or matched.get("track_num")):
+                    d_num = matched.get("disk_number") or matched.get("disc_number") or matched.get("disc_num") or 1
+                    t_pos = matched.get("track_position") or matched.get("position") or matched.get("track_num")
+                    track_key = (d_num, t_pos)
                 else:
                     track_key = re.sub(r'[^\w]', '', clean_title).lower()
 
@@ -1126,8 +1128,10 @@ async def _download_album_task_internal(
             downloaded_official_positions = set()
             for f_item, dest_path in overall_downloaded + overall_copied:
                 m_tr = match_file_to_official_track(dest_path.name, official_album_tracks)
-                if m_tr and m_tr.get("track_position"):
-                    downloaded_official_positions.add(m_tr["track_position"])
+                if m_tr and (m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")):
+                    d_n = m_tr.get("disk_number") or m_tr.get("disc_number") or m_tr.get("disc_num") or 1
+                    t_p = m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")
+                    downloaded_official_positions.add((d_n, t_p))
 
             target_total = len(official_album_tracks) if official_album_tracks else len(to_download)
             if official_album_tracks and len(downloaded_official_positions) >= target_total:
@@ -1150,10 +1154,15 @@ async def _download_album_task_internal(
             downloaded_official_positions = set()
             for f_item, dest_path in overall_downloaded + overall_copied:
                 m_tr = match_file_to_official_track(dest_path.name, official_album_tracks)
-                if m_tr and m_tr.get("track_position"):
-                    downloaded_official_positions.add(m_tr["track_position"])
+                if m_tr and (m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")):
+                    d_n = m_tr.get("disk_number") or m_tr.get("disc_number") or m_tr.get("disc_num") or 1
+                    t_p = m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")
+                    downloaded_official_positions.add((d_n, t_p))
 
-            missing_official = [t for t in official_album_tracks if t.get("track_position") not in downloaded_official_positions]
+            missing_official = [
+                t for t in official_album_tracks 
+                if ((t.get("disk_number") or t.get("disc_number") or t.get("disc_num") or 1), (t.get("track_position") or t.get("position") or t.get("track_num"))) not in downloaded_official_positions
+            ]
             if missing_official:
                 logger.warning(f"Album download for '{artist} - {album}' is missing {len(missing_official)} track(s) after checking peer candidates. Spawning automatic single-track fallback downloads...")
                 from backend.app.main import _create_tracked_task
