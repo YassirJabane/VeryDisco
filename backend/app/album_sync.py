@@ -1448,6 +1448,7 @@ async def download_single_track_task(artist: str, title: str, album: str, config
                     date=dz_date,
                     disc_num=disc_num,
                     disc_total=disc_total,
+                    is_explore=is_explore,
                     mbid_album=mbid_album,
                     mbid_recording=mbid_recording
                 )
@@ -1672,6 +1673,7 @@ async def grab_single_track_task(
                 date=dz_date,
                 disc_num=disc_num,
                 disc_total=disc_total,
+                is_explore=is_explore,
                 mbid_album=mbid_album,
                 mbid_recording=mbid_recording
             )
