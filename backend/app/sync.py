@@ -671,8 +671,113 @@ def get_artist_aliases(artist_name: str) -> list[str]:
 
     return list(aliases)
 
-def find_existing_track_file(music_dir: str, playlist_dir: str, staging_dir: str, artist: str, title: str, library_index: Optional[Dict[str, Path]] = None) -> Tuple[Optional[Path], Optional[Path]]:
+def extract_audio_mbids(file_path: Union[str, Path]) -> Tuple[Optional[str], Optional[str]]:
+    """Extracts (musicbrainz_trackid, musicbrainz_albumid) from audio file metadata using Mutagen."""
+    p = Path(file_path)
+    ext = p.suffix.lower()
+    track_mbid = None
+    album_mbid = None
+    
+    try:
+        if ext == ".mp3":
+            from mutagen.id3 import ID3, UFID, TXXX
+            tags = ID3(file_path)
+            for ufid in tags.getall("UFID"):
+                if ufid.owner in ("http://musicbrainz.org", "musicbrainz.org"):
+                    track_mbid = ufid.data.decode("utf-8", errors="ignore")
+                    break
+            if not track_mbid:
+                for txxx in tags.getall("TXXX"):
+                    if txxx.desc.lower() in ("musicbrainz track id", "musicbrainz_trackid"):
+                        track_mbid = txxx.text[0] if txxx.text else None
+                        break
+            for txxx in tags.getall("TXXX"):
+                if txxx.desc.lower() in ("musicbrainz album id", "musicbrainz_albumid", "musicbrainz release group id"):
+                    album_mbid = txxx.text[0] if txxx.text else None
+                    break
+
+        elif ext in (".flac", ".ogg"):
+            from mutagen.flac import FLAC
+            audio = FLAC(file_path)
+            track_mbid = audio.get("musicbrainz_trackid", [None])[0] or audio.get("musicbrainz_releasetrackid", [None])[0]
+            album_mbid = audio.get("musicbrainz_albumid", [None])[0] or audio.get("musicbrainz_releasegroupid", [None])[0]
+
+        elif ext in (".m4a", ".mp4"):
+            from mutagen.mp4 import MP4
+            audio = MP4(file_path)
+            t_data = audio.get("----:com.apple.iTunes:MusicBrainz Track Id")
+            if t_data and t_data[0]:
+                track_mbid = t_data[0].decode("utf-8", errors="ignore") if isinstance(t_data[0], bytes) else str(t_data[0])
+            a_data = audio.get("----:com.apple.iTunes:MusicBrainz Album Id")
+            if a_data and a_data[0]:
+                album_mbid = a_data[0].decode("utf-8", errors="ignore") if isinstance(a_data[0], bytes) else str(a_data[0])
+    except Exception as e:
+        logger.debug(f"Failed to extract MBID tags from {file_path}: {e}")
+
+    return track_mbid, album_mbid
+
+def clean_track_filename(filename: str, target_artist: str = "") -> str:
+    """Strips audio extensions, artist prefixes, track/disc numbers, and audio format tags."""
+    base = os.path.splitext(filename)[0] if any(filename.lower().endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.wav', '.ogg', '.lrc']) else filename
+    if target_artist:
+        for art_alias in get_artist_aliases(target_artist):
+            if art_alias:
+                pattern = rf'(?i)^{re.escape(art_alias)}\s*[-_]*\s*'
+                base = re.sub(pattern, '', base).strip(' -_./\\')
+    base = re.sub(r'^(?:\d+[-._\s]+|\d+\.\s*|[a-z]\d+[\s._-]+|\d+_\d+[\s._-]+)', '', base, flags=re.IGNORECASE).strip()
+    base = re.sub(r'(?i)\s*[\(\[](?:remastered|remaster|live|explicit|clean|audio|bonus|deluxe|version|edit|hd|hq)[\)\]]', '', base).strip()
+    return base
+
+def match_track_titles(target_title: str, candidate_filename: str, target_artist: str = "") -> bool:
+    """Precision matching between target track title and candidate audio filename."""
+    clean_candidate = clean_track_filename(candidate_filename, target_artist)
+    
+    def norm(txt: str):
+        t = txt.lower().replace('_', ' ').replace('&', 'and')
+        return re.sub(r'[^\w]', '', t)
+        
+    norm_target = norm(target_title)
+    norm_candidate = norm(clean_candidate)
+    
+    if not norm_target or not norm_candidate:
+        return False
+
+    if norm_target == norm_candidate:
+        return True
+
+    raw_target = re.sub(r'[^\w]', '', target_title.lower().replace('_', ''))
+    raw_candidate = re.sub(r'[^\w]', '', clean_candidate.lower().replace('_', ''))
+    if raw_target == raw_candidate:
+        return True
+
+    return False
+
+def find_existing_track_file(
+    music_dir: str, 
+    playlist_dir: str, 
+    staging_dir: str, 
+    artist: str, 
+    title: str, 
+    library_index: Optional[Any] = None,
+    target_mbid: Optional[str] = None
+) -> Tuple[Optional[Path], Optional[Path]]:
     """Check if track audio and lyrics already exist in staging, playlist dir, or broader music library."""
+    
+    # Primary Strategy: Match by exact MusicBrainz Track ID (MBID) if available
+    mbid_map = {}
+    filename_map = {}
+    if isinstance(library_index, dict):
+        mbid_map = library_index.get("mbid_index", {})
+        filename_map = library_index.get("filename_index", library_index)
+    elif library_index is not None:
+        filename_map = library_index
+
+    if target_mbid and target_mbid in mbid_map:
+        audio_path = mbid_map[target_mbid]
+        if audio_path.is_file():
+            lrc = audio_path.with_suffix(".lrc")
+            return audio_path, lrc if lrc.is_file() else None
+
     safe_basename = f"{sanitize_filename(artist)} - {sanitize_filename(title)}"
     
     # Check staging dir first
@@ -702,28 +807,7 @@ def find_existing_track_file(music_dir: str, playlist_dir: str, staging_dir: str
                 lyrics = test_path.with_suffix(".lrc")
                 return test_path, lyrics if lyrics.is_file() else None
 
-    def normalize(s: str) -> str:
-        return re.sub(r'[^\w]', '', s).lower()
-        
     norm_artists = get_artist_aliases(artist)
-    
-    # Strip artist prefix if present to avoid matching artist name as the title
-    clean_t = title.strip()
-    for art_alias in norm_artists:
-        if art_alias:
-            # Matches prefix like "artist - " or "artist_-_" or "artist_"
-            pattern = rf'(?i)^{re.escape(art_alias)}\s*[-_]*\s*'
-            clean_t = re.sub(pattern, '', clean_t).strip(' -_./\\')
-            
-    if not clean_t:
-        clean_t = title
-
-    # Split by common feature/remaster separators to extract core title for loose comparison
-    core_title = re.split(r'\(|\[|-|\bfeat\b|\bft\b', clean_t, flags=re.IGNORECASE)[0].strip(' -_./\\')
-    norm_title = normalize(core_title if core_title else clean_t)
-
-    # Ensure norm_title isn't too short or a substring of the artist name to prevent matching random files
-    is_loose_safe = len(norm_title) >= 3 and not any(norm_title in a for a in norm_artists)
 
     # Check local directories loosely (staging, playlist output, and explore master)
     local_dirs = []
@@ -739,21 +823,19 @@ def find_existing_track_file(music_dir: str, playlist_dir: str, staging_dir: str
         try:
             for f in l_dir.iterdir():
                 if f.is_file() and f.suffix.lower() in [".mp3", ".flac", ".m4a"]:
-                    norm_f = normalize(f.name)
+                    norm_f = re.sub(r'[^\w]', '', f.name).lower()
                     if any(a in norm_f for a in norm_artists):
-                        norm_filename = normalize(f.stem)
-                        if (is_loose_safe and norm_title in norm_filename) or (not is_loose_safe and norm_filename == norm_title):
+                        if match_track_titles(title, f.name, artist):
                             lrc = f.with_suffix(".lrc")
                             return f, lrc if lrc.is_file() else None
         except Exception:
             pass
 
     # Use pre-built library index if available for O(1) in-memory scanning
-    if library_index is not None:
-        for norm_f, audio_path in library_index.items():
-            norm_filename = normalize(audio_path.stem)
+    if filename_map:
+        for norm_f, audio_path in filename_map.items():
             if any(a in norm_f for a in norm_artists):
-                if (is_loose_safe and norm_title in norm_filename) or (not is_loose_safe and norm_filename == norm_title):
+                if match_track_titles(title, audio_path.name, artist):
                     lrc = audio_path.with_suffix(".lrc")
                     return audio_path, lrc if lrc.is_file() else None
         return None, None
@@ -767,10 +849,9 @@ def find_existing_track_file(music_dir: str, playlist_dir: str, staging_dir: str
         for f in files:
             if f.lower().endswith((".mp3", ".flac", ".m4a")):
                 rel_path = os.path.relpath(os.path.join(root, f), music_dir)
-                norm_f = normalize(rel_path)
+                norm_f = re.sub(r'[^\w]', '', rel_path).lower()
                 if any(a in norm_f for a in norm_artists):
-                    norm_filename = normalize(os.path.splitext(f)[0])
-                    if (is_loose_safe and norm_title in norm_filename) or (not is_loose_safe and norm_filename == norm_title):
+                    if match_track_titles(title, f, artist):
                         audio_path = Path(root) / f
                         lrc = audio_path.with_suffix(".lrc")
                         return audio_path, lrc if lrc.is_file() else None
@@ -1220,8 +1301,9 @@ def cleanup_album_explore_tracks(playlists_dir: Path, music_dir: Path, artist: s
     except Exception as walk_err:
         logger.error(f"Failed to walk playlists dir for explore cleanup: {walk_err}")
 
-def _build_library_index(music_dir: str) -> Dict[str, Path]:
-    library_index = {}
+def _build_library_index(music_dir: str) -> Dict[str, Any]:
+    filename_index = {}
+    mbid_index = {}
     music_path = Path(music_dir)
     if music_path.exists() and music_path.is_dir():
         for root, dirs, files in os.walk(music_dir):
@@ -1229,10 +1311,19 @@ def _build_library_index(music_dir: str) -> Dict[str, Path]:
             dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in ["playlists", "navidrome_playlists", "explore"]]
             for f in files:
                 if f.lower().endswith((".mp3", ".flac", ".m4a")):
-                    rel_path = os.path.relpath(os.path.join(root, f), music_dir)
+                    full_path = Path(root) / f
+                    rel_path = os.path.relpath(full_path, music_dir)
                     norm = re.sub(r'[^\w]', '', rel_path).lower()
-                    library_index[norm] = Path(root) / f
-    return library_index
+                    filename_index[norm] = full_path
+                    
+                    try:
+                        mbid_track, _ = extract_audio_mbids(full_path)
+                        if mbid_track:
+                            mbid_index[mbid_track] = full_path
+                    except Exception:
+                        pass
+
+    return {"filename_index": filename_index, "mbid_index": mbid_index}
 
 async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[str] = None, user_id: Optional[str] = None):
     """Executes the complete synchronization run."""
