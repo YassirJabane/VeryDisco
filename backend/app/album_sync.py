@@ -537,6 +537,17 @@ async def _download_album_task_internal(
             main_art_wildcard = f"*{main_art[1:]}" if len(main_art) >= 3 else main_art
             clean_art_wildcard = f"*{clean_art[1:]}" if len(clean_art) >= 3 else clean_art
 
+            album_year = ""
+            if official_album_date:
+                m_yr = re.search(r'\b(19\d{2}|20\d{2})\b', str(official_album_date))
+                if m_yr:
+                    album_year = m_yr.group(1)
+
+            if not album_year:
+                m_yr = re.search(r'\b(19\d{2}|20\d{2})\b', album)
+                if m_yr:
+                    album_year = m_yr.group(1)
+
             if art_lower == alb_lower:
                 add_query(clean_art, False)
             elif art_lower in alb_lower:
@@ -544,10 +555,20 @@ async def _download_album_task_internal(
             elif alb_lower in art_lower:
                 add_query(clean_art, False)
             else:
-                # 1. Hyphenated "Artist - Album" patterns (with wildcard first to bypass banned artist filters!)
+                # 1. Hyphenated "Artist - Album" patterns (with wildcard first)
                 if main_art_wildcard != main_art:
                     add_query(f"{main_art_wildcard} - {stripped_alb}", False)
                 add_query(f"{main_art} - {stripped_alb}", False)
+
+                # 2. Year-based directory patterns (e.g. Artist - Year - Album or Artist - Album (Year))
+                if album_year:
+                    if main_art_wildcard != main_art:
+                        add_query(f"{main_art_wildcard} - {album_year} - {stripped_alb}", False)
+                        add_query(f"{main_art_wildcard} - {stripped_alb} ({album_year})", False)
+                        add_query(f"{main_art_wildcard} - {stripped_alb} {album_year}", False)
+                    add_query(f"{main_art} - {album_year} - {stripped_alb}", False)
+                    add_query(f"{main_art} - {stripped_alb} ({album_year})", False)
+                    add_query(f"{main_art} - {stripped_alb} {album_year}", False)
 
                 if stripped_alb != clean_alb:
                     if main_art_wildcard != main_art:
@@ -559,10 +580,15 @@ async def _download_album_task_internal(
                         add_query(f"{clean_art_wildcard} - {stripped_alb}", False)
                     add_query(f"{clean_art} - {stripped_alb}", False)
 
-                # 2. Space-separated "Artist Album" patterns
+                # 3. Space-separated "Artist Album" patterns
                 if main_art_wildcard != main_art:
                     add_query(f"{main_art_wildcard} {stripped_alb}", False)
                 add_query(f"{main_art} {stripped_alb}", False)
+
+                if album_year:
+                    if main_art_wildcard != main_art:
+                        add_query(f"{main_art_wildcard} {stripped_alb} {album_year}", False)
+                    add_query(f"{main_art} {stripped_alb} {album_year}", False)
 
                 if stripped_alb != clean_alb:
                     if main_art_wildcard != main_art:
@@ -574,7 +600,7 @@ async def _download_album_task_internal(
                         add_query(f"{clean_art_wildcard} {stripped_alb}", False)
                     add_query(f"{clean_art} {stripped_alb}", False)
 
-                # 3. Album-only fallback
+                # 4. Album-only fallback
                 add_query(stripped_alb or clean_alb, True)
 
             best_dir_key = None

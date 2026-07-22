@@ -1484,10 +1484,23 @@ async def search_album_candidates(artist: str, album: str, request: Request):
 
         target_alb = stripped_alb if (stripped_alb and len(stripped_alb) >= 2) else clean_alb
 
+        album_year = ""
+        m_yr = re.search(r'\b(19\d{2}|20\d{2})\b', album)
+        if m_yr:
+            album_year = m_yr.group(1)
+
         if art_wildcard != clean_art:
             queries.append((f"{art_wildcard} - {target_alb}", False))
+            if album_year:
+                queries.append((f"{art_wildcard} - {album_year} - {target_alb}", False))
+                queries.append((f"{art_wildcard} - {target_alb} ({album_year})", False))
+                queries.append((f"{art_wildcard} - {target_alb} {album_year}", False))
             queries.append((f"{art_wildcard} {target_alb}", False))
         queries.append((f"{clean_art} - {target_alb}", False))
+        if album_year:
+            queries.append((f"{clean_art} - {album_year} - {target_alb}", False))
+            queries.append((f"{clean_art} - {target_alb} ({album_year})", False))
+            queries.append((f"{clean_art} - {target_alb} {album_year}", False))
         queries.append((f"{clean_art} {target_alb}", False))
         
         if stripped_alb and stripped_alb.lower() != clean_alb.lower():
