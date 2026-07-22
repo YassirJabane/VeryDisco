@@ -96,20 +96,24 @@ def embed_mbid_into_file(file_path: Path, mbid_track: str, mbid_album: Optional[
                 audio = MP3(str_path)
                 if audio.tags is None:
                     audio.add_tags()
-                tags = audio.tags
-            except Exception:
+                if mbid_track:
+                    audio.tags.add(UFID(owner="http://musicbrainz.org", data=mbid_track.encode('utf-8')))
+                    audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[mbid_track]))
+                if mbid_album:
+                    audio.tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
+                audio.save(v2_version=3)
+            except Exception as e1:
+                logger.debug(f"MP3 wrapper save failed for {file_path}, retrying direct ID3 save: {e1}")
                 try:
                     tags = ID3(str_path)
                 except Exception:
                     tags = ID3()
-
-            if mbid_track:
-                tags.add(UFID(owner="http://musicbrainz.org", data=mbid_track.encode('utf-8')))
-                tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[mbid_track]))
-            if mbid_album:
-                tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
-
-            tags.save(str_path, v2_version=3)
+                if mbid_track:
+                    tags.add(UFID(owner="http://musicbrainz.org", data=mbid_track.encode('utf-8')))
+                    tags.add(TXXX(encoding=3, desc="MusicBrainz Track Id", text=[mbid_track]))
+                if mbid_album:
+                    tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
+                tags.save(str_path, v2_version=3)
 
         elif ext in (".flac", ".ogg"):
             from mutagen.flac import FLAC
