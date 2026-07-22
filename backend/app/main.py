@@ -1318,13 +1318,16 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
         tracks = []
         album_id_str = str(album_id).strip()
         
-        # Check if album_id is a MusicBrainz MBID UUID (contains hyphen and length > 20)
-        if '-' in album_id_str and len(album_id_str) > 20:
+        # Query MusicBrainz for album tracklist using artist and album title
+        try:
             from backend.app.clients.musicbrainz import musicbrainz_client
-            mb_tracks = await musicbrainz_client.get_album_tracklist(album_id_str)
-            if mb_tracks:
-                tracks = [{"title": t.get("title", ""), "artist": artist} for t in mb_tracks]
-        else:
+            mb_data = await musicbrainz_client.get_album_tracklist(artist, title)
+            if mb_data and mb_data.get("tracks"):
+                tracks = [{"title": t.get("title", ""), "artist": artist} for t in mb_data["tracks"]]
+        except Exception as e:
+            logger.warning(f"MusicBrainz tracklist lookup failed for {artist} - {title}: {e}")
+
+        if not tracks and album_id_str.isdigit():
             from backend.app.clients.deezer import DeezerClient
             dz = DeezerClient(timeout=10)
             try:
@@ -1334,8 +1337,31 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
             except Exception as e:
                 logger.warning(f"Deezer album tracks lookup failed for {album_id}: {e}")
 
-        # Fallback: If no tracks retrieved via API, perform track check on album title
+        # Fallback: If no tracks retrieved via API, scan local music directory for matching album folder
         if not tracks:
+            clean_art = re.sub(r'[^\w\s]', '', artist).strip().lower()
+            clean_alb = re.sub(r'[^\w\s]', '', title).strip().lower()
+            folder_found = False
+            track_count = 0
+            
+            if os.path.exists(music_dir):
+                for root, _, files in os.walk(music_dir):
+                    root_name = Path(root).name.lower()
+                    clean_root = re.sub(r'[^\w\s]', '', root_name).strip()
+                    if clean_alb and (clean_alb in clean_root or clean_root in clean_alb):
+                        audio_files = [f for f in files if f.lower().endswith(('.mp3', '.flac', '.m4a', '.wav', '.ogg'))]
+                        if audio_files:
+                            folder_found = True
+                            track_count += len(audio_files)
+                            
+            if folder_found:
+                return {
+                    "exists": True,
+                    "status": "full" if track_count >= 5 else "partial",
+                    "upgrade_available": False,
+                    "tracks": []
+                }
+
             res = check_track(artist, title)
             return {
                 "exists": res["exists"],
