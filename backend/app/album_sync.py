@@ -1003,67 +1003,23 @@ async def _download_album_task_internal(
                         logger.error(f"Metadata lookup failed for '{clean_title}': {e}")
 
                         
-                    # 2. Determine clean destination filename using library convention
-                    ext_ext = local_path.suffix
-                    from backend.app.sync import get_library_filename, resolve_album_dir
-                    dest_dir, safe_artist, safe_album = resolve_album_dir(
-                        music_dir, dz_artist or artist, album, dz_album_artist or artist,
-                        disc_num=disc_num, disc_total=disc_total
-                    )
-                    clean_filename = get_library_filename(dz_artist or artist, safe_album, track_num, title_tag, ext_ext)
-                    dest_path = dest_dir / clean_filename
-                    # 3. Move the file
-                    try:
-                        safe_move_file(local_path, dest_path)
-                    except Exception as e:
-                        logger.error(f"Failed to move {local_path} to {dest_path}: {e}")
-                        continue
- 
-                    # 4. Embed metadata & lyrics
-                    try:
-                        lyrics_text, l_type = await lrclib_client.get_lyrics(artist, title_tag)
-                        if lyrics_text:
-                            lrc_path = dest_path.with_suffix(".lrc")
-                            with open(lrc_path, "w", encoding="utf-8") as lf:
-                                lf.write(lyrics_text)
-                        
-                        embed_metadata(
-                            file_path=str(dest_path),
-                            artist=dz_artist or artist,
-                            title=title_tag,
-                            album=album,
-                            track_num=track_num,
-                            cover_bytes=official_album_cover_bytes or cover_bytes,
-                            lyrics_text=lyrics_text,
-                            album_artist=dz_album_artist or artist,
-                            date=official_album_date or dz_date,
-                            disc_num=disc_num,
-                            disc_total=disc_total,
-                            mbid_album=official_mb_release_mbid or mbid_album,
-                            mbid_recording=mbid_recording
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to embed metadata/lyrics for {dest_path}: {e}")
-
-                    # 4.5 AcoustID verification check
+                    # 2. AcoustID verification check on raw downloaded file BEFORE moving/tagging
                     from backend.app.clients.acoustid import acoustid_client
                     acoustid_mismatch = False
                     try:
-                        is_valid, reason = await acoustid_client.verify_track_against_metadata(dest_path)
+                        is_valid, reason = await acoustid_client.verify_track_against_metadata(
+                            local_path,
+                            expected_artist=dz_artist or artist,
+                            expected_title=title_tag
+                        )
                         if not is_valid:
-                            if "not configured" in reason or "No match found" in reason:
+                            if "not configured" in reason or "No match found" in reason or "Skipped" in reason:
                                 logger.info(f"AcoustID verification skipped for '{title_tag}': {reason}")
                             else:
-                                logger.warning(f"AcoustID mismatch detected for '{title_tag}': {reason}. Discarding and queuing single-track replacement...")
+                                logger.warning(f"AcoustID mismatch detected for '{title_tag}': {reason}. Discarding downloaded file and queuing single-track replacement...")
                                 acoustid_mismatch = True
-                                # Delete mismatched file
-                                if dest_path.exists():
-                                    dest_path.unlink()
-                                lrc_path = dest_path.with_suffix(".lrc")
-                                if lrc_path.exists():
-                                    lrc_path.unlink()
-                                
-                                # Queue replacement download
+                                if local_path.exists():
+                                    local_path.unlink()
                                 try:
                                     from backend.app.main import _create_tracked_task
                                     _create_tracked_task(
@@ -1091,11 +1047,54 @@ async def _download_album_task_internal(
                                         user_id=user_id
                                     ))
                     except Exception as ac_err:
-                        logger.error(f"Error during AcoustID check: {ac_err}")
+                        logger.error(f"Error during AcoustID check for {local_path}: {ac_err}")
 
                     if acoustid_mismatch:
                         f["download_status"] = "failed"
                         continue
+
+                    # 3. Determine clean destination filename using library convention
+                    ext_ext = local_path.suffix
+                    from backend.app.sync import get_library_filename, resolve_album_dir
+                    dest_dir, safe_artist, safe_album = resolve_album_dir(
+                        music_dir, dz_artist or artist, album, dz_album_artist or artist,
+                        disc_num=disc_num, disc_total=disc_total
+                    )
+                    clean_filename = get_library_filename(dz_artist or artist, safe_album, track_num, title_tag, ext_ext)
+                    dest_path = dest_dir / clean_filename
+
+                    # 4. Move the file
+                    try:
+                        safe_move_file(local_path, dest_path)
+                    except Exception as e:
+                        logger.error(f"Failed to move {local_path} to {dest_path}: {e}")
+                        continue
+ 
+                    # 5. Embed metadata & lyrics
+                    try:
+                        lyrics_text, l_type = await lrclib_client.get_lyrics(artist, title_tag)
+                        if lyrics_text:
+                            lrc_path = dest_path.with_suffix(".lrc")
+                            with open(lrc_path, "w", encoding="utf-8") as lf:
+                                lf.write(lyrics_text)
+                        
+                        embed_metadata(
+                            file_path=str(dest_path),
+                            artist=dz_artist or artist,
+                            title=title_tag,
+                            album=album,
+                            track_num=track_num,
+                            cover_bytes=official_album_cover_bytes or cover_bytes,
+                            lyrics_text=lyrics_text,
+                            album_artist=dz_album_artist or artist,
+                            date=official_album_date or dz_date,
+                            disc_num=disc_num,
+                            disc_total=disc_total,
+                            mbid_album=official_mb_release_mbid or mbid_album,
+                            mbid_recording=mbid_recording
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to embed metadata/lyrics for {dest_path}: {e}")
 
                     overall_downloaded.append((f, dest_path))
 
@@ -1410,6 +1409,29 @@ async def download_single_track_task(
             except Exception as meta_err:
                 logger.warning(f"Could not retrieve metadata: {meta_err}")
 
+            # 1.5 AcoustID check on raw downloaded file BEFORE moving/tagging
+            from backend.app.clients.acoustid import acoustid_client
+            acoustid_mismatch = False
+            try:
+                is_valid, reason = await acoustid_client.verify_track_against_metadata(
+                    downloaded_file,
+                    expected_artist=fetched_artist,
+                    expected_title=title_tag
+                )
+                if not is_valid:
+                    if "not configured" in reason or "No match found" in reason or "Skipped" in reason:
+                        logger.info(f"AcoustID verification skipped for single track '{title_tag}': {reason}")
+                    else:
+                        logger.warning(f"AcoustID mismatch detected for single track '{title_tag}': {reason}. Discarding downloaded file and retrying next candidate...")
+                        acoustid_mismatch = True
+                        if downloaded_file.exists():
+                            downloaded_file.unlink()
+            except Exception as ac_err:
+                logger.error(f"Error during AcoustID check for single track {downloaded_file}: {ac_err}")
+
+            if acoustid_mismatch:
+                continue
+
             from backend.app.sync import resolve_album_dir, get_library_filename, get_safe_filename
             if dest_dir_override:
                 dest_dir = Path(dest_dir_override)
@@ -1468,28 +1490,6 @@ async def download_single_track_task(
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
             except Exception as e:
                 logger.warning(f"Could not embed metadata/lyrics for single track: {e}")
-
-            # AcoustID check on single track replacement
-            from backend.app.clients.acoustid import acoustid_client
-            acoustid_mismatch = False
-            try:
-                is_valid, reason = await acoustid_client.verify_track_against_metadata(dest_audio_path)
-                if not is_valid:
-                    if "not configured" in reason or "No match found" in reason:
-                        logger.info(f"AcoustID verification skipped for replacement track '{title_tag}': {reason}")
-                    else:
-                        logger.warning(f"AcoustID mismatch detected for replacement track '{title_tag}': {reason}. Discarding and retrying next candidate...")
-                        acoustid_mismatch = True
-                        if dest_audio_path.exists():
-                            dest_audio_path.unlink()
-                        lrc_path = dest_audio_path.with_suffix(".lrc")
-                        if lrc_path.exists():
-                            lrc_path.unlink()
-            except Exception as ac_err:
-                logger.error(f"Error during AcoustID check: {ac_err}")
-
-            if acoustid_mismatch:
-                continue
 
             # Trigger scan
             if config.navidrome.url and config.navidrome.username and config.navidrome.password:

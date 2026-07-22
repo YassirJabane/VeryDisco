@@ -119,28 +119,36 @@ class AcoustIDClient:
             pass
         return None
 
-    async def verify_track_against_metadata(self, file_path: Path) -> Tuple[bool, str]:
+    async def verify_track_against_metadata(
+        self,
+        file_path: Path,
+        expected_artist: Optional[str] = None,
+        expected_title: Optional[str] = None
+    ) -> Tuple[bool, str]:
         """
-        Verifies if the track fingerprint matches the embedded tags.
+        Verifies if the track fingerprint matches the expected or embedded metadata.
         Returns (is_valid, reason).
         """
         api_key = self.get_api_key()
         if not api_key:
             return True, "Skipped: AcoustID API key is not configured"
 
-        # 1. Read metadata from file
-        from backend.app.main import read_basic_tags
-        try:
-            meta = read_basic_tags(file_path)
-            tagged_artist = meta.get("artist")
-            tagged_title = meta.get("title")
-        except Exception as e:
-            return False, f"Failed to read file tags: {e}"
+        # 1. Read metadata from file or fallback to expected metadata
+        tagged_artist = expected_artist
+        tagged_title = expected_title
+        tagged_mbid = None
 
         if not tagged_artist or not tagged_title:
-            return False, "File is missing basic tags (Artist/Title)"
+            from backend.app.main import read_basic_tags
+            try:
+                meta = read_basic_tags(file_path)
+                tagged_artist = tagged_artist or meta.get("artist")
+                tagged_title = tagged_title or meta.get("title")
+            except Exception:
+                pass
 
-        tagged_mbid = self.read_musicbrainz_recording_id(file_path)
+        if not tagged_mbid:
+            tagged_mbid = self.read_musicbrainz_recording_id(file_path)
 
         # 2. Generate fingerprint
         fp_data = await self.generate_fingerprint(file_path)

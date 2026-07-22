@@ -766,15 +766,16 @@ async def get_album_downloads(request: Request):
     user = await get_current_user(request)
     
     async with db.get_db() as conn:
-        if user.get("is_admin"):
+        cursor = await conn.execute("PRAGMA table_info(album_downloads)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        has_user_id = "user_id" in columns
+
+        if user.get("is_admin") or not has_user_id:
             # Admins see all downloads
             cursor = await conn.execute("SELECT * FROM album_downloads ORDER BY added_at DESC")
         else:
             # Regular users only see their own downloads
-            try:
-                cursor = await conn.execute("SELECT * FROM album_downloads WHERE user_id = ? ORDER BY added_at DESC", (user["id"],))
-            except Exception:
-                cursor = await conn.execute("SELECT * FROM album_downloads ORDER BY added_at DESC")
+            cursor = await conn.execute("SELECT * FROM album_downloads WHERE user_id = ? ORDER BY added_at DESC", (user["id"],))
         
         rows = await cursor.fetchall()
         downloads = []
@@ -786,7 +787,7 @@ async def get_album_downloads(request: Request):
                 "album": r["album"],
                 "status": r["status"],
                 "added_at": r["added_at"],
-                "user_id": r["user_id"] if has_user_id else None
+                "user_id": r["user_id"] if (has_user_id and "user_id" in r.keys()) else None
             })
         return {"downloads": downloads}
 
