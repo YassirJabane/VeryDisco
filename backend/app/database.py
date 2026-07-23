@@ -966,6 +966,7 @@ class Database:
             async with db.execute(
                 """
                 SELECT artist, album, artist_norm, album_norm,
+                       MIN(filepath) as sample_filepath,
                        COUNT(*) as track_count,
                        MAX(has_cover) as has_cover,
                        MAX(year) as year,

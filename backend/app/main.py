@@ -3691,12 +3691,15 @@ async def get_library_albums(request: Request):
     if db_albums:
         result = []
         for a in db_albums:
+            sample_fp = a.get("sample_filepath") or ""
+            folder_p = str(Path(sample_fp).parent) if sample_fp else ""
             result.append({
                 "artist": a.get("artist") or "Unknown Artist",
                 "album": a.get("album") or "Unknown Album",
                 "year": a.get("year") or "",
                 "track_count": a.get("track_count", 0),
                 "has_cover": bool(a.get("has_cover")),
+                "folder_path": folder_p,
                 "issue_count": a.get("issue_count", 0),
                 "tracks_synced_lyrics": a.get("tracks_synced_lyrics", 0),
                 "tracks_plain_lyrics": a.get("tracks_plain_lyrics", 0),
@@ -3756,6 +3759,9 @@ def _extract_cover_sync(folder_path_str: str) -> tuple[bytes | None, str | None,
 @app.get("/api/library/albums/cover")
 async def get_album_cover(folder_path: str, request: Request):
     """Retrieve local or embedded album artwork for current user."""
+    if not folder_path or folder_path.strip().lower() in ("undefined", "null", ""):
+        raise HTTPException(status_code=400, detail="Invalid folder_path parameter")
+        
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
     user_id = user["id"]
@@ -3810,6 +3816,9 @@ def _get_local_tracks_for_album_sync(target: Path, metadata_cache: dict, new_cac
 @app.get("/api/library/albums/tracks")
 async def get_library_album_tracks(folder_path: str, request: Request):
     """Fetch complete list of album tracks matching Deezer schema against on-disk files for current user."""
+    if not folder_path or folder_path.strip().lower() in ("undefined", "null", ""):
+        raise HTTPException(status_code=400, detail="Invalid folder_path parameter")
+        
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
     user_id = user["id"]
