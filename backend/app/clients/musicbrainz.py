@@ -8,7 +8,7 @@ MusicBrainz API client for VeryDisco.
 import asyncio
 import re
 import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 import httpx
 from backend.app.logger import get_logger
 
@@ -22,6 +22,10 @@ _USER_AGENT = "VeryDisco/1.0 (homelab music manager)"
 _rate_lock = asyncio.Lock()
 _last_request_time: float = 0.0
 _MIN_INTERVAL = 1.05  # seconds between requests
+
+# In-memory caches with 1-hour TTL
+_album_releases_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_artist_rg_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 
 
 async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional[dict]:
@@ -130,7 +134,14 @@ def score_release(r: dict, album: str) -> int:
 
 
 async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
-    """Query MusicBrainz for candidate releases, score them, and return winner details."""
+    """Query MusicBrainz for candidate releases, score them, and return winner details (cached 1h)."""
+    cache_key = f"{artist.lower().strip()}||{album.lower().strip()}"
+    now = time.time()
+    if cache_key in _album_releases_cache:
+        ts, cached_res = _album_releases_cache[cache_key]
+        if now - ts < 3600:
+            return cached_res
+
     data = await _mb_get("/release", params={
         "query": f'release:"{album}" AND artist:"{artist}"',
         "limit": 20,
@@ -139,7 +150,9 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
     })
     releases = data.get("releases", []) if data else []
     if not releases:
-        return {"artist": artist, "album": album, "candidates": [], "winner": None}
+        empty_res = {"artist": artist, "album": album, "candidates": [], "winner": None}
+        _album_releases_cache[cache_key] = (now, empty_res)
+        return empty_res
 
     candidates = [r for r in releases if _fuzzy_match(r.get("title", ""), album)]
     if not candidates:
@@ -201,12 +214,14 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
                 "discs": discs
             }
 
-    return {
+    result = {
         "artist": artist,
         "album": album,
         "candidates": scored_candidates,
         "winner": winner_details
     }
+    _album_releases_cache[cache_key] = (now, result)
+    return result
 
 
 
@@ -263,15 +278,23 @@ class MusicBrainzClient:
     async def get_artist_release_groups(self, artist_mbid: str) -> List[Dict[str, Any]]:
         """
         Fetch all release groups for a MusicBrainz artist and strictly categorize
-        official studio albums vs compilations, live albums, mixtapes, EPs, and singles.
+        official studio albums vs compilations, live albums, mixtapes, EPs, and singles (cached 1h).
         Sorts all items by release date ascending (oldest first).
         """
+        cache_key = artist_mbid.lower().strip()
+        now = time.time()
+        if cache_key in _artist_rg_cache:
+            ts, cached_res = _artist_rg_cache[cache_key]
+            if now - ts < 3600:
+                return cached_res
+
         data = await _mb_get("/release-group", params={
             "artist": artist_mbid,
             "limit": 100,
             "fmt": "json"
         })
         if not data:
+            _artist_rg_cache[cache_key] = (now, [])
             return []
         
         rgroups = data.get("release-groups", [])
@@ -325,7 +348,7 @@ class MusicBrainzClient:
             
         # Sort release groups by release date ascending (oldest first)
         result.sort(key=lambda x: x.get("release_date") or "9999-99-99")
-            
+        _artist_rg_cache[cache_key] = (now, result)
         return result
 
     # -----------------------------------------------------------------------

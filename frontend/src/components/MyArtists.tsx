@@ -187,54 +187,42 @@ export const MyArtists: React.FC = () => {
         }));
       setReleases(initialReleases);
 
-      // Perform library existence checks in throttled batches of 5
-      const batchSize = 5;
-      for (let i = 0; i < initialReleases.length; i += batchSize) {
-        const batch = initialReleases.slice(i, i + batchSize);
-        await Promise.all(batch.map(async (r: Release) => {
-          const index = initialReleases.findIndex(item => item.id === r.id);
-          try {
-            const isAlbum = r.record_type === 'album' || r.record_type === 'ep';
-            const check = await apiService.checkTrackExists(
-              artist.artist_name, 
-              r.title, 
-              isAlbum ? r.id : undefined
-            );
-            
-            setReleases(prev => {
-              const next = [...prev];
-              if (index >= 0 && next[index]) {
-                if (isAlbum) {
-                  next[index] = {
-                    ...next[index],
-                    exists: check.exists,
-                    albumStatus: check.status,
-                    upgradeAvailable: check.upgrade_available,
-                    tracks: check.tracks || [],
-                    checking: false
-                  };
-                } else {
-                  next[index] = {
-                    ...next[index],
-                    exists: check.exists,
-                    qualityStatus: check.quality_status,
-                    checking: false
-                  };
-                }
-              }
-              return next;
-            });
-          } catch {
-            setReleases(prev => {
-              const next = [...prev];
-              if (index >= 0 && next[index]) {
-                next[index] = { ...next[index], checking: false };
-              }
-              return next;
-            });
+      // Perform library existence check in a single batch request
+      try {
+        const batchItems = initialReleases.map((r: Release) => ({
+          artist: artist.artist_name,
+          title: r.title,
+          album_id: (r.record_type === 'album' || r.record_type === 'ep') ? r.id : undefined
+        }));
+        
+        const results = await apiService.checkAlbumsBatch(batchItems);
+        
+        setReleases(prev => prev.map((rel, idx) => {
+          const check = results[idx] || { exists: false, status: 'missing' };
+          const isAlbum = rel.record_type === 'album' || rel.record_type === 'ep';
+          if (isAlbum) {
+            return {
+              ...rel,
+              exists: check.exists,
+              albumStatus: check.status,
+              upgradeAvailable: check.upgrade_available,
+              tracks: check.tracks || [],
+              checking: false
+            };
+          } else {
+            return {
+              ...rel,
+              exists: check.exists,
+              qualityStatus: check.quality_status,
+              checking: false
+            };
           }
         }));
+      } catch (err) {
+        console.error("Batch check failed", err);
+        setReleases(prev => prev.map(rel => ({ ...rel, checking: false })));
       }
+
 
     } catch (err) {
       console.error("Failed to load artist releases", err);

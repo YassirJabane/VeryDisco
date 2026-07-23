@@ -288,6 +288,12 @@ export const apiService = {
     return resp.data;
   },
 
+  async checkAlbumsBatch(items: Array<{ artist: string; title: string; album_id?: number | string }>): Promise<any[]> {
+    const resp = await api.post<any[]>('/api/search/check/batch', items);
+    return resp.data;
+  },
+
+
   async downloadTrack(artist: string, title: string, album: string, force: boolean = false, is_explore: boolean = false): Promise<{ status: string; message: string }> {
     const resp = await api.post<{ status: string; message: string }>('/api/download/track', { artist, title, album, force, is_explore });
     return resp.data;

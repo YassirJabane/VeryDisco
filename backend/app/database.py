@@ -312,6 +312,56 @@ class Database:
                     await db.commit()
                 except Exception:
                     pass
+
+            # ── Unified Library Index ──────────────────────────────────────────────
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS library_index (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id              TEXT    NOT NULL,
+                filepath             TEXT    NOT NULL,
+                mtime                REAL    NOT NULL,
+                artist               TEXT,
+                album                TEXT,
+                title                TEXT,
+                track_num            INTEGER,
+                total_tracks         INTEGER,
+                disc_num             INTEGER,
+                total_discs          INTEGER,
+                year                 TEXT,
+                album_artist         TEXT,
+                duration             INTEGER,
+                ext                  TEXT,
+                bitrate              INTEGER,
+                bit_depth            INTEGER,
+                sample_rate          INTEGER,
+                track_mbid           TEXT,
+                album_mbid           TEXT,
+                lyrics_synced        INTEGER DEFAULT 0,
+                lyrics_plain         INTEGER DEFAULT 0,
+                has_cover            INTEGER DEFAULT 0,
+                issue_missing_meta   INTEGER DEFAULT 0,
+                issue_dirty_tags     INTEGER DEFAULT 0,
+                issue_dirty_reason   TEXT,
+                issue_naming         INTEGER DEFAULT 0,
+                issue_naming_expected TEXT,
+                issue_duplicate      INTEGER DEFAULT 0,
+                issue_duplicate_of   TEXT,
+                issue_misfiled       INTEGER DEFAULT 0,
+                issue_misfiled_reason TEXT,
+                artist_norm          TEXT,
+                album_norm           TEXT,
+                title_norm           TEXT,
+                scanned_at           TEXT DEFAULT (datetime('now')),
+                mbid_enriched_at     TEXT,
+                UNIQUE(user_id, filepath)
+            );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_li_user_album    ON library_index(user_id, album_norm);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_li_user_artist   ON library_index(user_id, artist_norm);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_li_track_mbid    ON library_index(track_mbid);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_li_album_mbid    ON library_index(album_mbid);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_li_issues        ON library_index(user_id, issue_dirty_tags, issue_missing_meta, issue_naming, issue_duplicate, issue_misfiled);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_li_lyrics        ON library_index(user_id, lyrics_synced, lyrics_plain);")
             await db.commit()
 
     # Runs Operations
@@ -787,3 +837,173 @@ class Database:
         async with self.get_db() as conn:
             await conn.execute("DELETE FROM acoustid_results WHERE file_path = ?", (file_path,))
             await conn.commit()
+
+    # ── Library Index ─────────────────────────────────────────────────────────
+
+    async def clear_library_index(self, user_id: str) -> None:
+        """Wipe all library_index rows for a user before rebuilding."""
+        async with self.get_db() as db:
+            await db.execute("DELETE FROM library_index WHERE user_id = ?", (user_id,))
+            await db.commit()
+
+    async def upsert_library_index_batch(self, entries: List[Dict[str, Any]]) -> None:
+        """Bulk-insert or replace library_index rows. Each entry is a dict matching column names."""
+        if not entries:
+            return
+        cols = [
+            "user_id", "filepath", "mtime",
+            "artist", "album", "title", "track_num", "total_tracks",
+            "disc_num", "total_discs", "year", "album_artist", "duration",
+            "ext", "bitrate", "bit_depth", "sample_rate",
+            "track_mbid", "album_mbid",
+            "lyrics_synced", "lyrics_plain", "has_cover",
+            "issue_missing_meta", "issue_dirty_tags", "issue_dirty_reason",
+            "issue_naming", "issue_naming_expected",
+            "issue_duplicate", "issue_duplicate_of",
+            "issue_misfiled", "issue_misfiled_reason",
+            "artist_norm", "album_norm", "title_norm",
+        ]
+        placeholders = ", ".join(["?"] * len(cols))
+        col_str = ", ".join(cols)
+        sql = f"INSERT OR REPLACE INTO library_index ({col_str}) VALUES ({placeholders})"
+        rows = [tuple(e.get(c) for c in cols) for e in entries]
+        async with self.get_db() as db:
+            await db.executemany(sql, rows)
+            await db.commit()
+
+    async def mark_track_mbid(self, filepath: str, track_mbid: Optional[str], album_mbid: Optional[str]) -> None:
+        """Update MBID columns for a single row after enrichment lookup."""
+        from datetime import datetime
+        async with self.get_db() as db:
+            await db.execute(
+                "UPDATE library_index SET track_mbid = ?, album_mbid = ?, mbid_enriched_at = ? WHERE filepath = ?",
+                (track_mbid, album_mbid, datetime.utcnow().isoformat(), filepath)
+            )
+            await db.commit()
+
+    async def get_library_rows_missing_mbid(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return rows where track_mbid is null and artist+title are present."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT filepath, artist, album, title FROM library_index "
+                "WHERE user_id = ? AND track_mbid IS NULL AND artist IS NOT NULL AND title IS NOT NULL",
+                (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def query_library_album(
+        self, user_id: str, artist_norm: str, album_norm: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return track count + list of tracks for a given artist+album (normalised names)."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT filepath, title, title_norm, track_mbid, bitrate, bit_depth, ext "
+                "FROM library_index WHERE user_id = ? AND artist_norm = ? AND album_norm = ?",
+                (user_id, artist_norm, album_norm)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                if not rows:
+                    return None
+                return {
+                    "track_count": len(rows),
+                    "tracks": [dict(r) for r in rows]
+                }
+
+    async def query_library_album_by_mbid(
+        self, user_id: str, album_mbid: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return track count for a given album MBID."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT COUNT(*) as cnt FROM library_index WHERE user_id = ? AND album_mbid = ?",
+                (user_id, album_mbid)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row or row["cnt"] == 0:
+                    return None
+                return {"track_count": row["cnt"]}
+
+    async def query_library_issues(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return all rows that have at least one issue flag set."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT * FROM library_index WHERE user_id = ? AND ("
+                "issue_missing_meta = 1 OR issue_dirty_tags = 1 OR "
+                "issue_naming = 1 OR issue_duplicate = 1 OR issue_misfiled = 1)",
+                (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def query_library_lyrics_missing(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return all rows where no lyrics (synced or plain) exist."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT filepath, artist, album, title, duration FROM library_index "
+                "WHERE user_id = ? AND lyrics_synced = 0 AND lyrics_plain = 0",
+                (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def query_library_naming_issues(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return all rows where the filename doesn't match the naming convention."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT filepath, artist, album, title, track_num, year, issue_naming_expected "
+                "FROM library_index WHERE user_id = ? AND issue_naming = 1",
+                (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def query_library_albums_grouped(
+        self, user_id: str
+    ) -> List[Dict[str, Any]]:
+        """Return one row per album: artist, album, track_count, has_cover, has_any_issue."""
+        async with self.get_db() as db:
+            async with db.execute(
+                """
+                SELECT artist, album, artist_norm, album_norm,
+                       COUNT(*) as track_count,
+                       MAX(has_cover) as has_cover,
+                       MAX(year) as year,
+                       SUM(issue_missing_meta + issue_dirty_tags + issue_naming
+                           + issue_duplicate + issue_misfiled) as issue_count,
+                       SUM(lyrics_synced) as tracks_synced_lyrics,
+                       SUM(lyrics_plain)  as tracks_plain_lyrics
+                FROM library_index WHERE user_id = ?
+                GROUP BY user_id, artist_norm, album_norm
+                ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE
+                """,
+                (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def get_library_index_stats(self, user_id: str) -> Dict[str, Any]:
+        """Return summary statistics for the user's library index."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT COUNT(*) as total, "
+                "SUM(CASE WHEN track_mbid IS NOT NULL THEN 1 ELSE 0 END) as with_mbid, "
+                "MAX(scanned_at) as last_scan "
+                "FROM library_index WHERE user_id = ?",
+                (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else {"total": 0, "with_mbid": 0, "last_scan": None}
+
+    async def invalidate_user_caches(self, user_id: str) -> None:
+        """Remove all library_cache entries for a user so sub-pages re-read from library_index."""
+        async with self.get_db() as db:
+            await db.execute(
+                "DELETE FROM library_cache WHERE key LIKE ?",
+                (f"%_{user_id}",)
+            )
+            await db.commit()
+        async with self.mem_cache_lock:
+            stale = [k for k in self.mem_cache if k.endswith(f"_{user_id}")]
+            for k in stale:
+                self.mem_cache.pop(k, None)

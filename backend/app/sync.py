@@ -3,6 +3,7 @@ import re
 import shutil
 import tempfile
 import asyncio
+import time
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional, Union
 from datetime import datetime
@@ -1324,6 +1325,75 @@ def _build_library_index(music_dir: str) -> Dict[str, Any]:
                         pass
 
     return {"filename_index": filename_index, "mbid_index": mbid_index}
+
+_library_index_cache: Dict[str, Any] = {"timestamp": 0.0, "music_dir": "", "data": None}
+_library_index_lock = asyncio.Lock()
+
+async def get_cached_library_index(music_dir: str, max_age_seconds: int = 60) -> Dict[str, Any]:
+    """Thread-safe retrieval or building of cached in-memory library index with TTL."""
+    global _library_index_cache
+    now = time.time()
+    if (
+        _library_index_cache["data"] is not None
+        and _library_index_cache["music_dir"] == music_dir
+        and (now - _library_index_cache["timestamp"]) < max_age_seconds
+    ):
+        return _library_index_cache["data"]
+
+    async with _library_index_lock:
+        now = time.time()
+        if (
+            _library_index_cache["data"] is not None
+            and _library_index_cache["music_dir"] == music_dir
+            and (now - _library_index_cache["timestamp"]) < max_age_seconds
+        ):
+            return _library_index_cache["data"]
+
+        data = await asyncio.to_thread(_build_library_index, music_dir)
+        _library_index_cache = {
+            "timestamp": time.time(),
+            "music_dir": music_dir,
+            "data": data,
+        }
+        return data
+
+def invalidate_library_index_cache():
+    """Invalidate the cached library index so it refreshes on the next lookup."""
+    global _library_index_cache
+    _library_index_cache = {"timestamp": 0.0, "music_dir": "", "data": None}
+
+async def enrich_library_index_mbids(user_id: str, db: "Database") -> None:
+    """Background task: look up MusicBrainz for library_index rows missing track_mbid.
+
+    Runs entirely in the background after the disk scan completes.
+    Respects the MusicBrainz 1-req/sec rate limit via the shared _rate_lock.
+    Never raises — errors are logged and skipped.
+    """
+    from backend.app.clients.musicbrainz import musicbrainz_client
+    try:
+        rows = await db.get_library_rows_missing_mbid(user_id)
+    except Exception as e:
+        logger.error(f"MBID enrichment: failed to fetch rows for user {user_id}: {e}")
+        return
+
+    logger.info(f"MBID enrichment: {len(rows)} tracks to look up for user {user_id}")
+    enriched = 0
+    for row in rows:
+        try:
+            rec = await musicbrainz_client.search_recording(
+                row["artist"], row["title"], row.get("album") or ""
+            )
+            if rec:
+                track_mbid = rec.get("id")
+                releases = rec.get("releases") or []
+                album_mbid = releases[0].get("id") if releases else None
+                if track_mbid:
+                    await db.mark_track_mbid(row["filepath"], track_mbid, album_mbid)
+                    enriched += 1
+        except Exception as e:
+            logger.debug(f"MBID enrichment: skipping {row.get('filepath')}: {e}")
+
+    logger.info(f"MBID enrichment complete: {enriched}/{len(rows)} tracks enriched for user {user_id}")
 
 async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[str] = None, user_id: Optional[str] = None):
     """Executes the complete synchronization run."""
