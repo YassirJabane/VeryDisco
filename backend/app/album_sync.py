@@ -305,17 +305,17 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
         s = re.sub(r'\bparts?\s+6[-–—]9\b', 'parts 6 9', s)
         return re.sub(r'[^\w]', '', s)
 
-    clean_filename = _norm(filename_lower)
-    
-    # 1. Match by normalized title FIRST (most specific and immune to multi-disc prefixes like 2-01)
-    sorted_official = sorted(official_tracks, key=lambda t: len(t.get("title", "")), reverse=True)
-    for track in sorted_official:
-        t_title = track.get("title", "")
-        if not t_title or len(t_title.strip()) < 2:
-            continue
-        clean_t_title = _norm(t_title)
-        if clean_t_title and len(clean_t_title) >= 3 and clean_t_title in clean_filename:
-            return track
+    # 1. Match by track position number in filename FIRST (e.g. "_01_", "01 -", "01.", "01_")
+    m_tr_num = re.search(r'(?:^|[\s_/-])(\d{1,2})[\s_.-]', filename_lower)
+    if m_tr_num:
+        try:
+            num = int(m_tr_num.group(1))
+            for track in official_tracks:
+                pos = track.get("track_position") or track.get("position") or track.get("track_num")
+                if pos and int(pos) == num:
+                    return track
+        except Exception:
+            pass
 
     # 2. Multi-disc track pattern (e.g., "2-01 ...", "2.01 ...", "cd1-05 ...", "disc 2 - 01 ...")
     m_disc_tr = re.search(r'^(?:cd|disc)?\s*(\d{1,2})[-_\.](\d{1,2})\b', filename_lower)
@@ -331,16 +331,29 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
         except Exception:
             pass
 
-    # 3. Single track number match at start (e.g., "01. ...", "01 - ...")
-    m_num = re.search(r'^\s*(\d{1,2})\s*[-_\.\s]', filename_lower)
-    if m_num:
-        try:
-            track_num_val = int(m_num.group(1))
-            for track in official_tracks:
-                if track.get("track_position") == track_num_val:
-                    return track
-        except Exception:
-            pass
+    # 3. Match by normalized title (stripping leading artist/album self-titled prefixes to prevent false positive collisions)
+    clean_filename = _norm(filename_lower)
+    sorted_official = sorted(official_tracks, key=lambda t: len(t.get("title", "")), reverse=True)
+    for track in sorted_official:
+        t_title = track.get("title", "")
+        if not t_title or len(t_title.strip()) < 2:
+            continue
+        clean_t_title = _norm(t_title)
+        if not clean_t_title or len(clean_t_title) < 3:
+            continue
+
+        # If track title matches artist/album name (e.g. self-titled "Kids See Ghosts"),
+        # strip artist/album occurrences from clean_filename to prevent matching every file in the album!
+        check_target = clean_filename
+        artist_name = track.get("artist") or track.get("album_artist") or ""
+        album_name = track.get("album") or ""
+        if artist_name and _norm(artist_name) == clean_t_title:
+            check_target = check_target.replace(_norm(artist_name), "", 1)
+        if album_name and _norm(album_name) == clean_t_title:
+            check_target = check_target.replace(_norm(album_name), "", 1)
+
+        if clean_t_title in check_target:
+            return track
 
     return None
 
