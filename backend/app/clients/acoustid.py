@@ -230,7 +230,8 @@ class AcoustIDClient:
                                 artist_match = True
                                 break
 
-                    if artist_match:
+                    # Accept if artist matches OR if title match is high confidence (handles guest/solo tracks on joint albums)
+                    if artist_match or (score >= 0.40 and len(clean_tagged_title) >= 4):
                         if score > highest_score:
                             highest_score = score
                             art_name = rec_artists[0].get("name") if rec_artists else "Unknown"

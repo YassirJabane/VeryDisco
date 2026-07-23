@@ -20,7 +20,7 @@ import {
   DeleteForever as DangerousIcon,
   LibraryMusic as LibraryIcon
 } from '@mui/icons-material';
-import apiService from '../api';
+import apiService, { getErrorMessage } from '../api';
 import { useNotification } from '../context/NotificationContext';
 
 interface PinnedArtist {
@@ -122,7 +122,7 @@ export const MyArtists: React.FC = () => {
       notify(`Pinned artist "${searchResult.name}"!`, "success");
       fetchArtists();
     } catch (err: any) {
-      notify(err.response?.data?.detail || "Failed to pin artist.", "error");
+      notify(getErrorMessage(err, "Failed to pin artist."), "error");
     }
   };
 
@@ -139,7 +139,7 @@ export const MyArtists: React.FC = () => {
           notify(`Deleted "${name}".`, "info");
           fetchArtists();
         } catch (err) {
-          notify("Failed to delete artist.", "error");
+          notify(getErrorMessage(err, "Failed to delete artist."), "error");
         }
       }
     });
@@ -158,7 +158,7 @@ export const MyArtists: React.FC = () => {
           notify("Successfully purged all artists and recreated artist database!", "success");
           fetchArtists();
         } catch (err: any) {
-          notify(err.response?.data?.detail || "Failed to purge artists.", "error");
+          notify(getErrorMessage(err, "Failed to purge artists."), "error");
         }
       }
     });

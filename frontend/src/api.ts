@@ -9,6 +9,20 @@ const api = axios.create({
   },
 });
 
+export function getErrorMessage(err: any, fallback: string = "An error occurred"): string {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map(item => (typeof item === 'object' && item !== null ? (item.msg || JSON.stringify(item)) : String(item)))
+      .join('; ');
+  }
+  if (typeof detail === 'object' && detail !== null) {
+    return detail.msg || detail.message || JSON.stringify(detail);
+  }
+  return err?.message || fallback;
+}
+
 // ── Auth types ──────────────────────────────────────────────────────────────
 export interface AuthUser {
   id: string;

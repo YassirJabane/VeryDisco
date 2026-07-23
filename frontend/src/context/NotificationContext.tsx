@@ -34,8 +34,20 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
   const [confirmOptions, setConfirmOptions] = useState<ConfirmOptions | null>(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
 
-  const notify = (message: string, severity: Severity = 'info') => {
-    setToastMessage(message);
+  const notify = (message: any, severity: Severity = 'info') => {
+    let text = '';
+    if (typeof message === 'string') {
+      text = message;
+    } else if (Array.isArray(message)) {
+      text = message
+        .map(item => (typeof item === 'object' && item !== null ? (item.msg || JSON.stringify(item)) : String(item)))
+        .join('; ');
+    } else if (typeof message === 'object' && message !== null) {
+      text = message.msg || message.message || message.detail || JSON.stringify(message);
+    } else {
+      text = String(message || '');
+    }
+    setToastMessage(text);
     setToastSeverity(severity);
     setToastOpen(true);
   };

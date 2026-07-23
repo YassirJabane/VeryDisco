@@ -428,6 +428,32 @@ def get_library_filename(artist: str, album: str, track_num: Optional[int], titl
     else:
         return f"{safe_artist}_{safe_album}_{safe_title}{ext}"
 
+def sanitize_artist_name(artist_str: str) -> str:
+    """
+    Clean artist strings by splitting on slashes/semicolons, removing empty strings,
+    and joining with clean delimiters. Eliminates trailing slashes like 'Drake/' or 'Drake//'.
+    """
+    if not artist_str:
+        return ""
+    parts = re.split(r'[\/\\;\x00]+', str(artist_str))
+    cleaned = [p.strip() for p in parts if p and p.strip()]
+    if not cleaned:
+        return ""
+    return " / ".join(cleaned)
+
+def strip_scene_tags(text: str) -> str:
+    """
+    Strip release group scene tags and quality descriptors from titles or basenames.
+    E.g. "Intro (PMEDIA)" -> "Intro", "Rich Flex [PMEDIA] ⭐️" -> "Rich Flex".
+    """
+    if not text:
+        return ""
+    s = text
+    s = re.sub(r'(?i)[\(\[]?\b(PMEDIA|320kbps|320|FLAC|MP3|WEB|Explicit|HQ|CD|V0|V2|PMedia|PMedia1)\b[\)\]]?', '', s)
+    s = re.sub(r'[⭐️⭐★✨]', '', s)
+    s = re.sub(r'\s+', ' ', s).strip(' -_./\\')
+    return s if s else text
+
 def embed_metadata(
     file_path: str,
     artist: str,
@@ -448,13 +474,16 @@ def embed_metadata(
     """Embed metadata, cover art, and lyrics directly into the audio file metadata."""
     ext = os.path.splitext(file_path)[1].lower()
     
+    clean_artist = sanitize_artist_name(artist) or artist
+    clean_title = strip_scene_tags(title) or title
+
     if is_explore:
         final_album = "Explore Tracks"
         final_album_artist = "Various Artists"
         compilation_val = "1"
     else:
-        final_album = album or f"{title} - Single"
-        final_album_artist = album_artist or artist
+        final_album = album or f"{clean_title} - Single"
+        final_album_artist = sanitize_artist_name(album_artist or artist) or clean_artist
         compilation_val = "0"
 
     try:
@@ -465,30 +494,17 @@ def embed_metadata(
             except Exception:
                 tags = ID3()
             
-            # Remove all MusicBrainz and UFID tags
+            # Remove all existing raw/garbage tags (TPE3 conductor, TENC encoder, TCOP copyright, COMM comments, scene tags)
             for key in list(tags.keys()):
-                if "musicbrainz" in key.lower() or key.lower().startswith("ufid"):
-                    tags.delall(key)
+                tags.delall(key)
             
-            tags.setall("TPE1", [TPE1(encoding=3, text=artist)])
+            tags.setall("TPE1", [TPE1(encoding=3, text=clean_artist)])
             tags.setall("TPE2", [TPE2(encoding=3, text=final_album_artist)])
-            tags.setall("TIT2", [TIT2(encoding=3, text=title)])
+            tags.setall("TIT2", [TIT2(encoding=3, text=clean_title)])
             tags.setall("TALB", [TALB(encoding=3, text=final_album)])
             tags.setall("TCMP", [TCMP(encoding=3, text=compilation_val)])
-            tags.delall("COMM")
             
             if is_explore:
-                # Keep strictly essential frames for explore tracks. Purge all TXXX, COMM, TDRC, TDOR, TYER, UFID etc.
-                allowed = {"TPE1", "TPE2", "TIT2", "TALB", "TCMP", "TPOS", "TRCK", "APIC", "USLT"}
-                for key in list(tags.keys()):
-                    frame_id = key.split(":")[0]
-                    if frame_id not in allowed:
-                        tags.delall(key)
-                tags.setall("TPE1", [TPE1(encoding=3, text=artist)])
-                tags.setall("TPE2", [TPE2(encoding=3, text=final_album_artist)])
-                tags.setall("TIT2", [TIT2(encoding=3, text=title)])
-                tags.setall("TALB", [TALB(encoding=3, text=final_album)])
-                tags.setall("TCMP", [TCMP(encoding=3, text=compilation_val)])
                 tags.setall("TPOS", [TPOS(encoding=3, text="1/1")])
             else:
                 disc_str = f"{disc_num}/{disc_total}" if disc_total else str(disc_num)

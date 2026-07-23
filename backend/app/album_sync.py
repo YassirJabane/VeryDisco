@@ -261,6 +261,9 @@ def clean_track_title(basename: str, artist: str, album: str) -> str:
     title = re.sub(r'^\d+\s*[-_.]?\s*', '', title)
     title = re.sub(r'[_\-\s.]{2,}', ' ', title)
     
+    # Strip release group scene tags & emojis (PMEDIA, 320kbps, FLAC, ⭐️, etc.)
+    title = re.sub(r'(?i)[\(\[]?\b(PMEDIA|320kbps|320|FLAC|MP3|WEB|Explicit|HQ|CD|V0|V2|PMedia|PMedia1)\b[\)\]]?', '', title)
+    title = re.sub(r'[⭐️⭐★✨]', '', title)
     title = title.strip(' -_./\\')
     
     if not title:
@@ -801,12 +804,30 @@ async def _download_album_task_internal(
 
                 existing_path = None
                 if not force:
-                    for playlist_source in active_playlists:
-                        playlist_output_dir = os.path.join(playlists_dir, playlist_source)
-                        audio_path, _ = find_existing_track_file(music_dir, playlist_output_dir, "", artist, clean_title)
-                        if audio_path:
-                            existing_path = audio_path
-                            break
+                    # 1. Direct check in final_dir (destination album directory) for tracks already downloaded in earlier attempts
+                    if os.path.isdir(final_dir):
+                        final_dir_files = [os.path.join(final_dir, fn) for fn in os.listdir(final_dir) if fn.lower().endswith(('.mp3', '.flac', '.m4a'))]
+                        req_num = f.get("track_num")
+                        for f_dest in final_dir_files:
+                            fname = os.path.basename(f_dest)
+                            num_match = False
+                            if req_num is not None:
+                                try:
+                                    num_match = f"_{int(req_num):02d}_" in fname or f"_{int(req_num)}_" in fname
+                                except Exception:
+                                    pass
+                            title_match = clean_title.lower() in fname.lower()
+                            if num_match or title_match:
+                                existing_path = f_dest
+                                break
+
+                    if not existing_path:
+                        for playlist_source in active_playlists:
+                            playlist_output_dir = os.path.join(playlists_dir, playlist_source)
+                            audio_path, _ = find_existing_track_file(music_dir, playlist_output_dir, "", artist, clean_title)
+                            if audio_path:
+                                existing_path = audio_path
+                                break
 
                 if existing_path:
                     ext, bitrate, bit_depth, sample_rate = get_file_audio_info(existing_path)
