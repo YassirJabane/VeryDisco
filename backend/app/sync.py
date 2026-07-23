@@ -471,9 +471,19 @@ def embed_metadata(
     mbid_album: Optional[str] = None,
     mbid_recording: Optional[str] = None
 ):
-    """Embed metadata, cover art, and lyrics directly into the audio file metadata."""
+    """Embed metadata, cover art, and lyrics directly into the audio file metadata.
+
+    Navidrome tag strategy (per official mappings.yaml and tagging guidelines):
+    - TPE1 / ARTIST       : full display name incl. feat. ("Drake feat. Jay-Z")
+    - TPE2 / ALBUMARTIST  : album-level grouping artist only ("Drake") — prevents
+                            duplicate artist entries and album fragmentation.
+    - TXXX:artists        : multi-value list of individual artists, each becoming
+                            a separately clickable artist page in Navidrome.
+    - ID3v2.4 is used for MP3 to support true multi-value frames.
+    - All pre-existing tags are wiped before writing to eliminate scene-release junk.
+    """
     ext = os.path.splitext(file_path)[1].lower()
-    
+
     clean_artist = sanitize_artist_name(artist) or artist
     clean_title = strip_scene_tags(title) or title
 
@@ -486,95 +496,167 @@ def embed_metadata(
         final_album_artist = sanitize_artist_name(album_artist or artist) or clean_artist
         compilation_val = "0"
 
+    # ── Build individual artist list for Navidrome ARTISTS multi-value tag ──────
+    # Splitting the display-artist string yields the individually linkable artists.
+    # This is used for TXXX:artists (MP3), artists Vorbis tag (FLAC), and
+    # ----:com.apple.iTunes:artists (M4A). See Navidrome mappings.yaml.
+    feat_artists: list[str] = []
+    if not is_explore:
+        _artist_norm = re.sub(r'[\(\[].*?[\)\]]', '', clean_artist)
+        _parts = re.split(
+            r'(?i)\b(?:feat\.?|ft\.?|featuring|and|with)\b|\s+&\s+|\s+[xX]\s+|,|/',
+            _artist_norm
+        )
+        feat_artists = [p.strip() for p in _parts if p.strip()]
+        if not feat_artists:
+            feat_artists = [extract_main_artist(clean_artist) or clean_artist]
+
     try:
         if ext == ".mp3":
-            from mutagen.id3 import ID3, USLT, APIC, TALB, TRCK, TPE1, TPE2, TIT2, TDRC, TDOR, TYER, TPOS, TCMP, TXXX, UFID
+            from mutagen.id3 import (
+                ID3, ID3NoHeaderError,
+                TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TCMP,
+                TDRC, TDRL, TYER,
+                TXXX, UFID,
+                USLT, APIC
+            )
+            # ── Full tag wipe: erase ID3v1 + ID3v2 from disk, start fresh ──────
             try:
                 tags = ID3(file_path)
-            except Exception:
-                tags = ID3()
-            
-            # Remove all existing raw/garbage tags (TPE3 conductor, TENC encoder, TCOP copyright, COMM comments, scene tags)
-            for key in list(tags.keys()):
-                tags.delall(key)
-            
-            tags.setall("TPE1", [TPE1(encoding=3, text=clean_artist)])
-            tags.setall("TPE2", [TPE2(encoding=3, text=final_album_artist)])
-            tags.setall("TIT2", [TIT2(encoding=3, text=clean_title)])
-            tags.setall("TALB", [TALB(encoding=3, text=final_album)])
-            tags.setall("TCMP", [TCMP(encoding=3, text=compilation_val)])
-            
+                tags.delete(file_path)   # removes both v1 and v2 from disk
+            except ID3NoHeaderError:
+                pass
+            tags = ID3()             # clean in-memory tag set
+
+            # ── Core track tags ───────────────────────────────────────────────
+            tags.add(TIT2(encoding=3, text=clean_title))
+            # TPE1 = display name (full feat. string) shown in the player
+            tags.add(TPE1(encoding=3, text=clean_artist))
+            # TPE2 = album artist for grouping — main artist only, no duplicates
+            tags.add(TPE2(encoding=3, text=final_album_artist))
+            tags.add(TALB(encoding=3, text=final_album))
+            tags.add(TCMP(encoding=3, text=compilation_val))
+
             if is_explore:
-                tags.setall("TPOS", [TPOS(encoding=3, text="1/1")])
+                tags.add(TPOS(encoding=3, text="1/1"))
             else:
                 disc_str = f"{disc_num}/{disc_total}" if disc_total else str(disc_num)
-                tags.setall("TPOS", [TPOS(encoding=3, text=disc_str)])
+                tags.add(TPOS(encoding=3, text=disc_str))
                 if date:
-                    tags.setall("TDRC", [TDRC(encoding=3, text=date)])
-                    tags.setall("TDOR", [TDOR(encoding=3, text=date)])
+                    # TDRC → recordingdate (Navidrome mappings.yaml: tdrc alias)
+                    tags.add(TDRC(encoding=3, text=date))
+                    # TDRL → releasedate (Navidrome mappings.yaml: tdrl alias)
+                    tags.add(TDRL(encoding=3, text=date))
                     if len(date) >= 4:
-                        tags.setall("TYER", [TYER(encoding=3, text=date[:4])])
-                if mbid_album:
-                    tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[mbid_album]))
+                        tags.add(TYER(encoding=3, text=date[:4]))
+
+                # ── Multi-value ARTISTS (Navidrome: txxx:artists) ─────────────
+                # When both TPE1 and TXXX:artists exist, Navidrome uses TPE1 as
+                # display-only and TXXX:artists as the authoritative artist list.
+                # No splitting of TPE1 occurs; each feat. artist gets their own page.
+                if feat_artists:
+                    tags.add(TXXX(encoding=3, desc="artists", text=feat_artists))
+
+                # ── MusicBrainz IDs (exact frame names from Navidrome mappings.yaml) ─
                 if mbid_recording:
-                    tags.add(UFID(owner="http://musicbrainz.org", data=mbid_recording.encode('utf-8')))
+                    # musicbrainz_recordingid → ufid:http://musicbrainz.org
+                    tags.add(UFID(owner="http://musicbrainz.org",
+                                  data=mbid_recording.encode('utf-8')))
+                if mbid_album:
+                    # musicbrainz_albumid → txxx:musicbrainz album id
+                    tags.add(TXXX(encoding=3, desc="musicbrainz album id",
+                                  text=[mbid_album]))
 
             if track_num:
-                trck_str = f"{track_num}/{track_total}" if track_total and not is_explore else str(track_num)
-                tags.setall("TRCK", [TRCK(encoding=3, text=trck_str)])
+                trck_str = (f"{track_num}/{track_total}"
+                            if track_total and not is_explore
+                            else str(track_num))
+                tags.add(TRCK(encoding=3, text=trck_str))
 
             if lyrics_text:
-                tags.setall("USLT", [USLT(encoding=3, lang='eng', desc='Lyrics', text=lyrics_text)])
+                # USLT desc='' matches Navidrome alias: uslt:description
+                tags.add(USLT(encoding=3, lang='eng', desc='', text=lyrics_text))
             if cover_bytes:
-                tags.setall("APIC", [APIC(encoding=3, mime='image/jpeg', type=3, desc='Cover', data=cover_bytes)])
-                
-            tags.save(file_path, v2_version=3)
+                tags.add(APIC(encoding=3, mime='image/jpeg',
+                               type=3, desc='Cover', data=cover_bytes))
+
+            # Save as ID3v2.4 — required for true multi-value frame support
+            tags.save(file_path, v2_version=4)
             
         elif ext in [".flac", ".ogg"]:
             from mutagen.flac import FLAC, Picture
             audio = FLAC(file_path)
-            
+
+            # ── Full tag wipe ─────────────────────────────────────────────────
+            audio.clear()
+            audio.clear_pictures()
+
+            # ── Core Vorbis comment tags ──────────────────────────────────────
+            # ARTIST = display name (Navidrome: artist alias)
+            audio["artist"] = [clean_artist]
+            # ALBUMARTIST = album grouping artist (Navidrome: albumartist alias)
+            audio["albumartist"] = [final_album_artist]
+            audio["album"] = [final_album]
+            audio["title"] = [clean_title]
+            audio["compilation"] = [compilation_val]
+
             if is_explore:
-                allowed_flac = {"artist", "albumartist", "album artist", "album", "title", "compilation", "discnumber", "disctotal", "tracknumber", "lyrics"}
-                for key in list(audio.keys()):
-                    if key.lower() not in allowed_flac:
-                        del audio[key]
-                audio["artist"] = artist
-                audio["albumartist"] = final_album_artist
-                audio["album artist"] = final_album_artist
-                audio["album"] = final_album
-                audio["title"] = title
-                audio["compilation"] = compilation_val
-                audio["discnumber"] = "1"
-                audio["disctotal"] = "1"
+                audio["discnumber"] = ["1"]
+                audio["disctotal"] = ["1"]
             else:
                 for key in list(audio.keys()):
                     if "musicbrainz" in key.lower():
                         del audio[key]
-                audio["artist"] = artist
-                audio["albumartist"] = final_album_artist
-                audio["album artist"] = final_album_artist
-                audio["album"] = final_album
-                audio["title"] = title
-                audio["compilation"] = compilation_val
-                audio["discnumber"] = str(disc_num)
-                audio["disctotal"] = str(disc_total)
+
+            # ── Full tag wipe ──────────────────────────────────────────────────
+            audio.clear()
+            audio.clear_pictures()
+
+            # ── Core Vorbis comment tags ───────────────────────────────────────
+            # ARTIST = display name (Navidrome: tpe1/artist alias)
+            audio["artist"] = [clean_artist]
+            # ALBUMARTIST = album grouping artist (Navidrome: tpe2/albumartist alias)
+            audio["albumartist"] = [final_album_artist]
+            audio["album"] = [final_album]
+            audio["title"] = [clean_title]
+            audio["compilation"] = [compilation_val]
+
+            if is_explore:
+                audio["discnumber"] = ["1"]
+                audio["disctotal"] = ["1"]
+            else:
+                audio["discnumber"] = [str(disc_num)]
+                audio["disctotal"] = [str(disc_total)]
                 if date:
-                    audio["date"] = date
+                    # DATE → recordingdate in Navidrome (mappings.yaml: date alias)
+                    audio["date"] = [date]
+                    # RELEASEDATE → releasedate in Navidrome
+                    audio["releasedate"] = [date]
                     if len(date) >= 4:
-                        audio["year"] = date[:4]
-                if mbid_album:
-                    audio["musicbrainz_albumid"] = mbid_album
+                        audio["year"] = [date[:4]]
+
+                # ── Multi-value ARTISTS (Navidrome mappings.yaml: artists Vorbis tag) ─
+                # Mutagen writes each list entry as a separate Vorbis comment line,
+                # giving Navidrome a clean individual artist list with no splitting needed.
+                if feat_artists:
+                    audio["artists"] = feat_artists
+
+                # ── MusicBrainz IDs (exact Vorbis tag names from Navidrome mappings.yaml) ──
                 if mbid_recording:
-                    audio["musicbrainz_trackid"] = mbid_recording
+                    # musicbrainz_recordingid → musicbrainz_trackid (Vorbis)
+                    audio["musicbrainz_trackid"] = [mbid_recording]
+                if mbid_album:
+                    # musicbrainz_albumid → musicbrainz_albumid (Vorbis)
+                    audio["musicbrainz_albumid"] = [mbid_album]
 
             if track_num:
-                audio["tracknumber"] = str(track_num)
-            if track_total and not is_explore:
-                audio["tracktotal"] = str(track_total)
+                audio["tracknumber"] = [str(track_num)]
+                if track_total and not is_explore:
+                    audio["tracktotal"] = [str(track_total)]
 
             if lyrics_text:
-                audio["lyrics"] = lyrics_text
+                # lyrics → Navidrome mappings.yaml: unsyncedlyrics/lyrics alias
+                audio["lyrics"] = [lyrics_text]
             if cover_bytes:
                 pic = Picture()
                 pic.type = 3
@@ -583,57 +665,64 @@ def embed_metadata(
                 pic.data = cover_bytes
                 audio.add_picture(pic)
             audio.save()
-            
+
         elif ext in [".m4a", ".mp4"]:
-            from mutagen.mp4 import MP4, MP4Cover
+            from mutagen.mp4 import MP4, MP4Cover, MP4FreeForm
             audio = MP4(file_path)
-            
+
+            # ── Full tag wipe ──────────────────────────────────────────────────
+            audio.clear()
+
+            # ── Core MP4 atom tags ─────────────────────────────────────────────
+            # ©ART → Navidrome mappings.yaml: ©art alias for artist (display name)
+            audio["©ART"] = [clean_artist]
+            # aART → Navidrome mappings.yaml: aart alias for albumartist
+            audio["aART"] = [final_album_artist]
+            audio["©nam"] = [clean_title]
+            audio["©alb"] = [final_album]
+            audio["cpil"] = is_explore
+
             if is_explore:
-                allowed_m4a = {"\xa9ART", "aART", "\xa9nam", "\xa9alb", "cpil", "disk", "trkn", "\xa9lyr", "covr"}
-                for key in list(audio.keys()):
-                    if key not in allowed_m4a:
-                        del audio[key]
-                audio["\xa9ART"] = artist
-                audio["aART"] = final_album_artist
-                audio["\xa9nam"] = title
-                audio["\xa9alb"] = final_album
-                audio["cpil"] = True
                 audio["disk"] = [(1, 1)]
             else:
-                for key in list(audio.keys()):
-                    if "musicbrainz" in key.lower():
-                        del audio[key]
-                audio["\xa9ART"] = artist
-                audio["aART"] = final_album_artist
-                audio["\xa9nam"] = title
-                audio["\xa9alb"] = final_album
-                audio["cpil"] = False
                 audio["disk"] = [(disc_num, disc_total)]
                 if date:
-                    audio["\xa9day"] = date
-                if mbid_album:
-                    audio["----:com.apple.iTunes:MusicBrainz Album Id"] = mbid_album.encode('utf-8')
+                    # ©day → releasedate in Navidrome (mappings.yaml: ©day alias)
+                    audio["©day"] = [date]
+
+                # ── Multi-value ARTISTS (Navidrome: ----:com.apple.itunes:artists) ─
+                if feat_artists:
+                    audio["----:com.apple.iTunes:artists"] = [
+                        MP4FreeForm(a.encode("utf-8")) for a in feat_artists
+                    ]
+
+                # ── MusicBrainz IDs (exact atom names from Navidrome mappings.yaml) ──
                 if mbid_recording:
-                    audio["----:com.apple.iTunes:MusicBrainz Track Id"] = mbid_recording.encode('utf-8')
+                    # musicbrainz_recordingid → ----:com.apple.itunes:musicbrainz track id
+                    audio["----:com.apple.iTunes:musicbrainz track id"] = [
+                        MP4FreeForm(mbid_recording.encode("utf-8"))
+                    ]
+                if mbid_album:
+                    # musicbrainz_albumid → ----:com.apple.itunes:musicbrainz album id
+                    audio["----:com.apple.iTunes:musicbrainz album id"] = [
+                        MP4FreeForm(mbid_album.encode("utf-8"))
+                    ]
 
             if track_num:
-                audio["trkn"] = [(int(track_num), int(track_total or 0) if not is_explore else 0)]
+                audio["trkn"] = [(int(track_num),
+                                   int(track_total or 0) if not is_explore else 0)]
             if lyrics_text:
-                audio["\xa9lyr"] = lyrics_text
+                audio["©lyr"] = [lyrics_text]
             if cover_bytes:
                 audio["covr"] = [MP4Cover(cover_bytes, imageformat=MP4Cover.FORMAT_JPEG)]
             audio.save()
 
-        # Touch file modification time so Navidrome's file watcher immediately notices changes
+        # Touch mtime so Navidrome's file watcher immediately notices changes
         try:
             os.utime(file_path, None)
         except Exception:
             pass
 
-        logger.info(f"Embedded metadata and cover art into: {file_path}")
-    except Exception as e:
-        logger.error(f"Failed to embed metadata into {file_path}: {e}")
-            
         logger.info(f"Embedded metadata and cover art into: {file_path}")
     except Exception as e:
         logger.error(f"Failed to embed metadata into {file_path}: {e}")
