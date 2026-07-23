@@ -182,6 +182,7 @@ class AcoustIDClient:
                 if result.get("score", 0.0) >= 0.15:
                     for rec in result.get("recordings", []):
                         if rec.get("id") == tagged_mbid:
+                            logger.info(f"[AcoustID] Track: '{tagged_title}' — Generated MBID: {tagged_mbid} | Expected MBID: {tagged_mbid} | Match: True")
                             return True, f"Verified by MusicBrainz Recording ID match ({tagged_mbid})"
 
         # 5. Fallback: string matching
@@ -237,9 +238,20 @@ class AcoustIDClient:
                             art_name = rec_artists[0].get("name") if rec_artists else "Unknown"
                             best_match_desc = f"Matched AcoustID recording '{rec.get('title')}' by '{art_name}' (score: {score:.2f})"
 
+        generated_mbid = None
+        for r in results:
+            if r.get("score", 0.0) >= 0.15:
+                for rec in r.get("recordings", []):
+                    if rec.get("id"):
+                        generated_mbid = rec.get("id")
+                        break
+            if generated_mbid: break
+
         if highest_score > 0.0:
+            logger.info(f"[AcoustID] Track: '{tagged_title}' — Generated MBID: {generated_mbid} | Expected MBID: {tagged_mbid} | Match: True")
             return True, best_match_desc
 
+        logger.info(f"[AcoustID] Track: '{tagged_title}' — Generated MBID: {generated_mbid} | Expected MBID: {tagged_mbid} | Match: False")
         # If we got here, it's a mismatch
         top_matches = []
         for result in results[:3]:

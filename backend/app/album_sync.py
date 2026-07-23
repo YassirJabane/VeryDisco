@@ -1260,7 +1260,11 @@ async def _download_album_task_internal(
                 album_complete = True
                 break
             else:
-                logger.warning(f"Attempt {attempt + 1} finished with {len(downloaded_official_positions)}/{target_total} official tracks. Trying next candidate peer for remaining tracks...")
+                if attempt_downloaded_files:
+                    logger.warning(f"Attempt {attempt + 1} finished with {len(downloaded_official_positions)}/{target_total} official tracks. Some tracks downloaded successfully. Breaking to let single-track fallback handle the rest instead of restarting full album download from next peer.")
+                    break
+                else:
+                    logger.warning(f"Attempt {attempt + 1} finished with {len(downloaded_official_positions)}/{target_total} official tracks. Trying next candidate peer for remaining tracks...")
 
         if not overall_downloaded and not overall_copied:
             logger.error(f"Failed to download or copy any tracks for '{artist} - {album}' across all peer candidates.")
@@ -1469,6 +1473,7 @@ async def download_single_track_task(
 
         # Try downloading the best candidate
         attempts = min(len(candidates), config.schedule.max_candidate_attempts)
+        acoustid_retry_count = 0
         for idx in range(attempts):
             candidate = candidates[idx]
             username = candidate["username"]
@@ -1566,10 +1571,15 @@ async def download_single_track_task(
                     if "not configured" in reason or "No match found" in reason or "Skipped" in reason:
                         logger.info(f"AcoustID verification skipped for single track '{title_tag}': {reason}")
                     else:
-                        logger.warning(f"AcoustID mismatch detected for single track '{title_tag}': {reason}. Discarding downloaded file and retrying next candidate...")
-                        acoustid_mismatch = True
-                        if downloaded_file.exists():
-                            downloaded_file.unlink()
+                        acoustid_retry_count += 1
+                        if config and hasattr(config, 'acoustid') and acoustid_retry_count >= config.acoustid.max_retries:
+                            logger.warning(f"AcoustID max retries ({config.acoustid.max_retries}) reached for single track '{title_tag}'. Keeping file despite mismatch: {reason}")
+                            acoustid_mismatch = False
+                        else:
+                            logger.warning(f"AcoustID mismatch detected for single track '{title_tag}': {reason}. Discarding downloaded file and retrying next candidate...")
+                            acoustid_mismatch = True
+                            if downloaded_file.exists():
+                                downloaded_file.unlink()
             except Exception as ac_err:
                 logger.error(f"Error during AcoustID check for single track {downloaded_file}: {ac_err}")
 
