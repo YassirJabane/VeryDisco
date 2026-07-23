@@ -66,7 +66,7 @@ const ArtistAliases: React.FC = () => {
       showToast('Both fields are required to add an alias.', 'error');
       return;
     }
-    if (aliases.some(a => a.original.toLowerCase() === newOriginal.toLowerCase())) {
+    if (aliases.some(a => (a.original || '').toLowerCase() === newOriginal.trim().toLowerCase())) {
       showToast('This original artist alias already exists.', 'error');
       return;
     }

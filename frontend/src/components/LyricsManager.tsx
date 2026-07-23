@@ -61,9 +61,9 @@ export const LyricsManager: React.FC = () => {
   const filtered = tracks.filter((t) => {
     const q = filterText.toLowerCase();
     return (
-      t.artist.toLowerCase().includes(q) ||
-      t.title.toLowerCase().includes(q) ||
-      t.album.toLowerCase().includes(q)
+      (t.artist || '').toLowerCase().includes(q) ||
+      (t.title || '').toLowerCase().includes(q) ||
+      (t.album || '').toLowerCase().includes(q)
     );
   });
 

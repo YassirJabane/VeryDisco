@@ -33,7 +33,7 @@ function fmtBytes(bytes: number): string {
 }
 
 function qualityChipColor(q: string): 'default' | 'success' | 'warning' | 'info' {
-  const ql = q.toLowerCase();
+  const ql = (q || '').toLowerCase();
   if (ql.startsWith('flac')) return 'success';
   if (ql.includes('320')) return 'warning';
   return 'info';
@@ -513,7 +513,7 @@ const LibraryManager: React.FC = () => {
     if (!query.trim()) return albums;
     const q = query.toLowerCase();
     return albums.filter(
-      a => a.album.toLowerCase().includes(q) || a.artist.toLowerCase().includes(q)
+      a => (a.album || '').toLowerCase().includes(q) || (a.artist || '').toLowerCase().includes(q)
     );
   }, [albums, query]);
 

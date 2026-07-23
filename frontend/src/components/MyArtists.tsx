@@ -284,7 +284,7 @@ export const MyArtists: React.FC = () => {
   const otherReleases = sortByDate(releases.filter(r => r && ['live', 'compilation', 'mixtape', 'remix', 'demo', 'other', 'interview', 'soundtrack', 'broadcast'].includes(r.record_type)));
 
   const filteredArtists = artists.filter(a => 
-    a.artist_name.toLowerCase().includes(filterText.toLowerCase())
+    (a?.artist_name || '').toLowerCase().includes((filterText || '').toLowerCase())
   );
 
   return (

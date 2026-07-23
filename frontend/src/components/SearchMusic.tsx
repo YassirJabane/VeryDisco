@@ -109,10 +109,10 @@ export const SearchMusic: React.FC = () => {
           .trim();
       };
       
-      const baseName = getBaseAlbumName(baseTitle).toLowerCase();
+      const baseName = (getBaseAlbumName(baseTitle) || '').toLowerCase();
       
       const matching = artistAlbums.filter((alb: any) => {
-        const albTitle = alb.title.toLowerCase();
+        const albTitle = (alb.title || '').toLowerCase();
         return albTitle.includes(baseName) || baseName.includes(albTitle);
       });
       
@@ -718,7 +718,7 @@ export const SearchMusic: React.FC = () => {
                             </TableHead>
                             <TableBody>
                               {cand.files && cand.files.map((file: any, fIdx: number) => {
-                                const isFileFlac = file.filename.toLowerCase().endsWith('.flac');
+                                const isFileFlac = file?.filename ? file.filename.toLowerCase().endsWith('.flac') : false;
                                 const m = Math.floor((file.duration || 0) / 60);
                                 const s = Math.floor((file.duration || 0) % 60);
                                 const lenStr = file.duration ? `${m}:${s.toString().padStart(2, '0')}` : '-';

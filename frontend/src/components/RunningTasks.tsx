@@ -96,7 +96,7 @@ const RunningTasks: React.FC = () => {
   };
 
   const getStatusChip = (status: string) => {
-    switch (status.toLowerCase()) {
+    switch ((status || '').toLowerCase()) {
       case 'completed':
         return (
           <Chip 
