@@ -1270,11 +1270,120 @@ class BatchCheckItem(BaseModel):
 
 @app.post("/api/search/check/batch")
 async def batch_check_existence(items: List[BatchCheckItem], request: Request):
-    """Check existence for multiple albums/tracks in a single request."""
+    """Check existence for multiple albums/tracks in a single request (optimized batch DB lookup)."""
+    if not config_manager.is_configured or not config_manager.config or not items:
+        return [{"exists": False, "status": "missing", "upgrade_available": False, "tracks": []} for _ in items]
+        
+    cfg = config_manager.config
+    user_id = "default"
+    
+    from backend.app.auth import get_current_user
+    try:
+        user = await get_current_user(request)
+        if user:
+            user_id = user["id"]
+    except Exception:
+        pass
+
+    from backend.app.sync import extract_main_artist, check_quality_status
+
+    def _norm(s: str) -> str:
+        return re.sub(r'[^\w]', '', (s or '')).lower()
+
+    def _norm_album(s: str) -> str:
+        if not s:
+            return ""
+        clean = re.sub(r'(?i)\b(?:disc|cd|disk)\s*\d+.*|\b(?:deluxe|explicit|edition|version|remastered|single)\b.*', '', s)
+        clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', clean).strip()
+        return _norm(clean) or _norm(s)
+
+    first_artist = items[0].artist if items else None
+    main_art = extract_main_artist(first_artist) if first_artist else None
+    clean_art = _norm(main_art or first_artist or '')
+    
+    # 1. Fetch library_index rows in a single DB query
+    db_rows = await db.query_library_index_for_user(user_id, artist_norm=clean_art if clean_art else None)
+    
+    # 2. Build O(1) hash maps for lightning fast matching
+    album_mbid_map: Dict[str, List[Dict[str, Any]]] = {}
+    album_norm_map: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    track_title_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    
+    for row in db_rows:
+        a_mbid = row.get("album_mbid")
+        if a_mbid:
+            album_mbid_map.setdefault(a_mbid, []).append(row)
+            
+        a_norm = row.get("album_norm")
+        art_norm = row.get("artist_norm")
+        if a_norm and art_norm:
+            album_norm_map.setdefault((art_norm, a_norm), []).append(row)
+            
+        t_norm = row.get("title_norm")
+        if t_norm and art_norm:
+            track_title_map[(art_norm, t_norm)] = row
+
     results = []
     for item in items:
-        res = await check_existence(artist=item.artist, title=item.title, request=request, album_id=item.album_id)
-        results.append(res)
+        artist_clean = _norm(extract_main_artist(item.artist) or item.artist)
+        album_id_str = str(item.album_id).strip() if item.album_id else ""
+        
+        # 1. Match album by MBID
+        if album_id_str and "-" in album_id_str and len(album_id_str) >= 32:
+            matched_tracks = album_mbid_map.get(album_id_str, [])
+            if matched_tracks:
+                cnt = len(matched_tracks)
+                results.append({
+                    "exists": True,
+                    "status": "full" if cnt >= 4 else "partial",
+                    "upgrade_available": False,
+                    "tracks": matched_tracks
+                })
+                continue
+
+        # 2. Match album by artist_norm + album_norm
+        if item.album_id:
+            album_clean = _norm_album(item.title)
+            matched_tracks = album_norm_map.get((artist_clean, album_clean), [])
+            if not matched_tracks and clean_art and clean_art != artist_clean:
+                matched_tracks = album_norm_map.get((clean_art, album_clean), [])
+                
+            if matched_tracks:
+                cnt = len(matched_tracks)
+                results.append({
+                    "exists": True,
+                    "status": "full" if cnt >= 4 else "partial",
+                    "upgrade_available": False,
+                    "tracks": matched_tracks
+                })
+                continue
+                
+            results.append({
+                "exists": False,
+                "status": "missing",
+                "upgrade_available": False,
+                "tracks": []
+            })
+        else:
+            # Single track match by artist_norm + title_norm
+            track_clean = _norm(item.title)
+            matched_track = track_title_map.get((artist_clean, track_clean))
+            if not matched_track and clean_art and clean_art != artist_clean:
+                matched_track = track_title_map.get((clean_art, track_clean))
+                
+            if matched_track:
+                ext = matched_track.get("ext", "mp3")
+                bitrate = matched_track.get("bitrate", 320)
+                bit_depth = matched_track.get("bit_depth", 16)
+                status = check_quality_status(ext, bitrate, bit_depth, None, cfg)
+                results.append({
+                    "exists": True,
+                    "quality_status": status,
+                    "existing_quality": ext.upper() if ext else None
+                })
+            else:
+                results.append({"exists": False, "quality_status": "worse", "existing_quality": None})
+                
     return results
 
 @app.get("/api/search/check")
@@ -3266,6 +3375,7 @@ def _build_library_index_sync(
     Returns a list of dicts ready for upsert_library_index_batch.
     """
     import os as _os
+    from backend.app.sync import extract_main_artist
 
     def _norm(s: str) -> str:
         return re.sub(r'[^\w]', '', (s or '')).lower()

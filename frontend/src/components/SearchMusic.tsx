@@ -142,41 +142,46 @@ export const SearchMusic: React.FC = () => {
       const items = data.data || [];
       
       if (searchType === 'track') {
-        // Enrich items in parallel by checking if they already exist in local library
-        const enriched = await Promise.all(items.map(async (item: any) => {
-          const artistName = item.artist?.name || '';
-          const trackTitle = item.title || '';
-          try {
-            const check = await apiService.checkTrackExists(artistName, trackTitle);
-            return { 
-              ...item, 
+        const batchItems = items.map((item: any) => ({
+          artist: item.artist?.name || '',
+          title: item.title || ''
+        }));
+        try {
+          const checks = await apiService.checkAlbumsBatch(batchItems);
+          const enriched = items.map((item: any, idx: number) => {
+            const check = checks[idx] || { exists: false, quality_status: 'worse', existing_quality: null };
+            return {
+              ...item,
               exists: check.exists,
               qualityStatus: check.quality_status,
               existingQuality: check.existing_quality
             };
-          } catch {
-            return { ...item, exists: false, qualityStatus: 'worse', existingQuality: null };
-          }
-        }));
-        setSearchResults(enriched);
+          });
+          setSearchResults(enriched);
+        } catch {
+          setSearchResults(items.map((item: any) => ({ ...item, exists: false, qualityStatus: 'worse', existingQuality: null })));
+        }
       } else {
-        // Enrich albums in parallel
-        const enriched = await Promise.all(items.map(async (item: any) => {
-          const artistName = item.artist?.name || '';
-          const albumTitle = item.title || '';
-          try {
-            const check = await apiService.checkTrackExists(artistName, albumTitle, item.id);
-            return { 
-              ...item, 
+        const batchItems = items.map((item: any) => ({
+          artist: item.artist?.name || '',
+          title: item.title || '',
+          album_id: item.id
+        }));
+        try {
+          const checks = await apiService.checkAlbumsBatch(batchItems);
+          const enriched = items.map((item: any, idx: number) => {
+            const check = checks[idx] || { exists: false, status: 'missing', upgrade_available: false };
+            return {
+              ...item,
               exists: check.exists,
               albumStatus: check.status,
               upgradeAvailable: check.upgrade_available
             };
-          } catch {
-            return { ...item, exists: false, albumStatus: 'missing', upgradeAvailable: false };
-          }
-        }));
-        setSearchResults(enriched);
+          });
+          setSearchResults(enriched);
+        } catch {
+          setSearchResults(items.map((item: any) => ({ ...item, exists: false, albumStatus: 'missing', upgradeAvailable: false })));
+        }
       }
     } catch (err: any) {
       console.error("Deezer search failed", err);

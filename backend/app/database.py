@@ -883,6 +883,30 @@ class Database:
             )
             await db.commit()
 
+    async def query_library_index_for_user(
+        self, user_id: str, artist_norm: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Fetch library_index records for fast in-memory batch matching."""
+        async with self.get_db() as db:
+            if artist_norm:
+                async with db.execute(
+                    "SELECT filepath, artist, album, title, artist_norm, album_norm, title_norm, "
+                    "track_mbid, album_mbid, bitrate, bit_depth, ext "
+                    "FROM library_index WHERE user_id = ? AND (artist_norm = ? OR artist_norm LIKE ?)",
+                    (user_id, artist_norm, f"%{artist_norm}%")
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(r) for r in rows]
+            else:
+                async with db.execute(
+                    "SELECT filepath, artist, album, title, artist_norm, album_norm, title_norm, "
+                    "track_mbid, album_mbid, bitrate, bit_depth, ext "
+                    "FROM library_index WHERE user_id = ?",
+                    (user_id,)
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    return [dict(r) for r in rows]
+
     async def get_library_rows_missing_mbid(self, user_id: str) -> List[Dict[str, Any]]:
         """Return rows where track_mbid is null and artist+title are present."""
         async with self.get_db() as db:
