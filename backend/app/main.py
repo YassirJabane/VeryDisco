@@ -3276,10 +3276,10 @@ def _build_library_index_sync(
     for root, dirs, files in _os.walk(str(music_dir)):
         dirs[:] = [d for d in dirs if not d.startswith('.')]
         root_path = Path(root).resolve()
-        # Skip playlist directories entirely
+        # Skip playlist and explore directories entirely
         if root_path == playlists_dir or playlists_dir in root_path.parents:
             continue
-        if 'playlists' in root_path.parts or '.staging' in str(root_path):
+        if any(p.lower() in ('playlists', '.staging', 'explore', '.explore', 'explore tracks') for p in root_path.parts):
             continue
         for f in files:
             if f.lower().endswith(('.mp3', '.flac', '.m4a')):
@@ -3510,7 +3510,7 @@ def _build_library_index_sync(
             'issue_duplicate_of':   None,
             'issue_misfiled':       issue_misfiled,
             'issue_misfiled_reason': issue_misfiled_reason or None,
-            'artist_norm':          _norm(artist),
+            'artist_norm':          _norm(album_artist or extract_main_artist(artist) or artist),
             'album_norm':           _norm(album),
             'title_norm':           _norm(title),
         })
@@ -3695,6 +3695,22 @@ async def get_library_albums(request: Request):
             folder_p = str(Path(sample_fp).parent) if sample_fp else ""
             t_count = a.get("track_count", 0)
             tot_tracks = a.get("total_tracks") or 0
+
+            art_norm = a.get("artist_norm", "")
+            alb_norm = a.get("album_norm", "")
+            if art_norm and alb_norm:
+                disc_rows = await db.query_album_disc_track_counts(user_id, art_norm, alb_norm)
+                if len(disc_rows) > 1:
+                    tot_tracks = sum(
+                        max(r.get("max_total_tracks") or 0, r.get("max_track_num") or 0, r.get("track_count") or 0)
+                        for r in disc_rows
+                    )
+                elif disc_rows:
+                    tot_tracks = max(
+                        tot_tracks,
+                        disc_rows[0].get("max_track_num") or 0,
+                        t_count
+                    )
 
             total_size = 0
             if folder_p and os.path.isdir(folder_p):

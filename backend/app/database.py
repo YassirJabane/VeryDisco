@@ -965,7 +965,8 @@ class Database:
         async with self.get_db() as db:
             async with db.execute(
                 """
-                SELECT artist, album, artist_norm, album_norm,
+                SELECT COALESCE(NULLIF(album_artist, ''), MIN(artist)) as artist,
+                       album, artist_norm, album_norm,
                        MIN(filepath) as sample_filepath,
                        COUNT(*) as track_count,
                        MAX(total_tracks) as total_tracks,
@@ -977,11 +978,31 @@ class Database:
                            + issue_duplicate + issue_misfiled) as issue_count,
                        SUM(lyrics_synced) as tracks_synced_lyrics,
                        SUM(lyrics_plain)  as tracks_plain_lyrics
-                FROM library_index WHERE user_id = ?
+                FROM library_index 
+                WHERE user_id = ? 
+                  AND LOWER(album_norm) NOT IN ('exploretracks', 'explore')
+                  AND LOWER(album) NOT IN ('explore tracks', 'explore')
                 GROUP BY user_id, artist_norm, album_norm
                 ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE
                 """,
                 (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [dict(r) for r in rows]
+
+    async def query_album_disc_track_counts(
+        self, user_id: str, artist_norm: str, album_norm: str
+    ) -> List[Dict[str, Any]]:
+        """Return track count and max track number per disc for multi-disc total track calculation."""
+        async with self.get_db() as db:
+            async with db.execute(
+                """
+                SELECT disc_num, COUNT(*) as track_count, MAX(track_num) as max_track_num, MAX(total_tracks) as max_total_tracks
+                FROM library_index
+                WHERE user_id = ? AND artist_norm = ? AND album_norm = ?
+                GROUP BY disc_num
+                """,
+                (user_id, artist_norm, album_norm)
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in rows]
