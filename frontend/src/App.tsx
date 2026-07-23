@@ -24,7 +24,6 @@ import {
   PendingActions as TasksIcon,
   PhotoLibrary as AlbumArtIcon,
   FileCopy as DuplicatesIcon,
-  BarChart as StatsIcon,
   VolumeUp as VolumeIcon,
   PlayArrow as PlayIcon,
   Pause as PauseIcon,
@@ -47,7 +46,6 @@ import LibraryManager from './components/LibraryManager';
 import LyricsManager from './components/LyricsManager';
 import AlbumArtManager from './components/AlbumArtManager';
 import DuplicatesManager from './components/DuplicatesManager';
-import StatsDashboard from './components/StatsDashboard';
 import Login from './components/Login';
 import UserSettings from './components/UserSettings';
 import Setup from './components/Setup';
@@ -62,9 +60,9 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 
 const DRAWER_WIDTH = 260;
 
-type TabId = 'dashboard' | 'explore' | 'search' | 'feedback' | 'listenbrainz' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'retag' | 'aliases' | 'musicbrainz-inspector' | 'stats' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
+type TabId = 'dashboard' | 'explore' | 'search' | 'feedback' | 'listenbrainz' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'retag' | 'aliases' | 'musicbrainz-inspector' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
 
-const VALID_TABS: TabId[] = ['dashboard', 'explore', 'search', 'feedback', 'listenbrainz', 'my-artists', 'server-health', 'acoustid', 'library-manager', 'lyrics', 'album-art', 'duplicates', 'naming', 'feat-fixer', 'retag', 'aliases', 'musicbrainz-inspector', 'stats', 'tasks', 'config', 'history', 'logs', 'user-settings'];
+const VALID_TABS: TabId[] = ['dashboard', 'explore', 'search', 'feedback', 'listenbrainz', 'my-artists', 'server-health', 'acoustid', 'library-manager', 'lyrics', 'album-art', 'duplicates', 'naming', 'feat-fixer', 'retag', 'aliases', 'musicbrainz-inspector', 'tasks', 'config', 'history', 'logs', 'user-settings'];
 
 const fmtTime = (secs: number) => {
   if (!secs || isNaN(secs)) return '0:00';
@@ -323,7 +321,6 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
     { id: 'lyrics', text: 'Lyrics Manager', icon: <MusicIcon /> },
     { id: 'album-art', text: 'Album Art Finder', icon: <AlbumArtIcon /> },
     { id: 'duplicates', text: 'Duplicate Cleaner', icon: <DuplicatesIcon /> },
-    { id: 'stats', text: 'Listening Stats', icon: <StatsIcon /> },
     { id: 'divider-2', text: '', icon: null },
     ...(user?.isAdmin ? [
       { id: 'server-health', text: 'Server Health', icon: <HealthIcon /> },
@@ -539,7 +536,6 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         {activeTab === 'lyrics' && <LyricsManager />}
         {activeTab === 'album-art' && <AlbumArtManager />}
         {activeTab === 'duplicates' && <DuplicatesManager />}
-        {activeTab === 'stats' && <StatsDashboard />}
         {activeTab === 'config' && <Configuration />}
         {activeTab === 'tasks' && <RunningTasks />}
         {activeTab === 'history' && <RunHistory />}

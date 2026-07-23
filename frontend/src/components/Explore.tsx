@@ -27,7 +27,7 @@ export const Explore: React.FC = () => {
   const theme = useTheme();
   const [playlist, setPlaylist] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [source, setSource] = useState<string>('weekly-exploration');
+  const [source, setSource] = useState<string>('daily-jams');
   const [activePlaylists, setActivePlaylists] = useState<string[]>([]);
   const [status, setStatus] = useState<GetStatusResponse | null>(null);
   const [syncingActive, setSyncingActive] = useState(false);
@@ -105,7 +105,46 @@ export const Explore: React.FC = () => {
     if (!silent) setLoading(true);
     try {
       const data = await apiService.getCurrentPlaylist(targetSource);
-      setPlaylist(data.tracks);
+      
+      const initialTracks = data.tracks || [];
+      const itemsToCheck = initialTracks.map((t: any) => ({ artist: t.artist, title: t.title }));
+      
+      let libraryStatusMap = new Map();
+      if (itemsToCheck.length > 0) {
+        try {
+          const checkResults = await apiService.checkAlbumsBatch(itemsToCheck);
+          checkResults.forEach((res: any) => {
+            libraryStatusMap.set(`${res.artist}-${res.title}`, res);
+          });
+        } catch (e) {
+          console.error("Library check failed", e);
+        }
+      }
+
+      const missingCovers = initialTracks.filter((t: any) => !t.artwork && !t.cover_medium && !t.cover_small && !t.cover && !t.image_url);
+      let coverMap = new Map();
+      if (missingCovers.length > 0) {
+        const batchCovers = missingCovers.slice(0, 10);
+        await Promise.allSettled(batchCovers.map(async (t: any) => {
+          try {
+            const deezerRes = await apiService.searchDeezer(t.artist + ' ' + t.title, 'track');
+            if (deezerRes && deezerRes.data && deezerRes.data.length > 0) {
+              const coverUrl = deezerRes.data[0].album?.cover_medium;
+              if (coverUrl) coverMap.set(`${t.artist}-${t.title}`, coverUrl);
+            }
+          } catch (e) {
+            // ignore
+          }
+        }));
+      }
+
+      const enrichedTracks = initialTracks.map((t: any) => ({
+        ...t,
+        cover_url: t.artwork || t.cover_medium || t.cover_small || t.cover || t.image_url || coverMap.get(`${t.artist}-${t.title}`) || '',
+        libraryStatus: libraryStatusMap.get(`${t.artist}-${t.title}`)
+      }));
+
+      setPlaylist(enrichedTracks);
     } catch (e: any) {
       console.error("Failed to load playlist", e);
     } finally {
@@ -426,14 +465,31 @@ export const Explore: React.FC = () => {
                       <ListItemAvatar>
                         <Avatar 
                           variant="rounded" 
-                          src={track.artwork} 
+                          src={track.cover_url || track.artwork || track.cover_medium || track.image_url || track.cover_small} 
                           sx={{ width: 64, height: 64, mr: 2, boxShadow: '0 4px 10px rgba(0,0,0,0.15)' }}
                         >
                           <MusicIcon />
                         </Avatar>
                       </ListItemAvatar>
                       <ListItemText
-                        primary={<Typography sx={{ fontWeight: 700, fontSize: '1.15rem' }}>{track.title}</Typography>}
+                        primary={
+                          <Box display="flex" alignItems="center" gap={1}>
+                            <Typography sx={{ fontWeight: 700, fontSize: '1.15rem' }}>{track.title}</Typography>
+                            {(() => {
+                              const lib = track.libraryStatus;
+                              if (lib && lib.exists) {
+                                if (lib.quality_status === 'worse') {
+                                  return <Chip label="Upgrade" size="small" sx={{ bgcolor: 'orange', color: 'white', fontWeight: 700, height: 20, fontSize: '0.7rem' }} />;
+                                }
+                                return <Chip label="In Library" size="small" color="success" sx={{ fontWeight: 700, height: 20, fontSize: '0.7rem' }} />;
+                              }
+                              if (track.status === 'downloaded' || (lib && lib.path && lib.path.toLowerCase().includes('explore'))) {
+                                return <Chip label="In Explore" size="small" color="info" sx={{ fontWeight: 700, height: 20, fontSize: '0.7rem' }} />;
+                              }
+                              return <Chip label="Missing" size="small" color="error" sx={{ fontWeight: 700, height: 20, fontSize: '0.7rem' }} />;
+                            })()}
+                          </Box>
+                        }
                         secondary={
                           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                             {track.artist} {track.album ? `• ${track.album}` : ''}

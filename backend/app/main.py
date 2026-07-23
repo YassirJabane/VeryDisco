@@ -2009,19 +2009,28 @@ class PinArtistRequest(BaseModel):
 
 _artist_pic_semaphore = asyncio.Semaphore(2)
 
-async def fetch_deezer_artist_picture(artist_name: str) -> str:
+async def fetch_deezer_artist_picture(artist_name: str, deezer_id: int = None) -> str:
     """Fetch official artist picture_medium directly from Deezer using standard HTTP client."""
     try:
-        clean_name = artist_name.split('feat')[0].split('ft.')[0].strip()
-        url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(clean_name)}&limit=1"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         async with httpx.AsyncClient(timeout=10, headers=headers) as client:
+            if deezer_id:
+                url = f"https://api.deezer.com/artist/{deezer_id}"
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    pic = data.get("picture_xl") or data.get("picture_big") or data.get("picture_medium") or data.get("picture")
+                    if pic:
+                        return pic
+
+            clean_name = artist_name.split('feat')[0].split('ft.')[0].strip()
+            url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(clean_name)}&limit=1"
             resp = await client.get(url)
             if resp.status_code == 200:
                 data = resp.json().get("data", [])
                 if data and data[0]:
                     first = data[0]
-                    return first.get("picture_medium") or first.get("picture_big") or first.get("picture") or ""
+                    return first.get("picture_xl") or first.get("picture_big") or first.get("picture_medium") or first.get("picture") or ""
     except Exception as e:
         logger.warning(f"Failed to fetch Deezer artist picture for '{artist_name}': {e}")
     return ""
@@ -2140,7 +2149,7 @@ async def get_pinned_artists(request: Request):
         # Self-healing: Backfill missing artist picture_urls from Deezer
         for a in artists:
             if not a.get("picture_url"):
-                pic = await fetch_deezer_artist_picture(a["artist_name"])
+                pic = await fetch_deezer_artist_picture(a["artist_name"], a.get("deezer_id"))
                 if pic:
                     a["picture_url"] = pic
                     async with db.get_db() as conn:
@@ -2180,7 +2189,7 @@ async def pin_artist(req: PinArtistRequest, request: Request):
             raise HTTPException(status_code=502, detail=f"Failed to verify artist on MusicBrainz: {e}")
 
     if not picture_url:
-        picture_url = await fetch_deezer_artist_picture(artist_name)
+        picture_url = await fetch_deezer_artist_picture(artist_name, req.deezer_id)
             
     try:
         artist_id = await db.add_pinned_artist(artist_name, deezer_id=req.deezer_id, picture_url=picture_url, user_id=user_id, mbid=mbid)
@@ -5504,6 +5513,25 @@ class SaveLyricsRequest(BaseModel):
     filepath: str
     lyrics_text: str
 
+class InstrumentalOverrideRequest(BaseModel):
+    filepath: str
+
+@app.post("/api/library/instrumental")
+async def mark_instrumental_endpoint(req: InstrumentalOverrideRequest, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
+    await db.mark_instrumental(req.filepath, user_id)
+    return {"status": "success"}
+
+@app.delete("/api/library/instrumental")
+async def unmark_instrumental_endpoint(req: InstrumentalOverrideRequest, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
+    await db.unmark_instrumental(req.filepath, user_id)
+    return {"status": "success"}
+
 @app.get("/api/lyrics/missing")
 async def get_missing_lyrics(request: Request):
     """List all tracks missing lyrics from library_index DB."""
@@ -5514,6 +5542,8 @@ async def get_missing_lyrics(request: Request):
     user = await get_current_user(request)
     user_id = user["id"]
     
+    instrumental_set = await db.get_instrumental_overrides(user_id)
+    
     rows = await db.query_library_lyrics_missing(user_id)
     if rows:
         return [{
@@ -5521,7 +5551,8 @@ async def get_missing_lyrics(request: Request):
             "title": r.get("title") or "Unknown Title",
             "album": r.get("album") or "",
             "filepath": r.get("filepath", ""),
-            "duration": r.get("duration", 0)
+            "duration": r.get("duration", 0),
+            "is_instrumental": r.get("filepath", "") in instrumental_set
         } for r in rows]
         
     cached = await db.get_cache(f"missing_lyrics_{user_id}")

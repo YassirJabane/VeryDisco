@@ -216,6 +216,7 @@ export interface MissingLyricsTrack {
   album: string;
   filepath: string;
   duration: number;
+  is_instrumental?: boolean;
 }
 
 export interface LrcLibCandidate {
@@ -432,6 +433,16 @@ export const apiService = {
     return resp.data;
   },
 
+  async markInstrumental(filepath: string): Promise<any> {
+    const resp = await api.post<any>('/api/library/instrumental', { filepath });
+    return resp.data;
+  },
+
+  async unmarkInstrumental(filepath: string): Promise<any> {
+    const resp = await api.delete<any>('/api/library/instrumental', { data: { filepath } });
+    return resp.data;
+  },
+
   async searchLyrics(artist: string, title: string): Promise<LrcLibCandidate[]> {
     const resp = await api.get<LrcLibCandidate[]>(`/api/lyrics/search?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`);
     return resp.data;
@@ -600,10 +611,6 @@ export const apiService = {
     return resp.data;
   },
 
-  async getStatsSummary(): Promise<any> {
-    const resp = await api.get('/api/stats/summary');
-    return resp.data;
-  },
 
   async getMissingArt(): Promise<any[]> {
     const resp = await api.get<any[]>('/api/library/missing-art');

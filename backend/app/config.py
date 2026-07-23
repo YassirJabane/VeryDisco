@@ -99,6 +99,7 @@ class AuthConfig(BaseModel):
 
 class AcoustIDConfig(BaseModel):
     api_key: str = Field("", description="AcoustID API key for audio fingerprinting")
+    max_retries: int = Field(2, description="Maximum number of retries when AcoustID verification fails")
 
 class FilenameConfig(BaseModel):
     """Naming schema for library files and folders."""

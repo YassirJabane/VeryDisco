@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Box, Card, CardContent, Typography, Button, Table, TableBody,
   TableCell, TableContainer, TableHead, TableRow, Paper,
-  CircularProgress, Alert, InputAdornment, TextField, List, Divider
+  CircularProgress, Alert, InputAdornment, TextField, List, Divider, Chip
 } from '@mui/material';
 import {
   Lyrics as LyricsIcon,
@@ -41,6 +41,17 @@ export const LyricsManager: React.FC = () => {
   const handleOpenSearch = (track: MissingLyricsTrack) => {
     setSelectedTrack(track);
     setPreviewOpen(true);
+  };
+
+  const handleMarkInstrumental = async (filepath: string) => {
+    try {
+      await apiService.markInstrumental(filepath);
+      setTracks((prev) =>
+        prev.map((t) => (t.filepath === filepath ? { ...t, is_instrumental: true } : t))
+      );
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const handleSaveSuccess = () => {
@@ -135,15 +146,30 @@ export const LyricsManager: React.FC = () => {
                           <TableCell>{track.album}</TableCell>
                           <TableCell>{formatDuration(track.duration)}</TableCell>
                           <TableCell align="right">
-                            <Button
-                              variant="contained"
-                              color="primary"
-                              startIcon={<LyricsIcon />}
-                              onClick={() => handleOpenSearch(track)}
-                              sx={{ textTransform: 'none', borderRadius: 2, fontWeight: 700 }}
-                            >
-                              Find Lyrics
-                            </Button>
+                            {track.is_instrumental ? (
+                              <Chip label="Instrumental" color="default" />
+                            ) : (
+                              <Box display="flex" gap={1} justifyContent="flex-end" alignItems="center">
+                                <Chip label="Missing" color="error" size="small" />
+                                <Button
+                                  variant="outlined"
+                                  size="small"
+                                  onClick={() => handleMarkInstrumental(track.filepath)}
+                                  sx={{ textTransform: 'none' }}
+                                >
+                                  Mark Instrumental
+                                </Button>
+                                <Button
+                                  variant="contained"
+                                  color="primary"
+                                  startIcon={<LyricsIcon />}
+                                  onClick={() => handleOpenSearch(track)}
+                                  sx={{ textTransform: 'none', borderRadius: 2, fontWeight: 700 }}
+                                >
+                                  Find Lyrics
+                                </Button>
+                              </Box>
+                            )}
                           </TableCell>
                         </TableRow>
                       ))}
@@ -167,16 +193,30 @@ export const LyricsManager: React.FC = () => {
                           <Typography variant="caption" color="text.secondary" sx={{ maxWidth: '60%' }} noWrap>
                             {track.album || 'Single'} • {formatDuration(track.duration)}
                           </Typography>
-                          <Button
-                            variant="contained"
-                            color="primary"
-                            size="small"
-                            startIcon={<LyricsIcon sx={{ fontSize: 16 }} />}
-                            onClick={() => handleOpenSearch(track)}
-                            sx={{ textTransform: 'none', borderRadius: 2, fontWeight: 700 }}
-                          >
-                            Find Lyrics
-                          </Button>
+                          {track.is_instrumental ? (
+                            <Chip label="Instrumental" color="default" size="small" />
+                          ) : (
+                            <Box display="flex" gap={1} alignItems="center">
+                              <Button
+                                variant="outlined"
+                                size="small"
+                                onClick={() => handleMarkInstrumental(track.filepath)}
+                                sx={{ textTransform: 'none' }}
+                              >
+                                Mark Instrumental
+                              </Button>
+                              <Button
+                                variant="contained"
+                                color="primary"
+                                size="small"
+                                startIcon={<LyricsIcon sx={{ fontSize: 16 }} />}
+                                onClick={() => handleOpenSearch(track)}
+                                sx={{ textTransform: 'none', borderRadius: 2, fontWeight: 700 }}
+                              >
+                                Find Lyrics
+                              </Button>
+                            </Box>
+                          )}
                         </Box>
                       </CardContent>
                     </Card>

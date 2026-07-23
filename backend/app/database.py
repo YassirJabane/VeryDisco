@@ -171,6 +171,13 @@ class Database:
                 year TEXT
             );
             """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS instrumental_overrides (
+                filepath TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                marked_at TEXT DEFAULT (datetime('now'))
+            );
+            """)
             
             # Create essential indexes for fast status polling and query performance
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_run_id ON tracks(run_id);")
@@ -1058,3 +1065,28 @@ class Database:
             stale = [k for k in self.mem_cache if k.endswith(f"_{user_id}")]
             for k in stale:
                 self.mem_cache.pop(k, None)
+
+    async def mark_instrumental(self, filepath: str, user_id: str):
+        async with self.get_db() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO instrumental_overrides (filepath, user_id) VALUES (?, ?)",
+                (filepath, user_id)
+            )
+            await db.commit()
+
+    async def unmark_instrumental(self, filepath: str, user_id: str):
+        async with self.get_db() as db:
+            await db.execute(
+                "DELETE FROM instrumental_overrides WHERE filepath = ? AND user_id = ?",
+                (filepath, user_id)
+            )
+            await db.commit()
+
+    async def get_instrumental_overrides(self, user_id: str) -> set:
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT filepath FROM instrumental_overrides WHERE user_id = ?",
+                (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return {row["filepath"] for row in rows}
