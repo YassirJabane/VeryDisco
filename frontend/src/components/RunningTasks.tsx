@@ -16,8 +16,10 @@ import {
   Error as ErrorIcon
 } from '@mui/icons-material';
 import { apiService, ActiveTask, AlbumDownloadQueueItem } from '../api';
+import { useNotification } from '../context/NotificationContext';
 
 const RunningTasks: React.FC = () => {
+  const { notify, confirm } = useNotification();
   const theme = useTheme();
   const [tasks, setTasks] = useState<ActiveTask[]>([]);
   const [downloads, setDownloads] = useState<AlbumDownloadQueueItem[]>([]);
@@ -57,29 +59,43 @@ const RunningTasks: React.FC = () => {
   }, []);
 
   const handleStopTask = async (taskId: string) => {
-    if (!window.confirm("Are you sure you want to stop this background task?")) return;
-    setActionLoading(taskId);
-    try {
-      await apiService.stopActiveTask(taskId);
-      await fetchData(false);
-    } catch (e) {
-      alert("Failed to request stop for task.");
-    } finally {
-      setActionLoading(null);
-    }
+    confirm({
+      title: 'Stop Task',
+      message: 'Are you sure you want to stop this background task?',
+      confirmText: 'Stop Task',
+      onConfirm: async () => {
+        setActionLoading(taskId);
+        try {
+          await apiService.stopActiveTask(taskId);
+          notify('Task stop requested.', 'info');
+          await fetchData(false);
+        } catch (e) {
+          notify('Failed to request stop for task.', 'error');
+        } finally {
+          setActionLoading(null);
+        }
+      }
+    });
   };
 
   const handleDeleteDownload = async (downloadId: number) => {
-    if (!window.confirm("Are you sure you want to delete this album download from the queue? If it is currently running, it will be stopped.")) return;
-    setActionLoading(`dl-${downloadId}`);
-    try {
-      await apiService.deleteAlbumDownload(downloadId);
-      await fetchData(false);
-    } catch (e) {
-      alert("Failed to delete album download entry.");
-    } finally {
-      setActionLoading(null);
-    }
+    confirm({
+      title: 'Delete Download Entry',
+      message: 'Are you sure you want to delete this album download from the queue? If it is currently running, it will be stopped.',
+      confirmText: 'Delete Entry',
+      onConfirm: async () => {
+        setActionLoading(`dl-${downloadId}`);
+        try {
+          await apiService.deleteAlbumDownload(downloadId);
+          notify('Album download entry deleted.', 'info');
+          await fetchData(false);
+        } catch (e) {
+          notify('Failed to delete album download entry.', 'error');
+        } finally {
+          setActionLoading(null);
+        }
+      }
+    });
   };
 
   const getTaskIcon = (type: string) => {

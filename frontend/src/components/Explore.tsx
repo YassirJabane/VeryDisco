@@ -21,8 +21,10 @@ import {
   Info as InfoIcon
 } from '@mui/icons-material';
 import { apiService, GetStatusResponse } from '../api';
+import { useNotification } from '../context/NotificationContext';
 
 export const Explore: React.FC = () => {
+  const { notify } = useNotification();
   const theme = useTheme();
   const [playlist, setPlaylist] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -58,7 +60,7 @@ export const Explore: React.FC = () => {
       const results = await apiService.searchTrackCandidates(track.artist, track.title, track.album);
       setTrackCandidates(results);
     } catch (err: any) {
-      alert("Failed to search track candidates on Slskd.");
+      notify("Failed to search track candidates on Slskd.", "error");
     } finally {
       setSearchingTrackCandidates(false);
     }
@@ -78,10 +80,10 @@ export const Explore: React.FC = () => {
         cand.size,
         true
       );
-      alert(`Manual grab initiated from "${cand.username}" for "${searchTrack.title}".`);
+      notify(`Manual grab initiated from "${cand.username}" for "${searchTrack.title}".`, "success");
       setManualSearchOpen(false);
     } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to initiate grab.");
+      notify(err.response?.data?.detail || "Failed to initiate grab.", "error");
     } finally {
       setGrabbingTrackKey(null);
     }
@@ -204,7 +206,7 @@ export const Explore: React.FC = () => {
       await apiService.likeTrack(track.artist, track.title, track.album, finalScore);
     } catch (e: any) {
       console.error("Failed to submit feedback", e);
-      alert(e.response?.data?.detail || "Failed to submit feedback to ListenBrainz. Check your token.");
+      notify(e.response?.data?.detail || "Failed to submit feedback to ListenBrainz. Check your token.", "error");
       setLikedTracks(prev => {
         const next = new Set(prev);
         if (isLiked) next.add(key); else next.delete(key);

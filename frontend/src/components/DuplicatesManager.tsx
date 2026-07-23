@@ -10,6 +10,7 @@ import {
   FolderZip as KeepIcon
 } from '@mui/icons-material';
 import { apiService } from '../api';
+import { useNotification } from '../context/NotificationContext';
 
 interface DuplicateTrack {
   path: string;
@@ -30,6 +31,7 @@ interface DuplicateGroup {
 }
 
 const DuplicatesManager: React.FC = () => {
+  const { notify, confirm } = useNotification();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [groups, setGroups] = useState<DuplicateGroup[]>([]);
@@ -95,23 +97,28 @@ const DuplicatesManager: React.FC = () => {
       .filter(p => p !== keeperPath);
 
     if (pathsToDelete.length === 0) {
-      alert("No duplicate files to clean in this group.");
+      notify("No duplicate files to clean in this group.", "info");
       return;
     }
 
-    if (!window.confirm(`Delete ${pathsToDelete.length} duplicate file(s) and keep the selected track? Navidrome playlists will automatically link to the kept track.`)) {
-      return;
-    }
-
-    setDeleting(true);
-    try {
-      await apiService.resolveDuplicates(pathsToDelete);
-      loadDuplicates();
-    } catch {
-      setError("Failed to delete selected duplicates.");
-    } finally {
-      setDeleting(false);
-    }
+    confirm({
+      title: 'Clean Duplicate Tracks',
+      message: `Delete ${pathsToDelete.length} duplicate file(s) and keep the selected track? Navidrome playlists will automatically link to the kept track.`,
+      confirmText: 'Delete Duplicates',
+      onConfirm: async () => {
+        setDeleting(true);
+        try {
+          await apiService.resolveDuplicates(pathsToDelete);
+          notify(`Deleted ${pathsToDelete.length} duplicate file(s).`, "success");
+          loadDuplicates();
+        } catch {
+          setError("Failed to delete selected duplicates.");
+          notify("Failed to delete selected duplicates.", "error");
+        } finally {
+          setDeleting(false);
+        }
+      }
+    });
   };
 
   const handleResolveAll = async () => {
@@ -126,23 +133,28 @@ const DuplicatesManager: React.FC = () => {
     });
 
     if (allPathsToDelete.length === 0) {
-      alert("No duplicate files to clean.");
+      notify("No duplicate files to clean.", "info");
       return;
     }
 
-    if (!window.confirm(`Clean ALL ${allPathsToDelete.length} duplicate files across your library? Kept files will remain untouched and playlist links will be preserved.`)) {
-      return;
-    }
-
-    setDeleting(true);
-    try {
-      await apiService.resolveDuplicates(allPathsToDelete);
-      loadDuplicates();
-    } catch {
-      setError("Failed to resolve duplicate files.");
-    } finally {
-      setDeleting(false);
-    }
+    confirm({
+      title: 'Clean ALL Library Duplicates',
+      message: `Clean ALL ${allPathsToDelete.length} duplicate files across your library? Kept files will remain untouched and playlist links will be preserved.`,
+      confirmText: 'Clean All Duplicates',
+      onConfirm: async () => {
+        setDeleting(true);
+        try {
+          await apiService.resolveDuplicates(allPathsToDelete);
+          notify(`Cleaned all ${allPathsToDelete.length} duplicate file(s).`, "success");
+          loadDuplicates();
+        } catch {
+          setError("Failed to resolve duplicate files.");
+          notify("Failed to resolve duplicate files.", "error");
+        } finally {
+          setDeleting(false);
+        }
+      }
+    });
   };
 
   const formatSize = (bytes: number) => {

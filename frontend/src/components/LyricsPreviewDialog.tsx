@@ -13,6 +13,7 @@ import {
   CloudDownload as DownloadIcon,
 } from '@mui/icons-material';
 import apiService, { LrcLibCandidate } from '../api';
+import { useNotification } from '../context/NotificationContext';
 
 interface LyricsPreviewDialogProps {
   open: boolean;
@@ -41,6 +42,7 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
   onSaveSuccess,
   onDownloadQueued,
 }) => {
+  const { notify } = useNotification();
   const [artist, setArtist] = useState(defaultArtist);
   const [title, setTitle] = useState(defaultTitle);
   const [candidates, setCandidates] = useState<LrcLibCandidate[]>([]);
@@ -108,10 +110,11 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
     setSaving(true);
     try {
       await apiService.saveLyrics(filepath, lyricsContent);
+      notify('Lyrics saved successfully.', 'success');
       if (onSaveSuccess) onSaveSuccess();
       onClose();
     } catch (err) {
-      alert('Failed to save lyrics.');
+      notify('Failed to save lyrics.', 'error');
     } finally {
       setSaving(false);
     }
@@ -122,10 +125,11 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
     try {
       await apiService.stageLyrics(defaultArtist, defaultTitle, lyricsContent);
       await apiService.downloadTrack(defaultArtist, defaultTitle, defaultAlbum, true);
+      notify('Lyrics staged and download queued.', 'success');
       if (onDownloadQueued) onDownloadQueued();
       onClose();
     } catch (err) {
-      alert('Failed to stage lyrics/queue download.');
+      notify('Failed to stage lyrics/queue download.', 'error');
     } finally {
       setSaving(false);
     }

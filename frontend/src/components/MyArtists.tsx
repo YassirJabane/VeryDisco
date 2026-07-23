@@ -231,6 +231,27 @@ export const MyArtists: React.FC = () => {
     }
   };
 
+  const triggerDownload = async (key: string, isAlbum: boolean, artistName: string, title: string, force: boolean) => {
+    setDownloadingKeys(prev => new Set(prev).add(key));
+    try {
+      if (isAlbum) {
+        await apiService.downloadAlbum(artistName, title, force);
+        notify(`Full album download queued for "${artistName} - ${title}".`, 'success');
+      } else {
+        await apiService.downloadTrack(artistName, title, title, force);
+        notify(`Single track download queued for "${artistName} - ${title}".`, 'success');
+      }
+    } catch (err: any) {
+      notify(err.response?.data?.detail || "Failed to trigger download.", 'error');
+    } finally {
+      setDownloadingKeys(prev => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
   const handleDownloadRelease = async (release: Release) => {
     if (!detailArtist) return;
     const isAlbum = release.record_type === 'album' || release.record_type === 'ep';
@@ -239,36 +260,27 @@ export const MyArtists: React.FC = () => {
     let force = false;
     if (isAlbum) {
       if (release.albumStatus === 'full' && !release.upgradeAvailable) {
-        const confirm = window.confirm(`You already have the album "${detailArtist.artist_name} - ${release.title}" fully in the desired quality. Do you want to download/overwrite it anyway?`);
-        if (!confirm) return;
-        force = true;
+        confirm({
+          title: 'Album Already Downloaded',
+          message: `You already have "${detailArtist.artist_name} - ${release.title}" fully in the desired quality. Download/overwrite anyway?`,
+          confirmText: 'Download Anyway',
+          onConfirm: () => triggerDownload(key, isAlbum, detailArtist.artist_name, release.title, true)
+        });
+        return;
       }
     } else {
       if (release.exists && release.qualityStatus !== 'worse') {
-        const confirm = window.confirm(`You already have the track "${detailArtist.artist_name} - ${release.title}" in the desired quality. Do you want to download/overwrite it anyway?`);
-        if (!confirm) return;
-        force = true;
+        confirm({
+          title: 'Track Already Downloaded',
+          message: `You already have "${detailArtist.artist_name} - ${release.title}" in the desired quality. Download/overwrite anyway?`,
+          confirmText: 'Download Anyway',
+          onConfirm: () => triggerDownload(key, isAlbum, detailArtist.artist_name, release.title, true)
+        });
+        return;
       }
     }
 
-    setDownloadingKeys(prev => new Set(prev).add(key));
-    try {
-      if (isAlbum) {
-        await apiService.downloadAlbum(detailArtist.artist_name, release.title, force);
-        alert(`Full album download queued for "${detailArtist.artist_name} - ${release.title}".`);
-      } else {
-        await apiService.downloadTrack(detailArtist.artist_name, release.title, release.title, force);
-        alert(`Single track download queued for "${detailArtist.artist_name} - ${release.title}".`);
-      }
-    } catch (err: any) {
-      alert(err.response?.data?.detail || "Failed to trigger download.");
-    } finally {
-      setDownloadingKeys(prev => {
-        const next = new Set(prev);
-        next.delete(key);
-        return next;
-      });
-    }
+    await triggerDownload(key, isAlbum, detailArtist.artist_name, release.title, force);
   };
 
   const sortByDate = (list: Release[]) => {
@@ -653,9 +665,9 @@ export const MyArtists: React.FC = () => {
                                                   onClick={async () => {
                                                     try {
                                                       await apiService.likeTrack(detailArtist.artist_name, track.title, release.title, 1);
-                                                      alert("Loved on ListenBrainz!");
+                                                      notify("Loved on ListenBrainz!", "success");
                                                     } catch (de: any) {
-                                                      alert(de.response?.data?.detail || "Failed to submit love feedback.");
+                                                      notify(de.response?.data?.detail || "Failed to submit love feedback.", "error");
                                                     }
                                                   }}
                                                 >
@@ -670,9 +682,9 @@ export const MyArtists: React.FC = () => {
                                                   onClick={async () => {
                                                     try {
                                                       await apiService.likeTrack(detailArtist.artist_name, track.title, release.title, -1);
-                                                      alert("Hated on ListenBrainz!");
+                                                      notify("Hated on ListenBrainz!", "info");
                                                     } catch (de: any) {
-                                                      alert(de.response?.data?.detail || "Failed to submit hate feedback.");
+                                                      notify(de.response?.data?.detail || "Failed to submit hate feedback.", "error");
                                                     }
                                                   }}
                                                 >
@@ -687,9 +699,9 @@ export const MyArtists: React.FC = () => {
                                                   setDownloadingKeys(prev => new Set(prev).add(trackDlKey));
                                                   try {
                                                     await apiService.downloadTrack(detailArtist.artist_name, track.title, track.title, false);
-                                                    alert(`Download queued for track "${detailArtist.artist_name} - ${track.title}".`);
+                                                    notify(`Download queued for track "${detailArtist.artist_name} - ${track.title}".`, "success");
                                                   } catch (de: any) {
-                                                    alert(de.response?.data?.detail || "Failed to download track.");
+                                                    notify(de.response?.data?.detail || "Failed to download track.", "error");
                                                   } finally {
                                                     setDownloadingKeys(prev => {
                                                       const next = new Set(prev);
@@ -890,9 +902,9 @@ export const MyArtists: React.FC = () => {
                                                   onClick={async () => {
                                                     try {
                                                       await apiService.likeTrack(detailArtist.artist_name, track.title, release.title, 1);
-                                                      alert("Loved on ListenBrainz!");
+                                                      notify("Loved on ListenBrainz!", "success");
                                                     } catch (de: any) {
-                                                      alert(de.response?.data?.detail || "Failed to submit love feedback.");
+                                                      notify(de.response?.data?.detail || "Failed to submit love feedback.", "error");
                                                     }
                                                   }}
                                                 >
@@ -907,9 +919,9 @@ export const MyArtists: React.FC = () => {
                                                   onClick={async () => {
                                                     try {
                                                       await apiService.likeTrack(detailArtist.artist_name, track.title, release.title, -1);
-                                                      alert("Hated on ListenBrainz!");
+                                                      notify("Hated on ListenBrainz!", "info");
                                                     } catch (de: any) {
-                                                      alert(de.response?.data?.detail || "Failed to submit hate feedback.");
+                                                      notify(de.response?.data?.detail || "Failed to submit hate feedback.", "error");
                                                     }
                                                   }}
                                                 >
@@ -924,9 +936,9 @@ export const MyArtists: React.FC = () => {
                                                   setDownloadingKeys(prev => new Set(prev).add(trackDlKey));
                                                   try {
                                                     await apiService.downloadTrack(detailArtist.artist_name, track.title, track.title, false);
-                                                    alert(`Download queued for track "${detailArtist.artist_name} - ${track.title}".`);
+                                                    notify(`Download queued for track "${detailArtist.artist_name} - ${track.title}".`, "success");
                                                   } catch (de: any) {
-                                                    alert(de.response?.data?.detail || "Failed to download track.");
+                                                    notify(de.response?.data?.detail || "Failed to download track.", "error");
                                                   } finally {
                                                     setDownloadingKeys(prev => {
                                                       const next = new Set(prev);
