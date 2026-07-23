@@ -279,22 +279,14 @@ class ConfigManager:
             self.validation_errors = None
             self.is_configured = True
 
-            # Auto-generate auth secret_key if not set, and persist it
-            if not config.auth.secret_key:
+            # Check for JWT_SECRET env var or generate session key
+            env_secret = os.environ.get('JWT_SECRET')
+            if env_secret:
+                config.auth.secret_key = env_secret
+            elif not config.auth.secret_key:
                 new_key = uuid.uuid4().hex + uuid.uuid4().hex
                 config.auth.secret_key = new_key
-                logger.info("Generated new JWT secret key and saving to config.")
-                try:
-                    raw = yaml.safe_load(self.raw_yaml) or {}
-                    if "auth" not in raw:
-                        raw["auth"] = {}
-                    raw["auth"]["secret_key"] = new_key
-                    if not self._is_dir_mount():
-                        with open(self.config_path, "w", encoding="utf-8") as f:
-                            yaml.safe_dump(raw, f, default_flow_style=False, sort_keys=False)
-                        self.raw_yaml = open(self.config_path, encoding="utf-8").read()
-                except Exception as e:
-                    logger.warning(f"Could not persist JWT secret key: {e}")
+                logger.warning("JWT_SECRET should be set as an env var in production. Using generated key for this session.")
 
             return True, None
 

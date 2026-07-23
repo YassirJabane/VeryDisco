@@ -17,7 +17,6 @@ import {
   CheckCircle as SuccessIcon,
   Error as ErrorIcon,
   CloudDownload as DownloadIcon,
-  SkipNext as SkipIcon,
   Info as InfoIcon
 } from '@mui/icons-material';
 import { apiService, GetStatusResponse } from '../api';
@@ -180,6 +179,9 @@ export const Explore: React.FC = () => {
     if (score === 1 && isLiked) finalScore = 0;
     if (score === -1 && isHated) finalScore = 0;
 
+    const previousLiked = new Set(likedTracks);
+    const previousHated = new Set(hatedTracks);
+
     setLikedTracks(prev => {
       const next = new Set(prev);
       if (finalScore === 1) {
@@ -207,18 +209,10 @@ export const Explore: React.FC = () => {
     } catch (e: any) {
       console.error("Failed to submit feedback", e);
       notify(e.response?.data?.detail || "Failed to submit feedback to ListenBrainz. Check your token.", "error");
-      setLikedTracks(prev => {
-        const next = new Set(prev);
-        if (isLiked) next.add(key); else next.delete(key);
-        localStorage.setItem('likedTracks', JSON.stringify(Array.from(next)));
-        return next;
-      });
-      setHatedTracks(prev => {
-        const next = new Set(prev);
-        if (isHated) next.add(key); else next.delete(key);
-        localStorage.setItem('hatedTracks', JSON.stringify(Array.from(next)));
-        return next;
-      });
+      setLikedTracks(previousLiked);
+      localStorage.setItem('likedTracks', JSON.stringify(Array.from(previousLiked)));
+      setHatedTracks(previousHated);
+      localStorage.setItem('hatedTracks', JSON.stringify(Array.from(previousHated)));
     }
   };
 

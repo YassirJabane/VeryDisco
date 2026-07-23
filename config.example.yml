@@ -48,3 +48,23 @@ timeouts:
 
 # Logging configuration
 log_level: "INFO"                         # Optional: Log level (DEBUG, INFO, WARNING, ERROR)
+
+# Auth configuration
+auth:
+  secret_key: ""                           # Optional: JWT secret key. Better to use JWT_SECRET env var.
+  users_can_register: true                 # Optional: Allow new user registration
+
+# Acoustid configuration
+acoustid:
+  api_key: ""                              # Optional: AcoustID API key for audio fingerprinting
+
+# Filename template configuration
+filename:
+  template: "{artist} - {title}"           # Optional: Template for renaming downloaded files
+  folder_pattern: "{artist}/{year} - {album}" # Optional: Subfolder path
+
+# Artist aliases
+artist_aliases:
+  aliases:                                 # Optional: Map variations to standard names
+    "Kanye West": "Ye"
+    "Ye (formerly known as Kanye West)": "Ye"

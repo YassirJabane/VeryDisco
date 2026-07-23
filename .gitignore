@@ -17,6 +17,7 @@ data/
 
 # Personal Config & Secrets
 config.yml
+config.yaml
 .env
 
 # Media Files & Folders

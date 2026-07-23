@@ -9,8 +9,6 @@ import {
   CheckCircle as SuccessIcon, 
   Error as ErrorIcon,
   LibraryMusic as MusicIcon,
-  CloudDownload as DownloadIcon,
-  SkipNext as SkipIcon,
   Storage as StorageIcon,
   Album as AlbumIcon,
   People as ArtistIcon,
@@ -39,15 +37,20 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
     setTimeout(() => setToast(null), 4000);
   };
 
+  const abortControllerRef = React.useRef<AbortController | null>(null);
+
   const fetchStatus = async () => {
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
     try {
-      const data = await apiService.getStatus();
+      const data = await apiService.getStatus({ signal: controller.signal });
       setStatus(data);
       if (data.latest_runs) {
         setActivePlaylists(Object.keys(data.latest_runs));
       }
       setErrorMessage(null);
     } catch (e: any) {
+      if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') return;
       console.error(e);
       setErrorMessage("Could not fetch status from backend server.");
     } finally {
@@ -74,6 +77,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
     return () => {
       clearInterval(statusInterval);
       clearInterval(statsInterval);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
 

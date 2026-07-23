@@ -116,6 +116,7 @@ const AlbumCard: React.FC<{
                   onDelete(album);
                 }}
                 sx={{ flexShrink: 0 }}
+                aria-label="Delete album"
               >
                 <DeleteIcon fontSize="small" />
               </IconButton>
@@ -231,17 +232,17 @@ const AlbumCard: React.FC<{
                           sx={{ height: 16, fontSize: '0.55rem', fontWeight: 800, borderRadius: 1, opacity: 0.6 }}
                         />
                         <Tooltip title="Preview Audio">
-                          <IconButton size="small" onClick={() => onPlayPreview(t)} color="primary">
+                          <IconButton size="small" onClick={() => onPlayPreview(t)} color="primary" aria-label="Play preview">
                             <PlayIcon sx={{ fontSize: 16 }} />
                           </IconButton>
                         </Tooltip>
                         <Tooltip title="Edit Tags">
-                          <IconButton size="small" onClick={() => onEditTags(t)}>
+                          <IconButton size="small" onClick={() => onEditTags(t)} aria-label="Edit tags">
                             <EditIcon sx={{ fontSize: 16 }} />
                           </IconButton>
                         </Tooltip>
                         <Tooltip title="Edit Lyrics">
-                          <IconButton size="small" onClick={() => onEditLyrics(t)}>
+                          <IconButton size="small" onClick={() => onEditLyrics(t)} aria-label="Edit lyrics">
                             <LyricsIcon sx={{ fontSize: 16 }} />
                           </IconButton>
                         </Tooltip>
@@ -271,7 +272,7 @@ const LibraryManager: React.FC = () => {
   // Expanded tracklist states
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
   const [tracksMap, setTracksMap] = useState<Record<string, LibraryTrackItem[]>>({});
-  const [tracksLoading, setTracksLoading] = useState(false);
+  const [tracksLoading, setTracksLoading] = useState<Record<string, boolean>>({});
 
   // Reorganization state
   const [orgPreviewOpen, setOrgPreviewOpen] = useState(false);
@@ -362,14 +363,14 @@ const LibraryManager: React.FC = () => {
     }
     setExpandedPath(folderPath);
     if (!tracksMap[folderPath]) {
-      setTracksLoading(true);
+      setTracksLoading(prev => ({ ...prev, [folderPath]: true }));
       try {
         const tracks = await apiService.getLibraryAlbumTracks(folderPath);
         setTracksMap(prev => ({ ...prev, [folderPath]: tracks }));
       } catch {
         showToast('Failed to load tracks details.', 'error');
       } finally {
-        setTracksLoading(false);
+        setTracksLoading(prev => ({ ...prev, [folderPath]: false }));
       }
     }
   };
@@ -688,7 +689,7 @@ const LibraryManager: React.FC = () => {
                   expanded={expandedPath === a.folder_path}
                   onToggle={() => handleToggleAlbum(a.folder_path)}
                   tracks={tracksMap[a.folder_path]}
-                  tracksLoading={expandedPath === a.folder_path && tracksLoading}
+                  tracksLoading={expandedPath === a.folder_path && (tracksLoading[a.folder_path] || false)}
                   onDownloadMissing={() => handleDownloadMissing(a)}
                   onEditTags={handleOpenTagEditor}
                   onEditLyrics={(track) => handleOpenLyricsEditor(track, a.artist)}

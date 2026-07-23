@@ -178,6 +178,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_album_downloads_user_status ON album_downloads(user_id, status);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_run_id ON logs(run_id);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_file_metadata_cache_mtime ON file_metadata_cache(mtime);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_processed_starred_user ON processed_starred_tracks(user_id);")
             await db.commit()
             
             # Migrate year column to file_metadata_cache

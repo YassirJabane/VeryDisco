@@ -8,6 +8,7 @@ from backend.app.sync import run_sync
 from backend.app.logger import get_logger
 
 logger = get_logger()
+_state_file_lock = asyncio.Lock()
 
 def _promote_track_sync(explore_candidate_path, user_music_dir, artist, title, album, playlists_dir, config):
     import shutil
@@ -63,8 +64,8 @@ def _promote_track_sync(explore_candidate_path, user_music_dir, artist, title, a
         try:
             with open(dest_lrc, "r", encoding="utf-8") as lf:
                 lyrics_text = lf.read()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to read lyrics file: {e}", exc_info=True)
 
     # Re-tag file with canonical album metadata (is_explore=False)
     embed_metadata(
@@ -117,10 +118,11 @@ class SchedulerManager:
         state = {}
         if os.path.exists(state_file):
             try:
-                with open(state_file, "r") as f:
-                    state = json.load(f)
-            except Exception:
-                pass
+                async with _state_file_lock:
+                    with open(state_file, "r") as f:
+                        state = json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to read state file: {e}", exc_info=True)
                 
         last_mbids = state.get("last_mbids", {})
         last_hashes = state.get("last_hashes", {})
@@ -252,7 +254,8 @@ class SchedulerManager:
                 run_date=datetime.now() + timedelta(hours=6),
                 args=[config, active_sources],
                 id=retry_job_id,
-                replace_existing=True
+                replace_existing=True,
+                max_instances=1
             )
             return
 
@@ -266,10 +269,11 @@ class SchedulerManager:
             state["last_mbids"] = last_mbids
             state["last_hashes"] = last_hashes
             try:
-                with open(state_file, "w") as f:
-                    json.dump(state, f)
-            except Exception:
-                pass
+                async with _state_file_lock:
+                    with open(state_file, "w") as f:
+                        json.dump(state, f)
+            except Exception as e:
+                logger.warning(f"Failed to write state file: {e}", exc_info=True)
                 
             logger.info(f"Starting sync run for: {source} (user: {lb_username})")
             from backend.app.main import _create_tracked_task
@@ -352,7 +356,8 @@ class SchedulerManager:
                 trigger=trigger,
                 args=[config, ["daily-jams"]],
                 id="daily_sync_job",
-                replace_existing=True
+                replace_existing=True,
+                max_instances=1
             )
             logger.info(f"Daily sync job (daily-jams) successfully scheduled for {daily_hour:02d}:{daily_minute:02d} every day.")
         except Exception as e:
@@ -366,7 +371,8 @@ class SchedulerManager:
                 trigger=trigger,
                 args=[config, ["weekly-exploration", "weekly-jams"]],
                 id="weekly_sync_job",
-                replace_existing=True
+                replace_existing=True,
+                max_instances=1
             )
             logger.info(f"Weekly sync job (weekly-exploration, weekly-jams) successfully scheduled for {weekly_hour:02d}:{weekly_minute:02d} on {weekly_day.upper()}s.")
         except Exception as e:
@@ -381,7 +387,8 @@ class SchedulerManager:
                     minutes=5,
                     args=[config],
                     id="navidrome_starred_sync_job",
-                    replace_existing=True
+                    replace_existing=True,
+                    max_instances=1
                 )
                 logger.info("Navidrome Starred synchronization job scheduled (every 5 minutes).")
             except Exception as e:
@@ -411,7 +418,8 @@ class SchedulerManager:
                 run_file_checks,
                 trigger=CronTrigger(day_of_week=file_checks_day, hour=file_checks_hour, minute=file_checks_minute),
                 id="file_checks_job",
-                replace_existing=True
+                replace_existing=True,
+                max_instances=1
             )
             logger.info(f"Automated File Checks job scheduled ({file_checks_day.upper()}s at {file_checks_hour:02d}:{file_checks_minute:02d}).")
         except Exception as e:
@@ -596,8 +604,8 @@ class SchedulerManager:
                     safe_album = sanitize_filename(album)
                     final_dir = Path(user_music_dir) / safe_artist / safe_album
                     album_exists = await asyncio.to_thread(_check_album_dir_exists_sync, final_dir)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to check if album dir exists: {e}", exc_info=True)
 
                 if not album_exists and album and user_features.get("album_downloads", True):
                     logger.info(f"Album '{album}' for starred track '{artist} - {title}' is not in user {username}'s library. Queuing album download...")

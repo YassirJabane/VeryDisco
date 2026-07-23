@@ -1,6 +1,6 @@
 services:
   verydisco:
-    image: ghcr.io/yassirjabane/verydisco:latest
+    image: ghcr.io/yassirjabane/verydisco:1.0.0
     container_name: verydisco
     ports:
       - "8086:8080"

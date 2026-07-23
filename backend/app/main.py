@@ -5466,7 +5466,9 @@ async def get_lyrics_file_endpoint(filepath: str, request: Request):
     }
 
 @app.get("/api/lyrics/search")
-async def search_lyrics_endpoint(artist: str, title: str):
+async def search_lyrics_endpoint(artist: str, title: str, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     from backend.app.clients.lrclib import LrcLibClient
     lrclib_client = LrcLibClient()
     results = await lrclib_client.search_lyrics(artist, title)
@@ -5511,7 +5513,9 @@ class StageLyricsRequest(BaseModel):
     lyrics_text: str
 
 @app.post("/api/lyrics/stage")
-async def stage_lyrics_endpoint(req: StageLyricsRequest):
+async def stage_lyrics_endpoint(req: StageLyricsRequest, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     import json
     data_dir = Path("/data")
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -5542,6 +5546,8 @@ def get_file_checks_cache_path() -> Path:
 
 @app.get("/api/library/missing-art")
 async def get_missing_art_endpoint(request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     if not config_manager.config:
         return []
     
@@ -5613,7 +5619,9 @@ async def scan_missing_art_endpoint(request: Request):
     return missing
 
 @app.get("/api/library/art/search")
-async def search_art_endpoint(artist: str, album: str):
+async def search_art_endpoint(artist: str, album: str, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     from backend.app.clients.itunes import ITunesClient
     from backend.app.clients.deezer import DeezerClient
     
@@ -6072,6 +6080,8 @@ def _get_duplicates_sync(music_dir: Path) -> list:
 
 @app.get("/api/library/duplicates")
 async def get_duplicates_endpoint(request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     if not config_manager.config:
         return []
     

@@ -224,12 +224,27 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
 
   useEffect(() => {
     const handlePopState = () => {
-      const path = window.location.pathname.replace(/^\//, '') as TabId;
-      if (VALID_TABS.includes(path)) setActiveTab(path);
+      const rawPath = window.location.pathname.replace(/^\//, '');
+      if (rawPath === '' || rawPath === '/') {
+        setActiveTab('dashboard');
+      } else {
+        const path = rawPath as TabId;
+        if (VALID_TABS.includes(path)) {
+          setActiveTab(path);
+        }
+      }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  useEffect(() => {
+    const handleLogoutEvent = () => {
+      logout();
+    };
+    window.addEventListener('auth:logout', handleLogoutEvent);
+    return () => window.removeEventListener('auth:logout', handleLogoutEvent);
+  }, [logout]);
 
   useEffect(() => {
     localStorage.setItem('verydisco-theme-mode', mode);

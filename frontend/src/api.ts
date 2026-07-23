@@ -9,6 +9,16 @@ const api = axios.create({
   },
 });
 
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response && error.response.status === 401) {
+      window.dispatchEvent(new Event('auth:logout'));
+    }
+    return Promise.reject(error);
+  }
+);
+
 export function getErrorMessage(err: any, fallback: string = "An error occurred"): string {
   const detail = err?.response?.data?.detail;
   if (typeof detail === 'string') return detail;
@@ -249,8 +259,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async getStatus(): Promise<GetStatusResponse> {
-    const resp = await api.get<GetStatusResponse>('/api/status');
+  async getStatus(config?: any): Promise<GetStatusResponse> {
+    const resp = await api.get<GetStatusResponse>('/api/status', config);
     return resp.data;
   },
 
