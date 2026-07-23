@@ -3270,6 +3270,14 @@ def _build_library_index_sync(
     def _norm(s: str) -> str:
         return re.sub(r'[^\w]', '', (s or '')).lower()
 
+    def _norm_album(s: str) -> str:
+        if not s:
+            return ""
+        # Strip disc/cd/disk suffixes and deluxe/explicit/version/edition markers to unify multi-disc albums into 1 row
+        clean = re.sub(r'(?i)\b(?:disc|cd|disk)\s*\d+.*|\b(?:deluxe|explicit|edition|version|remastered|single)\b.*', '', s)
+        clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', clean).strip()
+        return _norm(clean) or _norm(s)
+
     # ── Phase 1: walk and collect per-file rows ────────────────────────────────
     rows = []
     audio_files = []
@@ -3511,7 +3519,7 @@ def _build_library_index_sync(
             'issue_misfiled':       issue_misfiled,
             'issue_misfiled_reason': issue_misfiled_reason or None,
             'artist_norm':          _norm(album_artist or extract_main_artist(artist) or artist),
-            'album_norm':           _norm(album),
+            'album_norm':           _norm_album(album),
             'title_norm':           _norm(title),
         })
 
@@ -3880,6 +3888,9 @@ async def get_library_album_tracks(folder_path: str, request: Request):
         targets = [Path(folder_path).resolve()]
         
     target = targets[0] if targets else Path(folder_path).resolve()
+    if re.match(r'(?i)^(?:disc|cd|disk)\s*\d+$', target.name):
+        target = target.parent
+
     if not str(target).startswith(str(music_dir)):
         logger.error(f"Access denied in get_library_album_tracks: target {target} does not start with music_dir {music_dir} (user: {user_id})")
         raise HTTPException(status_code=403, detail="Access denied")

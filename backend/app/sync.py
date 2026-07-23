@@ -469,7 +469,8 @@ def embed_metadata(
     disc_total: int = 1,
     is_explore: bool = False,
     mbid_album: Optional[str] = None,
-    mbid_recording: Optional[str] = None
+    mbid_recording: Optional[str] = None,
+    genre: Optional[str] = None
 ):
     """Embed metadata, cover art, and lyrics directly into the audio file metadata.
 
@@ -515,7 +516,7 @@ def embed_metadata(
         if ext == ".mp3":
             from mutagen.id3 import (
                 ID3, ID3NoHeaderError,
-                TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TCMP,
+                TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TCMP, TCON,
                 TDRC, TDRL, TYER,
                 TXXX, UFID,
                 USLT, APIC
@@ -536,6 +537,8 @@ def embed_metadata(
             tags.add(TPE2(encoding=3, text=final_album_artist))
             tags.add(TALB(encoding=3, text=final_album))
             tags.add(TCMP(encoding=3, text=compilation_val))
+            if genre:
+                tags.add(TCON(encoding=3, text=genre))
 
             if is_explore:
                 tags.add(TPOS(encoding=3, text="1/1"))
@@ -587,27 +590,6 @@ def embed_metadata(
             from mutagen.flac import FLAC, Picture
             audio = FLAC(file_path)
 
-            # ── Full tag wipe ─────────────────────────────────────────────────
-            audio.clear()
-            audio.clear_pictures()
-
-            # ── Core Vorbis comment tags ──────────────────────────────────────
-            # ARTIST = display name (Navidrome: artist alias)
-            audio["artist"] = [clean_artist]
-            # ALBUMARTIST = album grouping artist (Navidrome: albumartist alias)
-            audio["albumartist"] = [final_album_artist]
-            audio["album"] = [final_album]
-            audio["title"] = [clean_title]
-            audio["compilation"] = [compilation_val]
-
-            if is_explore:
-                audio["discnumber"] = ["1"]
-                audio["disctotal"] = ["1"]
-            else:
-                for key in list(audio.keys()):
-                    if "musicbrainz" in key.lower():
-                        del audio[key]
-
             # ── Full tag wipe ──────────────────────────────────────────────────
             audio.clear()
             audio.clear_pictures()
@@ -620,6 +602,8 @@ def embed_metadata(
             audio["album"] = [final_album]
             audio["title"] = [clean_title]
             audio["compilation"] = [compilation_val]
+            if genre:
+                audio["genre"] = [genre]
 
             if is_explore:
                 audio["discnumber"] = ["1"]
@@ -681,6 +665,8 @@ def embed_metadata(
             audio["©nam"] = [clean_title]
             audio["©alb"] = [final_album]
             audio["cpil"] = is_explore
+            if genre:
+                audio["©gen"] = [genre]
 
             if is_explore:
                 audio["disk"] = [(1, 1)]
