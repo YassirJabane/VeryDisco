@@ -1362,6 +1362,8 @@ async def _download_album_task_internal(
         except Exception as e:
             logger.debug(f"Failed to clear playlist cache: {e}")
 
+_single_track_semaphore = asyncio.Semaphore(2)
+
 async def download_single_track_task(
     artist: str,
     title: str,
@@ -1375,7 +1377,8 @@ async def download_single_track_task(
     mbid_album_override: Optional[str] = None
 ):
     """Background task to search, download and organize a single track."""
-    logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
+    async with _single_track_semaphore:
+        logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
     
     music_dir = config.paths.music_dir
     playlists_dir = config.paths.navidrome_playlists_dir

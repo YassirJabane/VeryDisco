@@ -10,6 +10,8 @@ from backend.app.clients.http_client import get_http_client
 
 logger = get_logger()
 
+_slskd_lock = asyncio.Lock()
+
 class SlskdClient:
     def __init__(self, base_url: str, api_key: str = "", timeout: int = 20):
         self.base_url = base_url.rstrip("/")
@@ -26,8 +28,8 @@ class SlskdClient:
         return headers
 
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1.5, min=2, max=10),
         retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
         reraise=True
     )
@@ -37,13 +39,18 @@ class SlskdClient:
         payload = {"searchText": query}
         logger.info(f"Triggering slskd search for query: '{query}'")
         client = get_http_client()
-        resp = await client.post(url, json=payload, headers=self._get_headers())
-        resp.raise_for_status()
-        data = resp.json()
-        search_id = data.get("id")
-        if not search_id:
-            raise ValueError("slskd did not return a search ID")
-        return search_id
+        async with _slskd_lock:
+            resp = await client.post(url, json=payload, headers=self._get_headers())
+            if resp.status_code == 429:
+                logger.warning(f"Slskd rate-limited (429) search query '{query}'. Sleeping 2s before retry...")
+                await asyncio.sleep(2.0)
+            resp.raise_for_status()
+            data = resp.json()
+            search_id = data.get("id")
+            if not search_id:
+                raise ValueError("slskd did not return a search ID")
+            await asyncio.sleep(0.3)
+            return search_id
 
     @retry(
         stop=stop_after_attempt(3),
@@ -319,8 +326,8 @@ class SlskdClient:
         return candidates, search_id
  
     @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(5),
+        wait=wait_exponential(multiplier=1.5, min=2, max=10),
         retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
         reraise=True
     )
@@ -336,11 +343,17 @@ class SlskdClient:
         
         logger.info(f"Requesting download from peer '{username}' for file '{filename}' ({size} bytes)")
         client = get_http_client()
-        resp = await client.post(url, json=payload, headers=self._get_headers())
-        if resp.status_code in [200, 201, 202]:
-            return True
-        logger.error(f"Failed to request download for '{filename}' from '{username}'. Status: {resp.status_code}, Response: {resp.text}")
-        return False
+        async with _slskd_lock:
+            resp = await client.post(url, json=payload, headers=self._get_headers())
+            if resp.status_code == 429:
+                logger.warning(f"Slskd rate-limited (429) download request from '{username}'. Waiting 2s before retry...")
+                await asyncio.sleep(2.0)
+                resp.raise_for_status()
+            if resp.status_code in [200, 201, 202]:
+                await asyncio.sleep(0.3)
+                return True
+            logger.error(f"Failed to request download for '{filename}' from '{username}'. Status: {resp.status_code}, Response: {resp.text}")
+            return False
  
     @retry(
         stop=stop_after_attempt(3),
