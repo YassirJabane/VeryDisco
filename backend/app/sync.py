@@ -1376,9 +1376,10 @@ async def enrich_library_index_mbids(user_id: str, db: "Database") -> None:
         logger.error(f"MBID enrichment: failed to fetch rows for user {user_id}: {e}")
         return
 
-    logger.info(f"MBID enrichment: {len(rows)} tracks to look up for user {user_id}")
+    logger.info(f"⚡ [MBID Enrichment] Queued {len(rows)} tracks missing MusicBrainz IDs for background lookup...")
     enriched = 0
-    for row in rows:
+    total_to_check = len(rows)
+    for idx, row in enumerate(rows, 1):
         try:
             rec = await musicbrainz_client.search_recording(
                 row["artist"], row["title"], row.get("album") or ""
@@ -1390,10 +1391,14 @@ async def enrich_library_index_mbids(user_id: str, db: "Database") -> None:
                 if track_mbid:
                     await db.mark_track_mbid(row["filepath"], track_mbid, album_mbid)
                     enriched += 1
+                    logger.info(f"✨ [MBID Enrichment] ({idx}/{total_to_check}) Matched '{row['artist']} - {row['title']}' -> Track MBID: {track_mbid}")
+                else:
+                    logger.debug(f"ℹ️ [MBID Enrichment] ({idx}/{total_to_check}) No MBID match for '{row['artist']} - {row['title']}'")
         except Exception as e:
-            logger.debug(f"MBID enrichment: skipping {row.get('filepath')}: {e}")
+            logger.debug(f"⚠️ [MBID Enrichment] ({idx}/{total_to_check}) Error looking up {row.get('filepath')}: {e}")
 
-    logger.info(f"MBID enrichment complete: {enriched}/{len(rows)} tracks enriched for user {user_id}")
+    logger.info(f"✅ [MBID Enrichment Summary] Finished background enrichment: {enriched}/{total_to_check} tracks updated with MusicBrainz IDs.")
+
 
 async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[str] = None, user_id: Optional[str] = None):
     """Executes the complete synchronization run."""

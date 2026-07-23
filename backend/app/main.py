@@ -3286,6 +3286,7 @@ def _build_library_index_sync(
                 audio_files.append(Path(root) / f)
 
     total = len(audio_files)
+    logger.info(f"📂 [Library Scan] Discovered {total} audio files in {music_dir}")
     new_entries = []
 
     # Pre-build cover set: folders that have a cover image file
@@ -3515,6 +3516,7 @@ def _build_library_index_sync(
         })
 
         if idx % 50 == 0 or idx == total:
+            logger.info(f"⏳ [Library Scan] Scanned {idx}/{total} files ({int(idx/total*100)}%)...")
             progress_callback(idx, total, list(new_entries))
             new_entries.clear()
 
@@ -3537,6 +3539,24 @@ def _build_library_index_sync(
             dup['issue_duplicate'] = 1
             dup['issue_duplicate_of'] = primary['filepath']
 
+    # ── Log Scan Summary Statistics ───────────────────────────────────────────
+    missing_meta_cnt = sum(1 for r in rows if r.get('issue_missing_meta'))
+    dirty_tags_cnt = sum(1 for r in rows if r.get('issue_dirty_tags'))
+    naming_cnt = sum(1 for r in rows if r.get('issue_naming'))
+    misfiled_cnt = sum(1 for r in rows if r.get('issue_misfiled'))
+    dup_cnt = sum(1 for r in rows if r.get('issue_duplicate'))
+    synced_lyrics_cnt = sum(1 for r in rows if r.get('lyrics_synced'))
+    plain_lyrics_cnt = sum(1 for r in rows if r.get('lyrics_plain'))
+    covers_cnt = sum(1 for r in rows if r.get('has_cover'))
+    embedded_mbid_cnt = sum(1 for r in rows if r.get('track_mbid'))
+
+    logger.info(f"📊 [Library Scan Summary] Processed {len(rows)} files:")
+    logger.info(f"   • Metadata Status : {len(rows) - missing_meta_cnt} complete, {missing_meta_cnt} missing/incomplete")
+    logger.info(f"   • MusicBrainz IDs : {embedded_mbid_cnt} embedded, {len(rows) - embedded_mbid_cnt} missing (queued for background lookup)")
+    logger.info(f"   • Lyrics Status   : {synced_lyrics_cnt} synced (.lrc), {plain_lyrics_cnt} plain, {len(rows) - synced_lyrics_cnt - plain_lyrics_cnt} missing")
+    logger.info(f"   • Album Art       : {covers_cnt} tracks with cover artwork")
+    logger.info(f"   • Library Issues  : {dirty_tags_cnt} dirty tags, {naming_cnt} naming mismatches, {misfiled_cnt} misfiled, {dup_cnt} duplicates")
+
     return rows
 
 
@@ -3544,6 +3564,7 @@ library_scan_progress = {}
 
 async def run_library_scan_task(user_id: str, music_dir: Path):
     global library_scan_progress
+    logger.info(f"🔍 [Library Scan] Initiating full library scan for user '{user_id}' at path: {music_dir}")
     library_scan_progress[user_id] = {
         "status": "running",
         "phase": "indexing",
@@ -3585,6 +3606,7 @@ async def run_library_scan_task(user_id: str, music_dir: Path):
         )
 
         # Persist to DB
+        logger.info(f"💾 [Library Scan] Writing {len(rows)} track records to library_index database table...")
         await db.clear_library_index(user_id)
         await db.upsert_library_index_batch(rows)
         await db.invalidate_user_caches(user_id)
@@ -3603,6 +3625,7 @@ async def run_library_scan_task(user_id: str, music_dir: Path):
         })
 
         # Kick off background MBID enrichment — does NOT block scan completion
+        logger.info("⚡ [Library Scan] Launching background MusicBrainz ID enrichment task...")
         from backend.app.sync import enrich_library_index_mbids
         asyncio.create_task(enrich_library_index_mbids(user_id, db))
 
@@ -3611,10 +3634,12 @@ async def run_library_scan_task(user_id: str, music_dir: Path):
             "phase": "done",
             "percentage": 100,
         })
+        logger.info(f"✅ [Library Scan] Scan complete! {len(rows)} files indexed, {issues_found} issues detected.")
     except Exception as e:
-        logger.error(f"Library scan failed for user {user_id}: {e}")
+        logger.error(f"❌ [Library Scan] Scan failed for user {user_id}: {e}")
         library_scan_progress[user_id]["status"] = "failed"
         library_scan_progress[user_id]["error"] = str(e)
+
 
 @app.post("/api/library/scan")
 async def trigger_full_library_scan(request: Request):
