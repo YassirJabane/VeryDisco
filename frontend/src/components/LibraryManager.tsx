@@ -24,8 +24,8 @@ import apiService, { AlbumItem, LibraryTrackItem } from '../api';
 import LyricsPreviewDialog from './LyricsPreviewDialog';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
-function fmtBytes(bytes: number): string {
-  if (bytes === 0) return '0 B';
+function fmtBytes(bytes?: number): string {
+  if (!bytes || isNaN(bytes) || bytes <= 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -140,13 +140,15 @@ const AlbumCard: React.FC<{
             sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
           />
 
-          <Chip
-            label={album.quality}
-            size="small"
-            color={qualityChipColor(album.quality)}
-            variant="outlined"
-            sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
-          />
+          {album.quality && (
+            <Chip
+              label={album.quality}
+              size="small"
+              color={qualityChipColor(album.quality)}
+              variant="outlined"
+              sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
+            />
+          )}
 
           <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ ml: 'auto', display: { xs: 'none', sm: 'block' } }}>
             {fmtBytes(album.total_size)}
