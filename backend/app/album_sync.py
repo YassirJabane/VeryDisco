@@ -1286,29 +1286,12 @@ async def _download_album_task_internal(
                 if ((t.get("disk_number") or t.get("disc_number") or t.get("disc_num") or 1), (t.get("track_position") or t.get("position") or t.get("track_num"))) not in downloaded_official_positions
             ]
             if missing_official:
-                logger.warning(f"Album download for '{artist} - {album}' is missing {len(missing_official)} track(s) after checking peer candidates. Spawning automatic single-track fallback downloads...")
-                from backend.app.main import _create_tracked_task
+                logger.warning(f"Album download for '{artist} - {album}' is missing {len(missing_official)} track(s) after checking peer candidates. Running automatic single-track fallbacks...")
                 for missing_t in missing_official:
                     t_title = missing_t["title"]
-                    logger.info(f"Queuing automatic single-track fallback for missing track #{missing_t.get('track_position')} ('{artist} - {t_title}')...")
+                    logger.info(f"Running automatic single-track fallback for missing track #{missing_t.get('track_position')} ('{artist} - {t_title}')...")
                     try:
-                        _create_tracked_task(
-                            download_single_track_task(
-                                artist=artist,
-                                title=t_title,
-                                album=album,
-                                config=config,
-                                db=db,
-                                force=True,
-                                user_id=user_id,
-                                mbid_album_override=official_mb_release_mbid
-                            ),
-                            task_id=f"track:{artist}:{t_title}",
-                            task_type="track",
-                            metadata={"artist": artist, "title": t_title, "album": album}
-                        )
-                    except Exception:
-                        asyncio.create_task(download_single_track_task(
+                        await download_single_track_task(
                             artist=artist,
                             title=t_title,
                             album=album,
@@ -1317,7 +1300,9 @@ async def _download_album_task_internal(
                             force=True,
                             user_id=user_id,
                             mbid_album_override=official_mb_release_mbid
-                        ))
+                        )
+                    except Exception as fallback_err:
+                        logger.error(f"Single-track fallback for '{t_title}' failed: {fallback_err}")
 
         # Trigger Navidrome scan at the end of album download
         if config.navidrome.url and config.navidrome.username and config.navidrome.password:
