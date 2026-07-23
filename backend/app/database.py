@@ -968,6 +968,9 @@ class Database:
                 SELECT artist, album, artist_norm, album_norm,
                        MIN(filepath) as sample_filepath,
                        COUNT(*) as track_count,
+                       MAX(total_tracks) as total_tracks,
+                       MAX(ext) as ext,
+                       MAX(bitrate) as bitrate,
                        MAX(has_cover) as has_cover,
                        MAX(year) as year,
                        SUM(issue_missing_meta + issue_dirty_tags + issue_naming

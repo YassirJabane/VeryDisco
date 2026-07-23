@@ -3693,11 +3693,40 @@ async def get_library_albums(request: Request):
         for a in db_albums:
             sample_fp = a.get("sample_filepath") or ""
             folder_p = str(Path(sample_fp).parent) if sample_fp else ""
+            t_count = a.get("track_count", 0)
+            tot_tracks = a.get("total_tracks") or 0
+
+            total_size = 0
+            if folder_p and os.path.isdir(folder_p):
+                try:
+                    total_size = sum(
+                        os.path.getsize(os.path.join(folder_p, fn))
+                        for fn in os.listdir(folder_p)
+                        if os.path.isfile(os.path.join(folder_p, fn))
+                    )
+                except Exception:
+                    total_size = 0
+
+            if tot_tracks > 0 and t_count >= tot_tracks:
+                status = 'fully'
+            elif tot_tracks > 0:
+                status = 'partially'
+            else:
+                status = 'fully'
+
+            ext_val = (a.get("ext") or "mp3").lstrip(".").upper()
+            br_val = a.get("bitrate")
+            quality = f"{ext_val} {br_val}kbps" if br_val else ext_val
+
             result.append({
                 "artist": a.get("artist") or "Unknown Artist",
                 "album": a.get("album") or "Unknown Album",
                 "year": a.get("year") or "",
-                "track_count": a.get("track_count", 0),
+                "track_count": t_count,
+                "total_tracks": tot_tracks,
+                "total_size": total_size,
+                "quality": quality,
+                "status": status,
                 "has_cover": bool(a.get("has_cover")),
                 "folder_path": folder_p,
                 "issue_count": a.get("issue_count", 0),
