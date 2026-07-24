@@ -121,15 +121,21 @@ def score_release(r: dict, album: str) -> int:
     if "clean" in disambiguation or "instrumental" in disambiguation or "karaoke" in disambiguation:
         score -= 15
 
-    # Reward special edition matches if requested in album title, penalize if not requested
+    # Reward special edition matches if requested in album title, penalize if missing
     special_edition_terms = ("collector", "deluxe", "special edition", "anniversary", "bonus", "expanded", "limited", "box set", "book", "misprint", "promo")
     album_lower = album.lower()
-    for term in special_edition_terms:
-        if term in disambiguation or term in title.lower():
-            if term in album_lower:
-                score += 20  # Bonus when user explicitly requested this edition!
-            else:
-                score -= 15  # Penalty when unexpected special edition
+    has_edition_in_request = any(term in album_lower for term in special_edition_terms)
+
+    if has_edition_in_request:
+        matched_requested_term = any(term in album_lower and (term in disambiguation or term in title.lower()) for term in special_edition_terms)
+        if matched_requested_term:
+            score += 35  # Major bonus when release matches requested special edition (e.g. Deluxe)!
+        else:
+            score -= 25  # Major penalty for standard release when a Deluxe/Special edition was requested
+    else:
+        # User requested standard album
+        if any(term in disambiguation or term in title.lower() for term in special_edition_terms):
+            score -= 15
 
     for bad_type in ("live", "compilation", "remix", "dj-mix", "spokenword", "mixtape"):
         if bad_type in secondary_types:
@@ -139,13 +145,24 @@ def score_release(r: dict, album: str) -> int:
 
 
 async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
-    """Query MusicBrainz for candidate releases, score them, and return winner details (cached 1h)."""
+    """Query MusicBrainz for candidate releases, score them against Deezer track count, and return winner details (cached 1h)."""
     cache_key = f"{artist.lower().strip()}||{album.lower().strip()}"
     now = time.time()
     if cache_key in _album_releases_cache:
         ts, cached_res = _album_releases_cache[cache_key]
         if now - ts < 3600:
             return cached_res
+
+    # Try to fetch Deezer track count for standard streaming comparison
+    deezer_track_count = None
+    try:
+        from backend.app.clients.deezer import deezer_client
+        dz_album = await deezer_client.search_album(artist, album)
+        if dz_album and dz_album.get("nb_tracks"):
+            deezer_track_count = dz_album["nb_tracks"]
+            logger.info(f"Fetched Deezer album track count for '{artist} - {album}': {deezer_track_count} tracks")
+    except Exception as dz_err:
+        logger.debug(f"Could not fetch Deezer track count for comparison: {dz_err}")
 
     data = await _mb_get("/release", params={
         "query": f'release:"{album}" AND artist:"{artist}"',
@@ -191,7 +208,7 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
         _album_releases_cache[cache_key] = (now, empty_res)
         return empty_res
 
-    candidates = [r for r in releases if _fuzzy_match(r.get("title", ""), album)]
+    candidates = [r for r in releases if _fuzzy_match(r.get("title", ""), album) or _fuzzy_match(r.get("title", ""), clean_alb)]
     if not candidates:
         candidates = releases
 
@@ -201,6 +218,20 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
         media = r.get("media") or []
         formats = [m.get("format") or "Unknown" for m in media]
         rg = r.get("release-group") or {}
+        
+        cand_track_count = sum(int(m.get("track-count") or 0) for m in media)
+        
+        # Compare track count against Deezer streaming track count if available
+        if deezer_track_count and cand_track_count > 0:
+            if cand_track_count == deezer_track_count:
+                s += 30  # Exact track count match with official streaming version!
+            elif abs(cand_track_count - deezer_track_count) <= 2:
+                s += 15
+            elif cand_track_count > deezer_track_count + 5:
+                s -= 25  # Penalize bloated versions (e.g. 32 tracks with live shows vs 20 tracks standard deluxe)
+            elif cand_track_count < deezer_track_count:
+                s -= 15
+
         scored_candidates.append({
             "id": r.get("id"),
             "title": r.get("title"),
@@ -210,7 +241,8 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
             "formats": formats,
             "disambiguation": r.get("disambiguation") or "",
             "secondary_types": rg.get("secondary-types") or [],
-            "media_count": len(media)
+            "media_count": len(media),
+            "track_count": cand_track_count
         })
 
     scored_candidates.sort(key=lambda x: x["score"], reverse=True)
