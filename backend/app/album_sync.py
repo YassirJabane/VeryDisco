@@ -106,16 +106,30 @@ async def fetch_track_metadata_with_fallback(
     except Exception as e:
         logger.debug(f"MusicBrainz metadata lookup failed for '{artist} - {title}': {e}")
 
-    # --- Fetch cover art from Deezer (cover_xl) first, with CAA as fallback ---
+    # --- Fetch cover art from Deezer (cover_xl) ---
     target_album = result["album"] or album or title
     target_artist = result["artist"] or artist
-    try:
-        cover = await deezer_client.get_album_cover(target_artist, target_album)
-        if cover:
-            result["cover_bytes"] = cover
-    except Exception as e:
-        logger.debug(f"Deezer cover art lookup failed for '{target_artist} - {target_album}': {e}")
 
+    # 1. Search track directly on Deezer FIRST (matches Explore tab behavior 1:1)
+    try:
+        dz_tr = await deezer_client.get_track_metadata(target_artist, title)
+        if dz_tr:
+            cov_url = dz_tr.get("album", {}).get("cover_xl") or dz_tr.get("album", {}).get("cover_big")
+            if cov_url:
+                result["cover_bytes"] = await deezer_client.download_cover_art(cov_url)
+    except Exception as e:
+        logger.debug(f"Deezer track cover lookup failed for '{target_artist} - {title}': {e}")
+
+    # 2. Try album-level Deezer lookup if track lookup yielded no cover
+    if not result["cover_bytes"]:
+        try:
+            cover = await deezer_client.get_album_cover(target_artist, target_album)
+            if cover:
+                result["cover_bytes"] = cover
+        except Exception as e:
+            logger.debug(f"Deezer album cover lookup failed for '{target_artist} - {target_album}': {e}")
+
+    # 3. Fallback to MusicBrainz Cover Art Archive
     if not result["cover_bytes"] and result.get("mbid_album"):
         try:
             from backend.app.clients.musicbrainz import musicbrainz_client
@@ -124,17 +138,6 @@ async def fetch_track_metadata_with_fallback(
                 result["cover_bytes"] = cover
         except Exception:
             pass
-
-    # If cover is still missing, search track directly on Deezer
-    if not result["cover_bytes"]:
-        try:
-            dz_tr = await deezer_client.get_track_metadata(target_artist, title)
-            if dz_tr:
-                cov_url = dz_tr.get("album", {}).get("cover_xl") or dz_tr.get("album", {}).get("cover_big")
-                if cov_url:
-                    result["cover_bytes"] = await deezer_client.download_cover_art(cov_url)
-        except Exception as e:
-            logger.debug(f"Deezer track cover fallback failed for '{target_artist} - {title}': {e}")
 
     return result
 

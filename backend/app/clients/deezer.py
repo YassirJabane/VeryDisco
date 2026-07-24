@@ -64,9 +64,8 @@ class DeezerClient:
                 if _result_matches(result, clean_artist, clean_title):
                     return result
 
-            # Fallback: return first result if nothing matches strictly
-            logger.warning(f"Deezer: no strong match found for '{artist} - {title}', using first result")
-            return results[0]
+            logger.warning(f"Deezer: no matching track result found for '{artist} - {title}'")
+            return None
 
         except Exception as e:
             logger.error(f"Failed to fetch metadata from Deezer for '{artist} - {title}': {e}")
@@ -184,15 +183,21 @@ class DeezerClient:
                     if cover_url:
                         return await self.download_cover_art(cover_url)
                 return None
+
             best_cover_url = None
             for res in results:
                 r_title = _normalize(res.get("title", ""))
                 a_title = _normalize(clean_album)
-                if a_title in r_title or r_title in a_title:
+                r_artist = _normalize(res.get("artist", {}).get("name", ""))
+                n_artist = _normalize(clean_artist)
+
+                title_match = a_title in r_title or r_title in a_title
+                artist_words = [w for w in n_artist.split() if len(w) > 2]
+                artist_match = any(w in r_artist for w in artist_words) if artist_words else (n_artist in r_artist)
+
+                if title_match and artist_match:
                     best_cover_url = res.get("cover_xl") or res.get("cover_big")
                     break
-            if not best_cover_url and results:
-                best_cover_url = results[0].get("cover_xl") or results[0].get("cover_big")
 
             if best_cover_url:
                 return await self.download_cover_art(best_cover_url)
