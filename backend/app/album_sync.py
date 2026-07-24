@@ -957,7 +957,7 @@ async def _download_album_task_internal(
 
                         ext_ext = Path(existing_path).suffix
                         from backend.app.sync import get_library_filename, resolve_album_dir
-                        target_album_artist = artist
+                        target_album_artist = dz_album_artist or artist
                         dest_dir, safe_artist, safe_album = resolve_album_dir(
                             music_dir, target_album_artist, album, target_album_artist,
                             disc_num=disc_num, disc_total=disc_total
@@ -1296,7 +1296,7 @@ async def _download_album_task_internal(
                     # 3. Determine clean destination filename using library convention
                     ext_ext = local_path.suffix
                     from backend.app.sync import get_library_filename, resolve_album_dir
-                    target_album_artist = artist
+                    target_album_artist = dz_album_artist or artist
                     dest_dir, safe_artist, safe_album = resolve_album_dir(
                         music_dir, target_album_artist, album, target_album_artist,
                         disc_num=disc_num, disc_total=disc_total
@@ -1698,7 +1698,7 @@ async def download_single_track_task(
                 clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
                 dest_audio_path = dest_dir / clean_filename
             else:
-                target_album_artist = artist
+                target_album_artist = dz_album_artist or artist
                 dest_dir, safe_artist, safe_album = resolve_album_dir(
                     music_dir, target_album_artist, album, target_album_artist,
                     disc_num=disc_num, disc_total=disc_total
@@ -1902,7 +1902,7 @@ async def grab_single_track_task(
             clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
             dest_audio_path = dest_dir / clean_filename
         else:
-            target_album_artist = artist
+            target_album_artist = dz_album_artist or artist
             dest_dir, safe_artist, safe_album = resolve_album_dir(
                 music_dir, target_album_artist, album, target_album_artist,
                 disc_num=disc_num, disc_total=disc_total

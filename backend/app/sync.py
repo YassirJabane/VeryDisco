@@ -130,8 +130,9 @@ def clean_search_title(title: str) -> str:
     return title.strip()
 
 
-def get_file_audio_info(file_path: Path) -> Tuple[str, int, int, int]:
+def get_file_audio_info(file_path: Any) -> Tuple[str, int, int, int]:
     """Get file extension, bitrate (kbps), bit_depth, and sample_rate (Hz) using mutagen."""
+    file_path = Path(file_path)
     ext = file_path.suffix.lower().strip(".")
     bitrate = 0
     bit_depth = 0
