@@ -955,7 +955,7 @@ async def _download_album_task_internal(
                         except Exception as e:
                             logger.error(f"Metadata lookup failed for existing '{clean_title}': {e}")
 
-                        ext_ext = existing_path.suffix
+                        ext_ext = Path(existing_path).suffix
                         from backend.app.sync import get_library_filename, resolve_album_dir
                         target_album_artist = artist
                         dest_dir, safe_artist, safe_album = resolve_album_dir(
