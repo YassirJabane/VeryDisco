@@ -921,8 +921,9 @@ async def _download_album_task_internal(
 
                         ext_ext = existing_path.suffix
                         from backend.app.sync import get_library_filename, resolve_album_dir
+                        target_album_artist = artist
                         dest_dir, safe_artist, safe_album = resolve_album_dir(
-                            music_dir, dz_artist or artist, album, dz_album_artist or artist,
+                            music_dir, target_album_artist, album, target_album_artist,
                             disc_num=disc_num, disc_total=disc_total
                         )
                         clean_filename = get_library_filename(dz_artist or artist, safe_album, track_num, title_tag, ext_ext)
@@ -952,7 +953,7 @@ async def _download_album_task_internal(
                                 track_num=track_num,
                                 cover_bytes=official_album_cover_bytes or cover_bytes,
                                 lyrics_text=lyrics_text,
-                                album_artist=dz_album_artist or artist,
+                                album_artist=target_album_artist,
                                 date=official_album_date or dz_date,
                                 disc_num=disc_num,
                                 disc_total=disc_total,
@@ -1225,8 +1226,9 @@ async def _download_album_task_internal(
                     # 3. Determine clean destination filename using library convention
                     ext_ext = local_path.suffix
                     from backend.app.sync import get_library_filename, resolve_album_dir
+                    target_album_artist = artist
                     dest_dir, safe_artist, safe_album = resolve_album_dir(
-                        music_dir, dz_artist or artist, album, dz_album_artist or artist,
+                        music_dir, target_album_artist, album, target_album_artist,
                         disc_num=disc_num, disc_total=disc_total
                     )
                     clean_filename = get_library_filename(dz_artist or artist, safe_album, track_num, title_tag, ext_ext)
@@ -1255,7 +1257,7 @@ async def _download_album_task_internal(
                             track_num=track_num,
                             cover_bytes=official_album_cover_bytes or cover_bytes,
                             lyrics_text=lyrics_text,
-                            album_artist=dz_album_artist or artist,
+                            album_artist=target_album_artist,
                             date=official_album_date or dz_date,
                             disc_num=disc_num,
                             disc_total=disc_total,
@@ -1626,8 +1628,9 @@ async def download_single_track_task(
                 clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
                 dest_audio_path = dest_dir / clean_filename
             else:
+                target_album_artist = artist
                 dest_dir, safe_artist, safe_album = resolve_album_dir(
-                    music_dir, fetched_artist, fetched_album, dz_album_artist or artist,
+                    music_dir, target_album_artist, album, target_album_artist,
                     disc_num=disc_num, disc_total=disc_total
                 )
                 clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
@@ -1657,16 +1660,16 @@ async def download_single_track_task(
                     file_path=str(dest_audio_path),
                     artist=fetched_artist,
                     title=title_tag,
-                    album=fetched_album,
+                    album=album,
                     track_num=track_num,
                     cover_bytes=cover_bytes,
                     lyrics_text=lyrics_content,
-                    album_artist=dz_album_artist or artist,
+                    album_artist=artist,
                     date=dz_date,
                     disc_num=disc_num,
                     disc_total=disc_total,
                     is_explore=is_explore,
-                    mbid_album=mbid_album_override or mbid_album,
+                    mbid_album=official_mb_release_mbid or mbid_album_override or mbid_album,
                     mbid_recording=mbid_recording
                 )
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
@@ -1829,8 +1832,9 @@ async def grab_single_track_task(
             clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
             dest_audio_path = dest_dir / clean_filename
         else:
+            target_album_artist = artist
             dest_dir, safe_artist, safe_album = resolve_album_dir(
-                music_dir, fetched_artist, fetched_album, dz_album_artist or artist,
+                music_dir, target_album_artist, album, target_album_artist,
                 disc_num=disc_num, disc_total=disc_total
             )
             clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
@@ -1860,16 +1864,16 @@ async def grab_single_track_task(
                 file_path=str(dest_audio_path),
                 artist=fetched_artist,
                 title=title_tag,
-                album=fetched_album,
+                album=album,
                 track_num=track_num,
                 cover_bytes=cover_bytes,
                 lyrics_text=lyrics_content,
-                album_artist=dz_album_artist or artist,
+                album_artist=artist,
                 date=dz_date,
                 disc_num=disc_num,
                 disc_total=disc_total,
                 is_explore=is_explore,
-                mbid_album=mbid_album,
+                mbid_album=official_mb_release_mbid or mbid_album,
                 mbid_recording=mbid_recording
             )
             logger.info(f"Saved and embedded metadata for grabbed track '{fetched_artist} - {title_tag}'")
