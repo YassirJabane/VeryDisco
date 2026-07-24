@@ -224,7 +224,40 @@ def check_album_match(album_title: str, folder_path: str) -> bool:
         if not re.search(r'\b' + re.escape(word) + r'\b', clean_folder):
             return False
             
-    return True
+def extract_track_num_from_filename(filename: str) -> Optional[int]:
+    """
+    Extracts track position integer from filenames like:
+    '01 - KING.mp3' -> 1
+    '02 - THIS A MUST.mp3' -> 2
+    'Artist_Album_03_Title.mp3' -> 3
+    '15. BEAUTY AND THE BEAST.flac' -> 15
+    """
+    if not filename:
+        return None
+    stem = Path(filename).stem
+    
+    # 1. Check Artist_Album_01_Title format
+    parts = stem.split('_')
+    if len(parts) >= 4:
+        for p in parts[2:]:
+            if p.isdigit() and 1 <= int(p) <= 999:
+                return int(p)
+
+    # 2. Check leading digits like '01 - ', '01.', '01_', '01 '
+    match = re.match(r'^(\d{1,3})\s*[\-_.]?\s*', stem)
+    if match:
+        num = int(match.group(1))
+        if 1 <= num <= 999:
+            return num
+
+    # 3. Check trailing/middle track pattern like 'Track 01' or 't01'
+    match = re.search(r'\b(?:track|t)[\s.\-_]*(\d{1,3})\b', stem, flags=re.IGNORECASE)
+    if match:
+        num = int(match.group(1))
+        if 1 <= num <= 999:
+            return num
+
+    return None
 
 def clean_track_title(basename: str, artist: str, album: str) -> str:
     """
@@ -1122,24 +1155,35 @@ async def _download_album_task_internal(
             logger.info(f"Album download attempt finished. Successfully downloaded {len(attempt_downloaded_files)}/{len(to_download)} tracks.")
             
             if attempt_downloaded_files:
-                for f, local_path in attempt_downloaded_files:
+                # Sort files by parsed track number or filename so they process in correct album order
+                def _sort_key(item):
+                    f_entry, p = item
+                    tn = extract_track_num_from_filename(p.name) or extract_track_num_from_filename(f_entry.get("filename", ""))
+                    return (tn if tn is not None else 999, p.name)
+
+                attempt_downloaded_files.sort(key=_sort_key)
+
+                for file_idx, (f, local_path) in enumerate(attempt_downloaded_files):
                     basename = local_path.stem
                     disc_num = 1
                     disc_total = 1
                     mbid_album = None
                     mbid_recording = None
                     
+                    parsed_track_num = extract_track_num_from_filename(local_path.name) or extract_track_num_from_filename(f.get("filename", ""))
+                    fallback_track_num = parsed_track_num or f.get("track_num") or (file_idx + 1)
+
                     matched = match_file_to_official_track(local_path.name, official_album_tracks)
                     official_disc_num = None
                     if matched:
                         clean_title = matched["title"]
-                        track_num = matched.get("track_position")
+                        track_num = matched.get("track_position") or fallback_track_num
                         official_disc_num = matched.get("disk_number") or matched.get("disc_num")
                         disc_num = official_disc_num or 1
                         title_tag = matched["title"]
                     else:
                         clean_title = clean_track_title(basename, artist, album)
-                        track_num = f.get("track_num")
+                        track_num = fallback_track_num
                         title_tag = f.get("title_tag", clean_title)
 
                     if official_album_tracks:
@@ -1157,18 +1201,41 @@ async def _download_album_task_internal(
                         meta_result = await fetch_track_metadata_with_fallback(
                             deezer_client, artist, clean_title, album
                         )
-                        title_tag = meta_result["title"] or title_tag or clean_title
-                        track_num = meta_result["track_num"] or track_num
-                        if not official_disc_num and meta_result.get("disc_num"):
-                            disc_num = meta_result["disc_num"]
-                        if meta_result.get("disc_total"):
-                            disc_total = max(disc_total, meta_result["disc_total"])
-                        cover_bytes = meta_result["cover_bytes"]
-                        dz_artist = meta_result["artist"]
-                        dz_album_artist = meta_result["album_artist"]
-                        dz_date = meta_result["date"]
-                        mbid_album = meta_result.get("mbid_album")
-                        mbid_recording = meta_result.get("mbid_recording")
+                        if meta_result:
+                            meta_title = meta_result.get("title")
+                            meta_art = meta_result.get("artist") or ""
+
+                            title_diff = False
+                            if meta_title and clean_title:
+                                norm_clean = re.sub(r'[^\w]', '', clean_title).lower()
+                                norm_meta = re.sub(r'[^\w]', '', meta_title).lower()
+                                if norm_clean not in norm_meta and norm_meta not in norm_clean:
+                                    title_diff = True
+
+                            artist_diff = False
+                            if meta_art and artist:
+                                norm_main = re.sub(r'[^\w]', '', artist).lower()
+                                norm_dz_art = re.sub(r'[^\w]', '', meta_art).lower()
+                                if norm_main not in norm_dz_art and norm_dz_art not in norm_main:
+                                    artist_diff = True
+
+                            if title_diff and artist_diff:
+                                logger.warning(f"Discarded mismatched metadata result '{meta_art} - {meta_title}' for expected '{artist} - {clean_title}'")
+                            else:
+                                if meta_title and not title_diff:
+                                    title_tag = meta_title
+                                if meta_result.get("track_num"):
+                                    track_num = meta_result["track_num"]
+                                if not official_disc_num and meta_result.get("disc_num"):
+                                    disc_num = meta_result["disc_num"]
+                                if meta_result.get("disc_total"):
+                                    disc_total = max(disc_total, meta_result["disc_total"])
+                                cover_bytes = meta_result.get("cover_bytes")
+                                dz_artist = meta_result.get("artist") or artist
+                                dz_album_artist = meta_result.get("album_artist") or artist
+                                dz_date = meta_result.get("date")
+                                mbid_album = meta_result.get("mbid_album")
+                                mbid_recording = meta_result.get("mbid_recording")
                     except Exception as e:
                         logger.error(f"Metadata lookup failed for '{clean_title}': {e}")
 
