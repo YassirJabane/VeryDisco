@@ -137,6 +137,11 @@ def score_release(r: dict, album: str) -> int:
         if any(term in disambiguation or term in title.lower() for term in special_edition_terms):
             score -= 15
 
+    # Penalize single-track releases when scoring album releases (prevents picking 1-track singles for full albums)
+    cand_track_count = sum(int(m.get("track-count") or 0) for m in media)
+    if cand_track_count == 1:
+        score -= 50
+
     for bad_type in ("live", "compilation", "remix", "dj-mix", "spokenword", "mixtape"):
         if bad_type in secondary_types:
             score -= 20

@@ -840,16 +840,19 @@ async def _download_album_task_internal(
             # active_playlists is resolved from outer scope
             from backend.app.sync import find_existing_track_file, get_file_audio_info, check_quality_status
 
+            # Consider official_album_tracks reliable for skipping extra files ONLY if it contains at least 4 tracks AND covers at least 40% of candidate files
+            is_official_reliable = bool(official_album_tracks and len(official_album_tracks) >= 4 and len(official_album_tracks) >= (len(best_files) * 0.4))
+
             for f in best_files:
                 filename_part = os.path.basename(f["filename"].replace("\\", "/"))
                 basename = os.path.splitext(filename_part)[0]
                 
-                matched = match_file_to_official_track(filename_part, official_album_tracks)
+                matched = match_file_to_official_track(filename_part, official_album_tracks) if official_album_tracks else None
                 if matched:
                     clean_title = matched["title"]
                     f["track_num"] = matched.get("track_position")
                     f["title_tag"] = matched["title"]
-                elif official_album_tracks:
+                elif is_official_reliable:
                     logger.info(f"Skipping extra non-album file in search result folder: {filename_part}")
                     continue
                 else:
