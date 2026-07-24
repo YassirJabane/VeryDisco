@@ -1696,13 +1696,21 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
               main_artist = extract_main_artist(artist)
               clean_artist = re.sub(r'[\(\[].*?[\)\]]', '', artist).strip()
               clean_artist = re.sub(r'\$', 'S', clean_artist)
+              clean_album = re.sub(r'[\(\[].*?[\)\]]', '', album).strip() if album else ""
+
+              search_queries = []
+
+              # Strategy 1: Include album name if available and distinct
+              if clean_album and clean_album.lower() not in [clean_title.lower(), clean_artist.lower(), "unknown album", "single", "ep"]:
+                  query_album = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {main_artist} {clean_album}")).strip()
+                  if query_album:
+                      search_queries.append(query_album)
 
               query_main = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {main_artist}")).strip()
               query_full = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', f"{clean_title} - {clean_artist}")).strip()
               w_artist = wildcard_artist(main_artist)
               query_wildcard = re.sub(r'\s+', ' ', re.sub(r'[^\w\s\*-]', ' ', f"{clean_title} - {w_artist}")).strip()
 
-              search_queries = []
               for q in [query_main, query_full, query_wildcard]:
                   if q and q not in search_queries:
                       search_queries.append(q)

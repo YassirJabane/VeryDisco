@@ -187,10 +187,13 @@ class SlskdClient:
                     
                 from backend.app.sync import get_artist_aliases
                 norm_artists = get_artist_aliases(artist)
-                artist_match = any(a in norm_filename for a in norm_artists) or any(word in norm_filename for word in artist_words)
-                album_match = (norm_album in norm_filename) if norm_album else False
+                full_artist_match = any(a in norm_filename for a in norm_artists) or (
+                    len(artist_words) > 0 and all(w in norm_filename for w in artist_words)
+                )
+                partial_artist_match = any(w in norm_filename for w in artist_words if len(w) >= 4)
+                album_match = (norm_album in norm_filename) if (norm_album and len(norm_album) >= 3) else False
                 
-                if not (artist_match or album_match):
+                if not (full_artist_match or partial_artist_match or album_match):
                     continue
  
                 # Keyword filtering: Strict release filtering (Explo logic)
@@ -235,12 +238,16 @@ class SlskdClient:
                     "hasFreeUploadSlot": has_free_slot,
                     "queueLength": queue_length,
                     "speed": speed,
-                    "priority": priority
+                    "priority": priority,
+                    "full_artist_matched": full_artist_match,
+                    "album_matched": album_match
                 })
  
         # Sort candidates
         candidates.sort(key=lambda x: (
             x["priority"],
+            not x["full_artist_matched"],
+            not x["album_matched"],
             not x["hasFreeUploadSlot"],
             x["queueLength"],
             -x["speed"]
