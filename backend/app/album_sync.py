@@ -190,14 +190,10 @@ def check_album_match(album_title: str, folder_path: str) -> bool:
     """
     folder_name = folder_path.replace("\\", "/").split("/")[-1].lower()
     
-    # Strip optional edition descriptors from album_title so "Bad (Remastered)" matches "Michael Jackson - Bad"
-    alb_clean = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version|edition|anniversary|special|expanded|bonus|reissue)\b', '', album_title)
-    album_lower = alb_clean.lower()
-    
-    # 1. Strip year tags or quality descriptors from folder name
-    clean_folder = re.sub(r'\(?\b\d{4}\b\)?', '', folder_name)
-    clean_folder = re.sub(r'\[[^\]]+\]|\([^\)]+\)', '', clean_folder)
-    clean_folder = clean_folder.strip()
+    # 1. Strip 4-digit years (e.g. 2026, 1999) and scene quality tags ([320kbps], [FLAC], etc.)
+    clean_folder = re.sub(r'[\(\[]?\b(?:19|20)\d{2}\b[\)\]]?', '', folder_name)
+    clean_folder = re.sub(r'[\(\[]?\s*(?:320kbps|320|flac|mp3|web|cd|v0|v2|lossless|pmedia|pmedia1)\b[\)\]]?', '', clean_folder, flags=re.IGNORECASE)
+    clean_folder = clean_folder.strip(' -_./\\')
     clean_folder = re.sub(r'\s+', ' ', clean_folder)
     
     # 2. Tokenize and check for roman numerals or version mismatches
@@ -212,17 +208,21 @@ def check_album_match(album_title: str, folder_path: str) -> bool:
         if re.search(r'\b' + num + r'\b', clean_folder) and not re.search(r'\b' + num + r'\b', album_title.lower()):
             return False
             
-    # Verify core words (ignoring optional edition annotations)
-    album_words = [w for w in re.findall(r'\w+', album_lower) if len(w) > 1]
-    if not album_words:
-        album_words = [w for w in re.findall(r'\w+', album_title.lower()) if len(w) > 1]
+    # Extract core words from requested album title (ignoring stop words)
+    stop_words = {"a", "an", "the", "and", "or", "of", "in", "on", "for", "with", "to", "by"}
+    album_words = [w for w in re.findall(r'\w+', album_title.lower()) if len(w) > 1 and w not in stop_words]
 
     if not album_words:
-        return bool(re.search(r'\b' + re.escape(album_lower) + r'\b', clean_folder))
+        return True
         
     for word in album_words:
+        # Optional edition keywords are evaluated in directory scoring, not as hard match failures
+        if word in ["deluxe", "edition", "version", "remastered", "expanded", "bonus", "special"]:
+            continue
         if not re.search(r'\b' + re.escape(word) + r'\b', clean_folder):
             return False
+            
+    return True
             
 def extract_track_num_from_filename(filename: str) -> Optional[int]:
     """
