@@ -544,6 +544,8 @@ async def _download_album_task_internal(
             clean_art = clean_artist_name(artist)
             clean_alb = clean_album_name(album)
             main_art = extract_main_artist(artist)
+            
+            raw_alb = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', album)).strip()
             stripped_alb = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version)\b', '', album)
             stripped_alb = re.sub(r'\s+-\s+', ' ', stripped_alb)
             stripped_alb = re.sub(r'[^\w\s-]', ' ', stripped_alb)
@@ -580,6 +582,15 @@ async def _download_album_task_internal(
             elif alb_lower in art_lower:
                 add_query(clean_art, False)
             else:
+                # 0. Raw exact album title (including Deluxe / Edition keywords) FIRST
+                if raw_alb and raw_alb.lower() != stripped_alb.lower():
+                    if main_art_wildcard != main_art:
+                        add_query(f"{main_art_wildcard} - {raw_alb}", False)
+                    add_query(f"{main_art} - {raw_alb}", False)
+                    if main_art_wildcard != main_art:
+                        add_query(f"{main_art_wildcard} {raw_alb}", False)
+                    add_query(f"{main_art} {raw_alb}", False)
+
                 # 1. Hyphenated "Artist - Album" patterns (with wildcard first)
                 if main_art_wildcard != main_art:
                     add_query(f"{main_art_wildcard} - {stripped_alb}", False)
@@ -588,12 +599,12 @@ async def _download_album_task_internal(
                 # 2. Year-based directory patterns (e.g. Artist - Year - Album or Artist - Album (Year))
                 if album_year:
                     if main_art_wildcard != main_art:
-                        add_query(f"{main_art_wildcard} - {album_year} - {stripped_alb}", False)
-                        add_query(f"{main_art_wildcard} - {stripped_alb} ({album_year})", False)
-                        add_query(f"{main_art_wildcard} - {stripped_alb} {album_year}", False)
-                    add_query(f"{main_art} - {album_year} - {stripped_alb}", False)
-                    add_query(f"{main_art} - {stripped_alb} ({album_year})", False)
-                    add_query(f"{main_art} - {stripped_alb} {album_year}", False)
+                        add_query(f"{main_art_wildcard} - {album_year} - {raw_alb if raw_alb else stripped_alb}", False)
+                        add_query(f"{main_art_wildcard} - {raw_alb if raw_alb else stripped_alb} ({album_year})", False)
+                        add_query(f"{main_art_wildcard} - {raw_alb if raw_alb else stripped_alb} {album_year}", False)
+                    add_query(f"{main_art} - {album_year} - {raw_alb if raw_alb else stripped_alb}", False)
+                    add_query(f"{main_art} - {raw_alb if raw_alb else stripped_alb} ({album_year})", False)
+                    add_query(f"{main_art} - {raw_alb if raw_alb else stripped_alb} {album_year}", False)
 
                 if stripped_alb != clean_alb:
                     if main_art_wildcard != main_art:
@@ -751,6 +762,11 @@ async def _download_album_task_internal(
                     edition_score = 0
                     if "remaster" in album_lower and "remaster" in folder_name:
                         edition_score += 5
+                    if "deluxe" in album_lower and "deluxe" in folder_name:
+                        edition_score += 15
+                    elif "deluxe" in album_lower and "deluxe" not in folder_name:
+                        edition_score -= 15
+
                     if "25" not in album_lower and ("25" in folder_name or "anniversary" in folder_name):
                         edition_score -= 10
                     if "deluxe" not in album_lower and "deluxe" in folder_name:
