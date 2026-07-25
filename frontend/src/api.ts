@@ -13,7 +13,17 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response && error.response.status === 401) {
-      window.dispatchEvent(new Event('auth:logout'));
+      const url = error.config?.url || '';
+      // Do not dispatch logout event for auth checking / auth action endpoints
+      if (
+        !url.includes('/api/auth/me') &&
+        !url.includes('/api/auth/login') &&
+        !url.includes('/api/auth/logout') &&
+        !url.includes('/api/setup') &&
+        !url.includes('/api/status')
+      ) {
+        window.dispatchEvent(new Event('auth:logout'));
+      }
     }
     return Promise.reject(error);
   }

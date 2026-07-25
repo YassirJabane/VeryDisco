@@ -66,9 +66,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = useCallback(async () => {
     try {
       await apiService.logout();
+    } catch {
+      // Ignore network errors on logout
     } finally {
       setUser(null);
-      window.location.href = '/login';
+      if (window.location.pathname !== '/' && window.location.pathname !== '/login') {
+        window.history.pushState(null, '', '/login');
+      }
     }
   }, []);
 

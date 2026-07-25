@@ -238,11 +238,13 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
 
   useEffect(() => {
     const handleLogoutEvent = () => {
-      logout();
+      if (user) {
+        logout();
+      }
     };
     window.addEventListener('auth:logout', handleLogoutEvent);
     return () => window.removeEventListener('auth:logout', handleLogoutEvent);
-  }, [logout]);
+  }, [logout, user]);
 
   useEffect(() => {
     localStorage.setItem('verydisco-theme-mode', mode);
