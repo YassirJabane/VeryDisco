@@ -89,6 +89,12 @@ const GlobalPlayer: React.FC<{
         .then(() => setPlaying(true))
         .catch(() => setPlaying(false));
     }
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+      }
+    };
   }, [track]);
 
   const handlePlayPause = () => {

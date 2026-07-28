@@ -24,7 +24,7 @@ def _result_matches(result: dict, artist: str, title: str) -> bool:
         return False
 
     # At least one significant word of the artist must appear
-    artist_words = [w for w in n_artist.split() if len(w) > 2]
+    artist_words = [re.sub(r'[^\w]', '', w).lower() for w in artist.split() if len(w) > 2]
     artist_match = any(w in r_artist for w in artist_words) if artist_words else (n_artist in r_artist)
     return artist_match
 
@@ -37,6 +37,31 @@ class DeezerClient:
         self.base_url = "https://api.deezer.com"
         self.timeout = timeout
 
+    async def _request_json(self, url: str) -> Optional[Dict[str, Any]]:
+        """Helper to fetch JSON from Deezer with retries and error checking."""
+        async with _deezer_semaphore:
+            for attempt in range(3):
+                try:
+                    client = await get_http_client()
+                    resp = await client.get(url)
+                    if resp.status_code == 429:
+                        await asyncio.sleep(0.8 * (attempt + 1))
+                        continue
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if "error" in data:
+                        if data["error"].get("type") == "QuotaException":
+                            await asyncio.sleep(0.8 * (attempt + 1))
+                            continue
+                        logger.error(f"Deezer API error on {url}: {data['error']}")
+                        return None
+                    return data
+                except Exception as e:
+                    if attempt == 2:
+                        logger.error(f"Deezer request failed for {url}: {e}")
+                    await asyncio.sleep(0.4)
+            return None
+
     async def get_track_metadata(self, artist: str, title: str) -> Optional[Dict[str, Any]]:
         """
         Search for a track on Deezer and return its metadata (including album, cover art URL, etc).
@@ -48,71 +73,37 @@ class DeezerClient:
 
         url = f"{self.base_url}/search?q={urllib.parse.quote(query)}&limit=5"
 
-        try:
-            client = get_http_client()
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-
-            results = data.get("data", [])
-            if not results:
-                logger.warning(f"Deezer search returned no results for '{artist} - {title}'")
-                return None
-
-            # Find the first result that is a reasonable match
-            for result in results:
-                if _result_matches(result, clean_artist, clean_title):
-                    return result
-
-            logger.warning(f"Deezer: no matching track result found for '{artist} - {title}'")
+        data = await self._request_json(url)
+        if not data:
             return None
 
-        except Exception as e:
-            logger.error(f"Failed to fetch metadata from Deezer for '{artist} - {title}': {e}")
+        results = data.get("data", [])
+        if not results:
+            logger.warning(f"Deezer search returned no results for '{artist} - {title}'")
             return None
+
+        # Find the first result that is a reasonable match
+        for result in results:
+            if _result_matches(result, clean_artist, clean_title):
+                return result
+
+        logger.warning(f"Deezer: no matching track result found for '{artist} - {title}'")
+        return None
 
     async def get_album_tracks(self, album_id: int) -> Optional[Dict[str, Any]]:
         """Fetch tracks of a given album from Deezer."""
         url = f"{self.base_url}/album/{album_id}/tracks?limit=100"
-        async with _deezer_semaphore:
-            for attempt in range(3):
-                try:
-                    client = get_http_client()
-                    resp = await client.get(url)
-                    if resp.status_code == 429:
-                        await asyncio.sleep(0.8 * (attempt + 1))
-                        continue
-                    resp.raise_for_status()
-                    return resp.json()
-                except Exception as e:
-                    if attempt == 2:
-                        logger.error(f"Failed to fetch album tracks for {album_id} from Deezer: {e}")
-                    await asyncio.sleep(0.4)
-            return None
+        return await self._request_json(url)
 
     async def get_album_metadata(self, album_id: int) -> Optional[Dict[str, Any]]:
         """Fetch album details (including release date) from Deezer."""
         url = f"{self.base_url}/album/{album_id}"
-        try:
-            client = get_http_client()
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch album metadata for {album_id}: {e}")
-            return None
+        return await self._request_json(url)
 
     async def get_track_details(self, track_id: int) -> Optional[Dict[str, Any]]:
         """Fetch full track details (including contributors) from Deezer."""
         url = f"{self.base_url}/track/{track_id}"
-        try:
-            client = get_http_client()
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.error(f"Failed to fetch track details for {track_id}: {e}")
-            return None
+        return await self._request_json(url)
 
     def resolve_joint_artists(self, data: dict) -> tuple[str, str]:
         """
@@ -137,28 +128,28 @@ class DeezerClient:
     async def get_artist_releases(self, artist_id: int) -> Optional[List[Dict[str, Any]]]:
         """Fetch all releases (albums, EPs, singles) for a given artist ID from Deezer."""
         url = f"{self.base_url}/artist/{artist_id}/albums?limit=100"
-        try:
-            client = get_http_client()
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("data", [])
-        except Exception as e:
-            logger.error(f"Failed to fetch artist releases for {artist_id} from Deezer: {e}")
-            return None
+        data = await self._request_json(url)
+        return data.get("data", []) if data else None
 
     async def download_cover_art(self, cover_url: str) -> Optional[bytes]:
         """Download the cover art from the given URL."""
         if not cover_url:
             return None
 
-        try:
-            client = get_http_client()
-            resp = await client.get(cover_url)
-            resp.raise_for_status()
-            return resp.content
-        except Exception as e:
-            logger.error(f"Failed to download cover art from '{cover_url}': {e}")
+        async with _deezer_semaphore:
+            for attempt in range(3):
+                try:
+                    client = await get_http_client()
+                    resp = await client.get(cover_url)
+                    if resp.status_code == 429:
+                        await asyncio.sleep(0.8 * (attempt + 1))
+                        continue
+                    resp.raise_for_status()
+                    return resp.content
+                except Exception as e:
+                    if attempt == 2:
+                        logger.error(f"Failed to download cover art from '{cover_url}': {e}")
+                    await asyncio.sleep(0.4)
             return None
 
     async def get_album_cover(self, artist: str, album: str) -> Optional[bytes]:
@@ -170,10 +161,9 @@ class DeezerClient:
 
         url = f"{self.base_url}/search/album?q={urllib.parse.quote(query)}&limit=5"
         try:
-            client = get_http_client()
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
+            data = await self._request_json(url)
+            if not data:
+                return None
             results = data.get("data", [])
             if not results:
                 # Fallback: try searching tracks directly on Deezer to extract album cover
@@ -192,7 +182,7 @@ class DeezerClient:
                 n_artist = _normalize(clean_artist)
 
                 title_match = a_title in r_title or r_title in a_title
-                artist_words = [w for w in n_artist.split() if len(w) > 2]
+                artist_words = [re.sub(r'[^\w]', '', w).lower() for w in clean_artist.split() if len(w) > 2]
                 artist_match = any(w in r_artist for w in artist_words) if artist_words else (n_artist in r_artist)
 
                 if title_match and artist_match:

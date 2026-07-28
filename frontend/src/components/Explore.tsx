@@ -35,13 +35,21 @@ export const Explore: React.FC = () => {
   const [triggering, setTriggering] = useState(false);
   
   const [likedTracks, setLikedTracks] = useState<Set<string>>(() => {
-    const saved = localStorage.getItem('likedTracks');
-    return saved ? new Set(JSON.parse(saved)) : new Set();
+    try {
+      const saved = localStorage.getItem('likedTracks');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
   });
 
   const [hatedTracks, setHatedTracks] = useState<Set<string>>(() => {
-    const saved = localStorage.getItem('hatedTracks');
-    return saved ? new Set(JSON.parse(saved)) : new Set();
+    try {
+      const saved = localStorage.getItem('hatedTracks');
+      return saved ? new Set(JSON.parse(saved)) : new Set();
+    } catch {
+      return new Set();
+    }
   });
 
   const [manualSearchOpen, setManualSearchOpen] = useState(false);
@@ -176,12 +184,19 @@ export const Explore: React.FC = () => {
   }, [source]);
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      fetchStatus();
-      if (source) {
-        fetchPlaylist(source, true);
+    let inFlight = false;
+    const interval = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        await fetchStatus();
+        if (source) {
+          await fetchPlaylist(source, true);
+        }
+      } finally {
+        inFlight = false;
       }
-    }, 3000);
+    }, 10000);
     return () => clearInterval(interval);
   }, [source]);
 

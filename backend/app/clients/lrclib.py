@@ -32,7 +32,7 @@ class LrcLibClient:
         
         logger.info(f"Searching lyrics for '{artist} - {title}' on LRCLIB...")
         
-        client = get_http_client()
+        client = await get_http_client()
         resp = await client.get(url, params=params)
         
         if resp.status_code == 404:
@@ -46,8 +46,23 @@ class LrcLibClient:
             logger.info(f"No lyrics found (empty list) for '{artist} - {title}'")
             return None, "missing"
         
-        # Select the first result
-        best_match = results[0]
+        import re
+        def _normalize(s: str) -> str:
+            return re.sub(r'[^\w]', '', s).lower() if s else ""
+            
+        n_artist = _normalize(artist)
+        n_title = _normalize(title)
+        
+        best_match = None
+        for result in results:
+            r_artist = _normalize(result.get("artistName", ""))
+            r_title = _normalize(result.get("trackName", ""))
+            if (n_artist in r_artist or r_artist in n_artist) and (n_title in r_title or r_title in n_title):
+                best_match = result
+                break
+                
+        if not best_match:
+            best_match = results[0]
         
         synced = best_match.get("syncedLyrics")
         plain = best_match.get("plainLyrics")
@@ -70,7 +85,7 @@ class LrcLibClient:
             "track_name": title
         }
         try:
-            client = get_http_client()
+            client = await get_http_client()
             resp = await client.get(url, params=params)
             if resp.status_code == 200:
                 return resp.json()

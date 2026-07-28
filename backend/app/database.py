@@ -12,6 +12,7 @@ class Database:
         self.metadata_mem_cache_ts = 0.0
         import asyncio
         self.mem_cache_lock = asyncio.Lock()
+        self.metadata_cache_lock = asyncio.Lock()
         # Ensure parent directory exists
         db_dir = os.path.dirname(os.path.abspath(self.db_path))
         if db_dir:
@@ -183,6 +184,7 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_run_id ON tracks(run_id);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_runs_user_source ON runs(user_id, source);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_album_downloads_user_status ON album_downloads(user_id, status);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_album_downloads_status ON album_downloads(status);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_run_id ON logs(run_id);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_file_metadata_cache_mtime ON file_metadata_cache(mtime);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);")

@@ -72,8 +72,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
   useEffect(() => {
     fetchStatus();
     fetchNavidromeStats();
-    const statusInterval = setInterval(() => fetchStatus(), 5000);
-    const statsInterval = setInterval(() => fetchNavidromeStats(), 60000);
+    const statusInterval = setInterval(fetchStatus, 5000);
+    const statsInterval = setInterval(fetchNavidromeStats, 60000);
     return () => {
       clearInterval(statusInterval);
       clearInterval(statsInterval);
@@ -95,7 +95,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
   const isSyncing = status?.is_syncing ?? false;
   
   // Last runs
-  const currentTabPlaylist = activePlaylists[activeTab] || '';
+  const clampedActiveTab = Math.min(activeTab, Math.max(0, activePlaylists.length - 1));
+  const currentTabPlaylist = activePlaylists[clampedActiveTab] || '';
   
   const currentTabRun: RunRecord | null | undefined = status?.latest_runs?.[currentTabPlaylist];
 
@@ -250,7 +251,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
         {activePlaylists.length > 0 && (
           <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2, pt: 1 }}>
             <Tabs 
-              value={activeTab} 
+              value={clampedActiveTab} 
               onChange={(_, newValue) => setActiveTab(newValue)}
             >
               {activePlaylists.map(pl => (

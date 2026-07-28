@@ -38,19 +38,22 @@ class SlskdClient:
         url = f"{self.base_url}/api/v0/searches"
         payload = {"searchText": query}
         logger.info(f"Triggering slskd search for query: '{query}'")
-        client = get_http_client()
-        async with _slskd_lock:
-            resp = await client.post(url, json=payload, headers=self._get_headers())
-            if resp.status_code == 429:
-                logger.warning(f"Slskd rate-limited (429) search query '{query}'. Sleeping 2s before retry...")
-                await asyncio.sleep(2.0)
-            resp.raise_for_status()
-            data = resp.json()
-            search_id = data.get("id")
-            if not search_id:
-                raise ValueError("slskd did not return a search ID")
-            await asyncio.sleep(0.3)
-            return search_id
+        client = await get_http_client()
+        for _ in range(5):
+            async with _slskd_lock:
+                resp = await client.post(url, json=payload, headers=self._get_headers())
+                if resp.status_code == 429:
+                    logger.warning(f"Slskd rate-limited (429) search query '{query}'. Sleeping 2s before retry...")
+                    await asyncio.sleep(2.0)
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                search_id = data.get("id")
+                if not search_id:
+                    raise ValueError("slskd did not return a search ID")
+                await asyncio.sleep(0.3)
+                return search_id
+        raise Exception("Failed to create search after multiple 429 retries")
 
     @retry(
         stop=stop_after_attempt(3),
@@ -61,7 +64,7 @@ class SlskdClient:
     async def get_search_status(self, search_id: str) -> Tuple[bool, int, int]:
         """Check if search is complete. Returns (isComplete, fileCount, lockedFileCount)."""
         url = f"{self.base_url}/api/v0/searches/{search_id}"
-        client = get_http_client()
+        client = await get_http_client()
         resp = await client.get(url, headers=self._get_headers())
         resp.raise_for_status()
         data = resp.json()
@@ -76,7 +79,7 @@ class SlskdClient:
     async def get_search_responses(self, search_id: str) -> List[Dict[str, Any]]:
         """Retrieve results for a search ID."""
         url = f"{self.base_url}/api/v0/searches/{search_id}/responses"
-        client = get_http_client()
+        client = await get_http_client()
         resp = await client.get(url, headers=self._get_headers())
         resp.raise_for_status()
         return resp.json()
@@ -187,7 +190,7 @@ class SlskdClient:
                     
                 from backend.app.sync import get_artist_aliases
                 norm_artists = get_artist_aliases(artist)
-                full_artist_match = any(a in norm_filename for a in norm_artists) or (
+                full_artist_match = any(normalize(a) in norm_filename for a in norm_artists) or (
                     len(artist_words) > 0 and all(w in norm_filename for w in artist_words)
                 )
                 partial_artist_match = any(w in norm_filename for w in artist_words if len(w) >= 4)
@@ -327,7 +330,8 @@ class SlskdClient:
             title=title,
             audio_quality=audio_quality,
             album=album,
-            query=query
+            query=query,
+            filter_quality=filter_quality
         )
         logger.info(f"Found {len(candidates)} candidates matching criteria for '{query}'")
         return candidates, search_id
@@ -349,18 +353,20 @@ class SlskdClient:
         }]
         
         logger.info(f"Requesting download from peer '{username}' for file '{filename}' ({size} bytes)")
-        client = get_http_client()
-        async with _slskd_lock:
-            resp = await client.post(url, json=payload, headers=self._get_headers())
-            if resp.status_code == 429:
-                logger.warning(f"Slskd rate-limited (429) download request from '{username}'. Waiting 2s before retry...")
-                await asyncio.sleep(2.0)
-                resp.raise_for_status()
-            if resp.status_code in [200, 201, 202]:
-                await asyncio.sleep(0.3)
-                return True
-            logger.error(f"Failed to request download for '{filename}' from '{username}'. Status: {resp.status_code}, Response: {resp.text}")
-            return False
+        client = await get_http_client()
+        for _ in range(5):
+            async with _slskd_lock:
+                resp = await client.post(url, json=payload, headers=self._get_headers())
+                if resp.status_code == 429:
+                    logger.warning(f"Slskd rate-limited (429) download request from '{username}'. Waiting 2s before retry...")
+                    await asyncio.sleep(2.0)
+                    continue
+                if resp.status_code in [200, 201, 202]:
+                    await asyncio.sleep(0.3)
+                    return True
+                logger.error(f"Failed to request download for '{filename}' from '{username}'. Status: {resp.status_code}, Response: {resp.text}")
+                return False
+        return False
  
     @retry(
         stop=stop_after_attempt(3),
@@ -376,7 +382,7 @@ class SlskdClient:
         encoded_user = urllib.parse.quote(username)
         url = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}"
         
-        client = get_http_client()
+        client = await get_http_client()
         resp = await client.get(url, headers=self._get_headers())
         
         if resp.status_code == 404:
@@ -423,7 +429,7 @@ class SlskdClient:
         url = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}"
         
         try:
-            client = get_http_client()
+            client = await get_http_client()
             resp = await client.get(url, headers=self._get_headers())
             if resp.status_code == 404:
                 return "failed", None, 0
@@ -475,7 +481,7 @@ class SlskdClient:
     async def get_all_downloads(self) -> List[Dict[str, Any]]:
         """Fetch all downloads across all users from slskd."""
         url = f"{self.base_url}/api/v0/transfers/downloads"
-        client = get_http_client()
+        client = await get_http_client()
         resp = await client.get(url, headers=self._get_headers())
         if resp.status_code == 404:
             return []
@@ -487,7 +493,7 @@ class SlskdClient:
         """Fetch downloads for a specific peer from slskd."""
         encoded_user = urllib.parse.quote(username)
         url = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}"
-        client = get_http_client()
+        client = await get_http_client()
         resp = await client.get(url, headers=self._get_headers())
         if resp.status_code == 404:
             return []
@@ -498,7 +504,7 @@ class SlskdClient:
     async def delete_search(self, search_id: str) -> bool:
         """Delete a search from slskd to clean up."""
         url = f"{self.base_url}/api/v0/searches/{search_id}"
-        client = get_http_client()
+        client = await get_http_client()
         try:
             resp = await client.delete(url, headers=self._get_headers())
             return resp.status_code in [200, 204]
@@ -511,7 +517,7 @@ class SlskdClient:
         encoded_user = urllib.parse.quote(username)
         url_soft = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}/{file_id}?remove=false"
         url_hard = f"{self.base_url}/api/v0/transfers/downloads/{encoded_user}/{file_id}?remove=true"
-        client = get_http_client()
+        client = await get_http_client()
         try:
             # 1. Cancel / soft delete
             await client.delete(url_soft, headers=self._get_headers())

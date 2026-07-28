@@ -72,6 +72,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUser(null);
       if (window.location.pathname !== '/' && window.location.pathname !== '/login') {
         window.history.pushState(null, '', '/login');
+        window.dispatchEvent(new Event('popstate'));
       }
     }
   }, []);

@@ -290,7 +290,8 @@ async def fix_directory_tags_and_rescan(
                 meta = read_basic_tags(f_path)
                 curr_title = meta.get("title") or f_path.stem
 
-                embed_metadata(
+                await asyncio.to_thread(
+                    embed_metadata,
                     file_path=str(f_path),
                     artist=folder_artist,
                     title=curr_title,
@@ -745,7 +746,8 @@ def get_artist_aliases(artist_name: str) -> list[str]:
         clean_p = re.sub(r'[^\w]', '', p).lower().strip()
         if clean_p:
             aliases.add(clean_p)
-            words = [w for w in re.findall(r'\w+', p.lower()) if len(w) > 2]
+            stop_words = {"the", "and", "for"}
+            words = [w for w in re.findall(r'\w+', p.lower()) if len(w) > 3 and w not in stop_words]
             for w in words:
                 aliases.add(w)
 
@@ -968,7 +970,8 @@ def find_downloaded_file(downloads_dir: str, target_filename: str, target_size: 
 
     candidates = []
     try:
-        for path in downloads_path.rglob("*"):
+        rglob_results = list(downloads_path.rglob("*"))
+        for path in rglob_results:
             if path.is_file() and path.suffix.lower() in audio_exts:
                 if any("incomplete" in part.lower() for part in path.parts):
                     continue
@@ -1215,19 +1218,6 @@ async def process_track_skipped(db, run_id, artist, title, safe_audio_name, lyri
         filename=safe_audio_name,
         lyrics_status=lyrics_status
     )
-
-def wildcard_artist(artist: str) -> str:
-    """Implement Explo's wildcard artist logic."""
-    artist = artist.strip()
-    prefix = ""
-    if len(artist) >= 4 and artist[:4].lower() == "the ":
-        prefix = artist[:4]
-        artist = artist[4:].strip()
-    
-    if len(artist) < 3:
-        return artist
-        
-    return prefix + "*" + artist[1:]
         
 def cleanup_explore_master(playlists_dir: Path):
     """Deletes explore-only tracks that are no longer referenced by any active playlist M3U."""
@@ -1554,7 +1544,7 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
       try:
           # Pre-create parent directory to avoid FileNotFoundError
           try:
-              parent_dir.mkdir(parents=True, exist_ok=True)
+              await asyncio.to_thread(parent_dir.mkdir, parents=True, exist_ok=True)
           except PermissionError as e:
               logger.error(
                   f"Sync run #{run_id} failed: cannot create playlist directory '{parent_dir}'. "
@@ -1564,29 +1554,26 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
               return
           
           # Ensure explore dir exists and remove any .ndignore files that would hide files from Navidrome.
-          # Previously we put a .ndignore in explore/ to prevent duplicates when files were also copied
-          # into per-playlist folders. Now that we no longer copy files, the explore/ files are the
-          # only copy for explore-only tracks and must be visible to Navidrome.
           try:
               explore_dir = parent_dir / "explore"
-              explore_dir.mkdir(parents=True, exist_ok=True)
+              await asyncio.to_thread(explore_dir.mkdir, parents=True, exist_ok=True)
               
               # Remove any lingering .ndignore from root playlists folder
               root_ndignore = parent_dir / ".ndignore"
-              if root_ndignore.exists():
-                  root_ndignore.unlink()
+              if await asyncio.to_thread(root_ndignore.exists):
+                  await asyncio.to_thread(root_ndignore.unlink)
                   logger.info("Removed root .ndignore to allow Navidrome to scan playlist files.")
               
               # Remove .ndignore from explore folder so Navidrome indexes those files
               explore_ndignore = explore_dir / ".ndignore"
-              if explore_ndignore.exists():
-                  explore_ndignore.unlink()
+              if await asyncio.to_thread(explore_ndignore.exists):
+                  await asyncio.to_thread(explore_ndignore.unlink)
                   logger.info("Removed explore/.ndignore so Navidrome can index explore-only tracks.")
           except Exception as e:
               logger.warning(f"Failed to configure .ndignore: {e}")
 
           staging_dir = parent_dir / f".staging_{playlist_source}"
-          staging_dir.mkdir(parents=True, exist_ok=True)
+          await asyncio.to_thread(staging_dir.mkdir, parents=True, exist_ok=True)
           staging_dir = str(staging_dir)
           logger.info(f"Using staging directory: {staging_dir}")
 
@@ -1631,9 +1618,6 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           logger.info(f"Library index built: {len(library_index)} tracks indexed.")
 
           # --- Sequential Download Loop ---
-          # Each track is fully resolved (search → grab → wait for download → process)
-          # before moving to the next one. Fallback search queries are ONLY attempted
-          # when the previous query returned ZERO matching candidates (even on timeout).
           results = []
           new_search_ids = []
 
@@ -1649,13 +1633,12 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
 
               logger.info(f"--- [{idx}/{len(tracks)}] {artist} - {title} ---")
 
-              # A. Check if track already exists (O(1) index check, no slskd requests needed)
+              # A. Check if track already exists
               existing_audio, existing_lyrics = find_existing_track_file(
                   music_dir, playlist_output_dir, staging_dir, artist, title, library_index
               )
               if existing_audio:
                   logger.info(f"Track '{artist} - {title}' already exists in library. Skipping download.")
-                  # Store the safe filename in DB so M3U fallback works if needed,
                   # but do NOT copy to explore — the M3U generator will point directly
                   # to the library file via find_existing_track_file.
                   explore_name = get_safe_filename(artist, title, existing_audio.suffix)

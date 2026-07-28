@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   Box, Typography, Button, CircularProgress, Alert,
   InputAdornment, TextField, Stack, Paper, Chip,
@@ -268,6 +268,8 @@ const LibraryManager: React.FC = () => {
   const [visibleCount, setVisibleCount] = useState(15);
   const [deleteTarget, setDeleteTarget] = useState<AlbumItem | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const scanIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isMounted = useRef(true);
 
   // Expanded tracklist states
   const [expandedPath, setExpandedPath] = useState<string | null>(null);
@@ -311,12 +313,12 @@ const LibraryManager: React.FC = () => {
       setScanProgress({ status: 'scanning', processed: 0, total: 0, percentage: 0 });
       try {
         await apiService.triggerLibraryScan();
-        const interval = setInterval(async () => {
+        scanIntervalRef.current = setInterval(async () => {
           try {
             const prog = await apiService.getLibraryScanProgress();
             setScanProgress(prog);
             if (prog.status === 'completed' || prog.status === 'failed') {
-              clearInterval(interval);
+              if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
               setScanning(false);
               setScanProgress(null);
               setLoading(true);
@@ -330,7 +332,7 @@ const LibraryManager: React.FC = () => {
               }
             }
           } catch {
-            clearInterval(interval);
+            if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
             setScanning(false);
             setScanProgress(null);
           }
@@ -355,6 +357,14 @@ const LibraryManager: React.FC = () => {
 
   useEffect(() => { loadAlbums(false); }, [loadAlbums]);
   useEffect(() => { setVisibleCount(15); }, [query]);
+  
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+      if (scanIntervalRef.current) clearInterval(scanIntervalRef.current);
+    };
+  }, []);
 
   const handleToggleAlbum = async (folderPath: string) => {
     if (expandedPath === folderPath) {
@@ -366,11 +376,15 @@ const LibraryManager: React.FC = () => {
       setTracksLoading(prev => ({ ...prev, [folderPath]: true }));
       try {
         const tracks = await apiService.getLibraryAlbumTracks(folderPath);
-        setTracksMap(prev => ({ ...prev, [folderPath]: tracks }));
+        if (isMounted.current) {
+          setTracksMap(prev => ({ ...prev, [folderPath]: tracks }));
+        }
       } catch {
-        showToast('Failed to load tracks details.', 'error');
+        if (isMounted.current) showToast('Failed to load tracks details.', 'error');
       } finally {
-        setTracksLoading(prev => ({ ...prev, [folderPath]: false }));
+        if (isMounted.current) {
+          setTracksLoading(prev => ({ ...prev, [folderPath]: false }));
+        }
       }
     }
   };

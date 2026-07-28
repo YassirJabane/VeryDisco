@@ -480,7 +480,7 @@ export const SearchMusic: React.FC = () => {
                                 onOpen={() => fetchVersions(item.id, item.artist?.id, item.title)}
                                 onChange={(e) => {
                                   const val = e.target.value;
-                                  if (val === item.id) {
+                                  if (String(val) === String(item.id)) {
                                     setSelectedVersions(prev => {
                                       const next = { ...prev };
                                       delete next[item.id];
@@ -488,7 +488,7 @@ export const SearchMusic: React.FC = () => {
                                     });
                                   } else {
                                     const matching = albumVersions[item.id] || [];
-                                    const found = matching.find((a: any) => a.id === val);
+                                    const found = matching.find((a: any) => String(a.id) === String(val));
                                     if (found) {
                                       setSelectedVersions(prev => ({ ...prev, [item.id]: found }));
                                     }

@@ -145,6 +145,14 @@ export const Configuration: React.FC = () => {
 
   const [logLevel, setLogLevel] = useState('INFO');
 
+  const timersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  useEffect(() => {
+    return () => {
+      timersRef.current.forEach(clearTimeout);
+      timersRef.current.clear();
+    };
+  }, []);
+
   // RAW editor state
   const [rawYaml, setRawYaml] = useState('');
 
@@ -344,7 +352,8 @@ export const Configuration: React.FC = () => {
       await apiService.updateUserPaths(userId, edit.music_dir, edit.playlist_dir);
       setUsers(prev => prev.map(u => u.id === userId ? { ...u, music_dir: edit.music_dir, playlist_dir: edit.playlist_dir } : u));
       setImportMsg(`Paths saved for user.`);
-      setTimeout(() => setImportMsg(null), 3000);
+      const t = setTimeout(() => setImportMsg(null), 3000);
+      timersRef.current.add(t);
     } catch (err: any) {
       setImportErr(err?.response?.data?.detail || 'Failed to save paths.');
     } finally {
@@ -370,7 +379,8 @@ export const Configuration: React.FC = () => {
       setUsers(prev => prev.map(u => u.id === featureUser.id ? { ...u, enabled_features: featureEdits } : u));
       setFeatureUser(null);
       setImportMsg(`Features updated for user '${featureUser.username}'.`);
-      setTimeout(() => setImportMsg(null), 3000);
+      const t = setTimeout(() => setImportMsg(null), 3000);
+      timersRef.current.add(t);
     } catch (err: any) {
       setImportErr(err?.response?.data?.detail || 'Failed to update features.');
     } finally {
@@ -406,6 +416,7 @@ export const Configuration: React.FC = () => {
       slskdApiKey !== (configResponse?.parsed?.slskd?.api_key || '') ||
       slskdDownloadsDir !== (configResponse?.parsed?.slskd?.downloads_dir || '/slskd_downloads') ||
       audioQualityPreset !== (configResponse?.parsed?.slskd?.audio_quality?.preset || 'lossless') ||
+      JSON.stringify(audioQualityLadder.filter(x => x.checked).map(x => ({ format: x.format, min_bitrate: x.min_bitrate, max_bitrate: x.max_bitrate, bit_depth: x.bit_depth, sample_rate: x.sample_rate }))) !== JSON.stringify((configResponse?.parsed?.slskd?.audio_quality as any)?.custom_profiles || []) ||
       provider !== (configResponse?.parsed?.lyrics?.provider || 'lrclib') ||
       lyricsUrl !== (configResponse?.parsed?.lyrics?.base_url || 'https://lrclib.net') ||
       dailyTime !== (configResponse?.parsed?.schedule?.daily_time || '04:00') ||

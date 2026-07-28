@@ -50,13 +50,13 @@ class NavidromeClient:
         params = self._generate_auth_params()
         url = f"{self.url}/rest/ping.view"
         
-        client = get_http_client()
+        client = await get_http_client()
         resp = await client.get(url, params=params)
         resp.raise_for_status()
         
         data = resp.json()
         subsonic_resp = data.get("subsonic-response", {})
-        if subsonic_resp.get("status") == "failed":
+        if subsonic_resp.get("status") != "ok":
             err = subsonic_resp.get("error", {})
             msg = err.get("message", "Unknown Subsonic error")
             raise ValueError(f"Navidrome error: {msg}")
@@ -73,7 +73,7 @@ class NavidromeClient:
         url = f"{self.url}/rest/startScan.view"
         
         try:
-            client = get_http_client()
+            client = await get_http_client()
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
@@ -100,7 +100,7 @@ class NavidromeClient:
         artists_count = 0
 
         try:
-            client = get_http_client()
+            client = await get_http_client()
             # 1. Count artists via getArtists (more reliable than getIndexes)
             try:
                 url_artists = f"{self.url}/rest/getArtists.view"
@@ -147,7 +147,7 @@ class NavidromeClient:
         artists = []
 
         try:
-            client = get_http_client()
+            client = await get_http_client()
             url_artists = f"{self.url}/rest/getArtists.view"
             resp = await client.get(url_artists, params=params)
             if resp.status_code == 200:
@@ -175,7 +175,7 @@ class NavidromeClient:
         tracks = []
 
         try:
-            client = get_http_client()
+            client = await get_http_client()
             url = f"{self.url}/rest/getStarred2.view"
             resp = await client.get(url, params=params)
             if resp.status_code == 200:
@@ -209,7 +209,7 @@ class NavidromeClient:
         params = self._generate_auth_params()
         url = f"{self.url}/rest/getNowPlaying.view"
         try:
-            client = get_http_client()
+            client = await get_http_client()
             resp = await client.get(url, params=params)
             if resp.status_code == 404:
                 logger.debug("getNowPlaying.view endpoint not available on Navidrome server.")
@@ -234,7 +234,7 @@ class NavidromeClient:
         params.update({"type": "frequent", "size": 10})
         url = f"{self.url}/rest/getAlbumList2.view"
         try:
-            client = get_http_client()
+            client = await get_http_client()
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()
@@ -258,7 +258,7 @@ class NavidromeClient:
             params["fullScan"] = "true"
         url = f"{self.url}/rest/startScan.view"
         try:
-            client = get_http_client()
+            client = await get_http_client()
             resp = await client.get(url, params=params)
             resp.raise_for_status()
             data = resp.json()

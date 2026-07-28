@@ -10,14 +10,20 @@ logger = logging.getLogger(__name__)
 class AcoustIDClient:
     def __init__(self):
         self.base_url = "https://api.acoustid.org/v2/lookup"
-        self._check_fpcalc()
+        self._fpcalc_checked = False
+        self._fpcalc_ok = False
 
     def _check_fpcalc(self):
+        if self._fpcalc_checked:
+            return
+        self._fpcalc_checked = True
         try:
             result = subprocess.run(["fpcalc", "-version"], capture_output=True, text=True, check=True)
             logger.debug(f"fpcalc found: {result.stdout.strip()}")
+            self._fpcalc_ok = True
         except Exception as e:
             logger.warning(f"fpcalc not found or error: {e}. AcoustID verification will not work.")
+            self._fpcalc_ok = False
 
     def get_api_key(self) -> Optional[str]:
         from backend.app.main import config_manager
@@ -26,6 +32,9 @@ class AcoustIDClient:
 
     async def generate_fingerprint(self, file_path: Path) -> Optional[dict]:
         """Runs fpcalc to generate the audio fingerprint."""
+        self._check_fpcalc()
+        if not self._fpcalc_ok:
+            return None
         try:
             # We run it in a thread since subprocess is blocking
             import asyncio
@@ -58,7 +67,7 @@ class AcoustIDClient:
 
         try:
             from backend.app.clients.http_client import get_http_client
-            client = get_http_client()
+            client = await get_http_client()
             response = await client.post(self.base_url, data=params)
             response.raise_for_status()
             data = response.json()
@@ -220,7 +229,7 @@ class AcoustIDClient:
                 )
 
                 if title_match:
-                    rec_artists = rec.get("artists", [])
+                    rec_artists = rec.get("artists") or []
                     artist_match = False
                     if not rec_artists:
                         artist_match = True
@@ -256,7 +265,7 @@ class AcoustIDClient:
         top_matches = []
         for result in results[:3]:
             for rec in result.get("recordings", []):
-                artists_str = ", ".join(a.get("name", "Unknown") for a in rec.get("artists", []))
+                artists_str = ", ".join(a.get("name", "Unknown") for a in (rec.get("artists") or []))
                 top_matches.append(f"'{rec.get('title')}' by {artists_str}")
         matches_str = " | ".join(top_matches) if top_matches else "No metadata available"
         return False, f"AcoustID matched this audio to: {matches_str} (Expected: '{tagged_artist} - {tagged_title}')"

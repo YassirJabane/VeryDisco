@@ -175,11 +175,11 @@ def check_remix_mismatch(album_title: str, folder_path: str) -> bool:
         "mnesia", "boxset", "box set", "discography", "anthology", "rarities",
         "outtakes", "demos", "sessions", "unreleased", "greatest hits"
     ]
-    folder_lower = folder_path.lower()
+    folder_name = folder_path.replace("\\", "/").split("/")[-1].lower()
     album_lower = album_title.lower()
     
     for kw in keywords:
-        if kw in folder_lower and kw not in album_lower:
+        if kw in folder_name and kw not in album_lower:
             return True
     return False
 
@@ -342,7 +342,7 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
         return re.sub(r'[^\w]', '', s)
 
     # 1. Match by track position number in filename FIRST (e.g. "_01_", "01 -", "01.", "01_")
-    m_tr_num = re.search(r'(?:^|[\s_/-])(\d{1,2})[\s_.-]', filename_lower)
+    m_tr_num = re.match(r'^(\d{1,3})\b', filename_lower)
     if m_tr_num:
         try:
             num = int(m_tr_num.group(1))
@@ -486,6 +486,8 @@ async def _download_album_task_internal(
 ):
     """Background task to search and download a full album via slskd with fallback strategies."""
     logger.info(f"Starting background album download task for {artist} - {album} (ID: {download_id})")
+    
+    target_album_artist = None
     
     if not album:
         logger.warning(f"No album provided for {artist} - {track_title}. Aborting album download.")
@@ -957,7 +959,7 @@ async def _download_album_task_internal(
 
                         ext_ext = Path(existing_path).suffix
                         from backend.app.sync import get_library_filename, resolve_album_dir
-                        target_album_artist = dz_album_artist or artist
+                        target_album_artist = target_album_artist or dz_album_artist or artist
                         dest_dir, safe_artist, safe_album = resolve_album_dir(
                             music_dir, target_album_artist, album, target_album_artist,
                             disc_num=disc_num, disc_total=disc_total
@@ -969,7 +971,10 @@ async def _download_album_task_internal(
                             # Copy from explore/playlists dir to final library dir.
                             # Skip if they are already the same file.
                             if Path(existing_path).resolve() != Path(dest_path).resolve():
-                                safe_copy_file(existing_path, dest_path)
+                                await asyncio.to_thread(safe_copy_file, existing_path, dest_path)
+                                existing_lrc = Path(existing_path).with_suffix(".lrc")
+                                if existing_lrc.exists():
+                                    await asyncio.to_thread(safe_copy_file, existing_lrc, dest_path.with_suffix(".lrc"))
                             
                             # Fetch lyrics and embed metadata
                             lyrics_text = None
@@ -981,18 +986,21 @@ async def _download_album_task_internal(
                                 with open(dest_path.with_suffix(".lrc"), "w", encoding="utf-8") as lf:
                                     lf.write(lyrics_text)
                             
-                            embed_metadata(
+                            await asyncio.to_thread(
+                                embed_metadata,
                                 file_path=str(dest_path),
                                 artist=dz_artist or artist,
                                 title=title_tag,
                                 album=album,
                                 track_num=track_num,
+                                track_total=track_total,
                                 cover_bytes=official_album_cover_bytes or cover_bytes,
                                 lyrics_text=lyrics_text,
                                 album_artist=target_album_artist,
                                 date=official_album_date or dz_date,
                                 disc_num=disc_num,
                                 disc_total=disc_total,
+                                is_explore=False,
                                 mbid_album=official_mb_release_mbid or mbid_album,
                                 mbid_recording=mbid_recording
                             )
@@ -1026,7 +1034,7 @@ async def _download_album_task_internal(
             BATCH_SIZE = 5
             queue_failed = False
             from backend.app.clients.http_client import get_http_client
-            client = get_http_client()
+            client = await get_http_client()
             for batch_start in range(0, len(to_download), BATCH_SIZE):
                 batch = to_download[batch_start:batch_start + BATCH_SIZE]
                 download_payload = [{"filename": f["filename"], "size": f["size"]} for f in batch]
@@ -1066,12 +1074,15 @@ async def _download_album_task_internal(
                 for transfer in transfers:
                     for directory in transfer.get("directories", []):
                         for file_info in directory.get("files", []):
-                            fname = file_info.get("filename")
-                            actual_size = file_info.get("size", 0)
-                            state = file_info.get("state", "").lower()
                             file_id = file_info.get("id")
-                            bytes_tx = file_info.get("bytesTransferred", 0)
-                            file_status_map[fname] = (state, file_id, bytes_tx, actual_size)
+                            if file_id:
+                                file_status_map[file_id] = (
+                                    file_info.get("state", "").lower(),
+                                    file_id,
+                                    file_info.get("bytesTransferred", 0),
+                                    file_info.get("size", 0),
+                                    file_info.get("filename")
+                                )
 
                 for f in to_download:
                     if f.get("download_status") in ["succeeded", "failed"]:
@@ -1080,14 +1091,23 @@ async def _download_album_task_internal(
                     fname = f["filename"]
                     req_size = f["size"]
                     
-                    status_info = file_status_map.get(fname)
+                    status_info = None
+                    if f.get("file_id") and f["file_id"] in file_status_map:
+                        status_info = file_status_map[f["file_id"]]
+                    else:
+                        for info in file_status_map.values():
+                            if info[4] == fname:
+                                status_info = info
+                                f["file_id"] = info[1]
+                                break
+                                
                     if not status_info:
                         # Not found in transfers yet, treat as downloading
                         status = "downloading"
                         file_id = None
                         bytes_tx = 0
                     else:
-                        matched_state, file_id, bytes_tx, actual_size = status_info
+                        matched_state, file_id, bytes_tx, actual_size, _ = status_info
                         size_ok = True
                         if req_size > 0 and actual_size > 0:
                             size_ok = abs(actual_size - req_size) / req_size < 0.05
@@ -1146,7 +1166,14 @@ async def _download_album_task_internal(
                     for f in to_download:
                         if f.get("download_status") not in ["succeeded", "failed"]:
                             f["download_status"] = "failed"
-                            status_info = file_status_map.get(f["filename"])
+                            status_info = None
+                            if f.get("file_id") and f["file_id"] in file_status_map:
+                                status_info = file_status_map[f["file_id"]]
+                            else:
+                                for info in file_status_map.values():
+                                    if info[4] == f["filename"]:
+                                        status_info = info
+                                        break
                             file_id = status_info[1] if status_info else None
                             if file_id:
                                 await slskd_client.delete_download(best_username, file_id)
@@ -1170,6 +1197,7 @@ async def _download_album_task_internal(
                     basename = local_path.stem
                     disc_num = 1
                     disc_total = 1
+                    track_total = len(official_album_tracks) if official_album_tracks else None
                     mbid_album = None
                     mbid_recording = None
                     
@@ -1296,7 +1324,7 @@ async def _download_album_task_internal(
                     # 3. Determine clean destination filename using library convention
                     ext_ext = local_path.suffix
                     from backend.app.sync import get_library_filename, resolve_album_dir
-                    target_album_artist = dz_album_artist or artist
+                    target_album_artist = target_album_artist or dz_album_artist or artist
                     dest_dir, safe_artist, safe_album = resolve_album_dir(
                         music_dir, target_album_artist, album, target_album_artist,
                         disc_num=disc_num, disc_total=disc_total
@@ -1306,7 +1334,7 @@ async def _download_album_task_internal(
 
                     # 4. Move the file
                     try:
-                        safe_move_file(local_path, dest_path)
+                        await asyncio.to_thread(safe_move_file, local_path, dest_path)
                     except Exception as e:
                         logger.error(f"Failed to move {local_path} to {dest_path}: {e}")
                         continue
@@ -1319,18 +1347,21 @@ async def _download_album_task_internal(
                             with open(lrc_path, "w", encoding="utf-8") as lf:
                                 lf.write(lyrics_text)
                         
-                        embed_metadata(
+                        await asyncio.to_thread(
+                            embed_metadata,
                             file_path=str(dest_path),
                             artist=dz_artist or artist,
                             title=title_tag,
                             album=album,
                             track_num=track_num,
+                            track_total=track_total,
                             cover_bytes=official_album_cover_bytes or cover_bytes,
                             lyrics_text=lyrics_text,
                             album_artist=target_album_artist,
                             date=official_album_date or dz_date,
                             disc_num=disc_num,
                             disc_total=disc_total,
+                            is_explore=False,
                             mbid_album=official_mb_release_mbid or mbid_album,
                             mbid_recording=mbid_recording
                         )
@@ -1351,7 +1382,7 @@ async def _download_album_task_internal(
             for f_item, dest_path in overall_downloaded + overall_copied:
                 m_tr = match_file_to_official_track(dest_path.name, official_album_tracks)
                 if m_tr and (m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")):
-                    d_n = m_tr.get("disk_number") or m_tr.get("disc_number") or m_tr.get("disc_num") or 1
+                    d_n = m_tr.get("disk_number") or m_tr.get("disk_number") or m_tr.get("disc_num") or 1
                     t_p = m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")
                     downloaded_official_positions.add((d_n, t_p))
 
@@ -1381,13 +1412,13 @@ async def _download_album_task_internal(
             for f_item, dest_path in overall_downloaded + overall_copied:
                 m_tr = match_file_to_official_track(dest_path.name, official_album_tracks)
                 if m_tr and (m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")):
-                    d_n = m_tr.get("disk_number") or m_tr.get("disc_number") or m_tr.get("disc_num") or 1
+                    d_n = m_tr.get("disk_number") or m_tr.get("disk_number") or m_tr.get("disc_num") or 1
                     t_p = m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")
                     downloaded_official_positions.add((d_n, t_p))
 
             missing_official = [
                 t for t in official_album_tracks 
-                if ((t.get("disk_number") or t.get("disc_number") or t.get("disc_num") or 1), (t.get("track_position") or t.get("position") or t.get("track_num"))) not in downloaded_official_positions
+                if ((t.get("disk_number") or t.get("disk_number") or t.get("disc_num") or 1), (t.get("track_position") or t.get("position") or t.get("track_num"))) not in downloaded_official_positions
             ]
             if missing_official:
                 logger.warning(f"Album download for '{artist} - {album}' is missing {len(missing_official)} track(s) after checking peer candidates. Running automatic single-track fallbacks...")
@@ -1708,7 +1739,7 @@ async def download_single_track_task(
 
             # 2. Move file
             try:
-                safe_move_file(downloaded_file, dest_audio_path)
+                await asyncio.to_thread(safe_move_file, downloaded_file, dest_audio_path)
                 logger.info(f"Moved single track to library: '{dest_audio_path}'")
             except Exception as e:
                 logger.error(f"Failed to move single track to library: {e}")
@@ -1726,7 +1757,8 @@ async def download_single_track_task(
                 logger.warning(f"Could not retrieve lyrics for single track: {lyrics_err}")
 
             try:
-                embed_metadata(
+                await asyncio.to_thread(
+                    embed_metadata,
                     file_path=str(dest_audio_path),
                     artist=fetched_artist,
                     title=title_tag,
@@ -1912,7 +1944,7 @@ async def grab_single_track_task(
 
         # 2. Move file
         try:
-            safe_move_file(downloaded_file, dest_audio_path)
+            await asyncio.to_thread(safe_move_file, downloaded_file, dest_audio_path)
             logger.info(f"Moved grabbed track to library: '{dest_audio_path}'")
         except Exception as e:
             logger.error(f"Failed to move grabbed track to library: {e}")
@@ -1930,7 +1962,8 @@ async def grab_single_track_task(
             logger.warning(f"Could not retrieve lyrics for single track: {lyrics_err}")
 
         try:
-            embed_metadata(
+            await asyncio.to_thread(
+                embed_metadata,
                 file_path=str(dest_audio_path),
                 artist=fetched_artist,
                 title=title_tag,

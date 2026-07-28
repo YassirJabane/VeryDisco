@@ -119,8 +119,10 @@ class SchedulerManager:
         if os.path.exists(state_file):
             try:
                 async with _state_file_lock:
-                    with open(state_file, "r") as f:
-                        state = json.load(f)
+                    def _read_state():
+                        with open(state_file, "r") as f:
+                            return json.load(f)
+                    state = await asyncio.to_thread(_read_state)
             except Exception as e:
                 logger.warning(f"Failed to read state file: {e}", exc_info=True)
                 
@@ -270,8 +272,10 @@ class SchedulerManager:
             state["last_hashes"] = last_hashes
             try:
                 async with _state_file_lock:
-                    with open(state_file, "w") as f:
-                        json.dump(state, f)
+                    def _write_state(s):
+                        with open(state_file, "w") as f:
+                            json.dump(s, f)
+                    await asyncio.to_thread(_write_state, state)
             except Exception as e:
                 logger.warning(f"Failed to write state file: {e}", exc_info=True)
                 
@@ -284,9 +288,7 @@ class SchedulerManager:
                 metadata={"source": source, "user_id": user_id}
             )
             try:
-                await task
-            except asyncio.CancelledError:
-                break
+                pass # Fire and forget in the background
             except Exception as e:
                 logger.error(f"Sync run failed for {source} (user: {lb_username}): {e}")
 
@@ -527,6 +529,15 @@ class SchedulerManager:
                 logger.info(f"No starred tracks found in Navidrome for user '{username}'.")
                 continue
 
+            processed_track_ids = set()
+            try:
+                async with self.db.get_db() as conn:
+                    async with conn.execute("SELECT navidrome_track_id FROM processed_starred_tracks WHERE user_id = ?", (uid,)) as cursor:
+                        rows = await cursor.fetchall()
+                        processed_track_ids = {row["navidrome_track_id"] for row in rows}
+            except Exception as e:
+                logger.error(f"Error fetching processed track IDs for user '{username}': {e}")
+
             lb_client = None
             if lb_token:
                 fallback_source = active_playlists[0] if active_playlists else "weekly-exploration"
@@ -548,8 +559,7 @@ class SchedulerManager:
                 if not track_id or not artist or not title:
                     continue
 
-                processed = await self.db.is_starred_track_processed(track_id, user_id=uid)
-                if processed:
+                if track_id in processed_track_ids:
                     continue
 
                 logger.info(f"Detected newly starred Navidrome track for user {username}: '{artist} - {title}' (ID: {track_id})")

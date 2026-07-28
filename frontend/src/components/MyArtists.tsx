@@ -164,13 +164,22 @@ export const MyArtists: React.FC = () => {
     });
   };
 
+  const abortControllerRef = React.useRef<AbortController | null>(null);
+
   const handleOpenDetail = async (artist: PinnedArtist) => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setDetailArtist(artist);
     setReleasesLoading(true);
     setReleases([]);
     setExpandedAlbumId(null);
     try {
       const data = await apiService.getArtistReleases(artist.mbid || artist.deezer_id || artist.id, artist.mbid);
+      if (controller.signal.aborted) return;
       const listData = Array.isArray(data) ? data : [];
       
       // Initially set checking=true for all releases
@@ -219,15 +228,19 @@ export const MyArtists: React.FC = () => {
           }
         }));
       } catch (err) {
+        if (controller.signal.aborted) return;
         console.error("Batch check failed", err);
         setReleases(prev => prev.map(rel => ({ ...rel, checking: false })));
       }
 
 
     } catch (err) {
+      if (controller.signal.aborted) return;
       console.error("Failed to load artist releases", err);
     } finally {
-      setReleasesLoading(false);
+      if (!controller.signal.aborted) {
+        setReleasesLoading(false);
+      }
     }
   };
 
@@ -698,7 +711,7 @@ export const MyArtists: React.FC = () => {
                                                 onClick={async () => {
                                                   setDownloadingKeys(prev => new Set(prev).add(trackDlKey));
                                                   try {
-                                                    await apiService.downloadTrack(detailArtist.artist_name, track.title, track.title, false);
+                                                    await apiService.downloadTrack(detailArtist.artist_name, track.title, release.title, false);
                                                     notify(`Download queued for track "${detailArtist.artist_name} - ${track.title}".`, "success");
                                                   } catch (de: any) {
                                                     notify(de.response?.data?.detail || "Failed to download track.", "error");

@@ -44,7 +44,7 @@ async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional
 
         try:
             from backend.app.clients.http_client import get_http_client
-            client = get_http_client()
+            client = await get_http_client()
             resp = await client.get(url, params=params, headers=headers)
             if resp.status_code == 404:
                 return None
@@ -84,7 +84,7 @@ def score_release(r: dict, album: str) -> int:
     score = 0
     title = r.get("title", "")
     status = (r.get("status") or "").lower()
-    country = r.get("country") or r.get("release-event-count", "")
+    country = r.get("country") or ""
     disambiguation = (r.get("disambiguation") or "").lower()
     media = r.get("media") or []
     formats = {(m.get("format") or "").lower() for m in media}
@@ -175,8 +175,10 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
         "inc": "artist-credits+media+release-groups",
         "fmt": "json",
     })
-    releases = data.get("releases", []) if data else []
-    
+    if data is None:
+        return {"artist": artist, "album": album, "candidates": [], "winner": None}
+        
+    releases = data.get("releases", [])
     # Fallback search: if 0 releases found or if album contains edition suffixes like (deluxe),
     # query MusicBrainz using base album name (e.g., "BULLY") so MB releases titled "BULLY" with disambiguation "deluxe" are found!
     clean_alb = re.sub(r'[\(\[]?\s*(?:deluxe|bonus|explicit|expanded|remastered|special|edition|version|digital|v1|v2|v3).*?[\)\]]?', '', album, flags=re.IGNORECASE).strip(' -_')
@@ -531,7 +533,7 @@ class MusicBrainzClient:
         url = f"{_CAA_BASE}/release/{release_mbid}/front"
         try:
             from backend.app.clients.http_client import get_http_client
-            client = get_http_client()
+            client = await get_http_client()
             resp = await client.get(url, headers={"User-Agent": _USER_AGENT})
             if resp.status_code in (200,):
                 return resp.content if resp.content else None

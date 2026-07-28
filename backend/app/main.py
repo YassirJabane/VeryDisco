@@ -706,14 +706,9 @@ async def trigger_sync(source: Optional[str] = None, request: Request = None):
     if not source:
         raise HTTPException(status_code=400, detail="source parameter is required")
 
-    user_id = None
-    if request:
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-        except Exception:
-            pass
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
 
     logger.info(f"Manual synchronization triggered via WebUI for source '{source}' (user: {user_id}).")
     _create_tracked_task(
@@ -725,8 +720,10 @@ async def trigger_sync(source: Optional[str] = None, request: Request = None):
     return {"status": "success", "message": "Synchronization triggered successfully"}
 
 @app.post("/api/sync/stop")
-async def stop_sync():
+async def stop_sync(request: Request):
     """Stop an ongoing sync execution."""
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     if not sync_module.is_syncing or getattr(sync_module, 'current_sync_task', None) is None:
         raise HTTPException(status_code=400, detail="No sync process is currently running.")
     
@@ -735,8 +732,10 @@ async def stop_sync():
     return {"status": "success", "message": "Synchronization stop requested"}
 
 @app.get("/api/tasks")
-async def get_active_tasks():
+async def get_active_tasks(request: Request):
     """Retrieve all currently running tasks (sync, album downloads, track downloads)."""
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     tasks_list = []
     for tid, info in _active_tasks.items():
         tasks_list.append({
@@ -748,8 +747,10 @@ async def get_active_tasks():
     return {"tasks": tasks_list}
 
 @app.post("/api/tasks/{task_id}/stop")
-async def stop_active_task(task_id: str):
+async def stop_active_task(task_id: str, request: Request):
     """Stop/cancel a running task by its task_id."""
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     if task_id not in _active_tasks:
         raise HTTPException(status_code=404, detail="Task not found or already finished.")
         
@@ -792,8 +793,10 @@ async def get_album_downloads(request: Request):
         return {"downloads": downloads}
 
 @app.delete("/api/downloads/albums/{download_id}")
-async def delete_album_download(download_id: int):
+async def delete_album_download(download_id: int, request: Request):
     """Delete an album download entry from the database queue and cancel it if running."""
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
     task_key = f"album:{download_id}"
     if task_key in _active_tasks:
         _active_tasks[task_key]["task"].cancel()
@@ -1278,12 +1281,9 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
     user_id = "default"
     
     from backend.app.auth import get_current_user
-    try:
-        user = await get_current_user(request)
-        if user:
-            user_id = user["id"]
-    except Exception:
-        pass
+    user = await get_current_user(request)
+    if user:
+        user_id = user["id"]
 
     from backend.app.sync import extract_main_artist, check_quality_status
 
@@ -1515,14 +1515,9 @@ async def download_single_track(req: DownloadTrackRequest, request: Request = No
     cfg = config_manager.config
     from backend.app.album_sync import download_single_track_task
     
-    user_id = None
-    if request:
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-        except Exception:
-            pass
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
 
     _create_tracked_task(
         download_single_track_task(
