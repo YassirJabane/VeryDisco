@@ -914,6 +914,7 @@ async def _download_album_task_internal(
                         
                         # 1. Fetch metadata (MusicBrainz primary, Deezer fallback)
                         track_num = None
+                        track_total = len(official_album_tracks) if official_album_tracks else None
                         disc_num = 1
                         disc_total = 1
                         mbid_album = None
@@ -948,6 +949,8 @@ async def _download_album_task_internal(
                                 disc_num = meta_result["disc_num"]
                             if meta_result.get("disc_total"):
                                 disc_total = max(disc_total, meta_result["disc_total"])
+                            if meta_result.get("track_total"):
+                                track_total = track_total or meta_result["track_total"]
                             cover_bytes = meta_result["cover_bytes"]
                             dz_artist = meta_result["artist"]
                             dz_album_artist = meta_result["album_artist"]
