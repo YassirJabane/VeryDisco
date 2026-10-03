@@ -47,6 +47,7 @@ def isolated_app(tmp_path, monkeypatch):
         add_album_download=AsyncMock(return_value=123),
         save_user_config=AsyncMock(), update_user_paths=AsyncMock(),
         save_user_features=AsyncMock(), get_all_file_metadata=AsyncMock(return_value={}),
+        query_library_missing_art_albums=AsyncMock(return_value=[]),
     ))
     monkeypatch.setattr(app_module, "_active_tasks", {})
     monkeypatch.setattr(app_module, "_background_tasks", set())

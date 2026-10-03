@@ -113,3 +113,9 @@
 - Conservato `node-version: '20'` per il typecheck, i test e il build del frontend: è la versione Node installata per il progetto, distinta dal runtime interno delle action, e non era oggetto dell'avviso.
 - Verifica: controllati tutti i riferimenti `actions/checkout`, `actions/setup-python` e `actions/setup-node` nel workflow; nessun test applicativo eseguito perché la modifica riguarda esclusivamente le versioni delle action. La verifica effettiva del runner resta il prossimo run CI dopo il push su `beta`.
 - Assunzione: runner GitHub-hosted o self-hosted almeno v2.327.1; il log fornito riportava v2.337.0, quindi il requisito è soddisfatto. Resta aperto sincronizzare il workflow nel clone Git e pubblicarlo su `beta` insieme alle altre modifiche.
+
+## 2026-10-03 — Corretto test CI Missing Art
+
+- Analizzato il fallimento della pipeline beta: installazione dipendenze completata e 75 test passati; falliva soltanto `test_automated_file_checks_use_user_scoped_service` perché il suo database finto non esponeva il nuovo metodo `query_library_missing_art_albums`, introdotto con l'indice incrementale.
+- Aggiornato esclusivamente il fixture in `docs/audit/test_snapshot_findings.py`, facendo restituire al mock una lista vuota. Nessuna modifica alla logica di produzione: il database reale implementa già il metodo in `backend/app/database.py`.
+- Da verificare: test mirato e suite CI completa, poi sincronizzare il solo test e `HISTORY.md` nel clone beta, effettuare commit/push e controllare il run GitHub Actions.
