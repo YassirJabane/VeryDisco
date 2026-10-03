@@ -110,8 +110,11 @@ class MusicBrainzReleaseProvider:
         releases = (data or {}).get("releases", [])
         ranked = sorted(
             releases,
-            key=lambda item: self._search_score(item, album, album_artist),
-            reverse=True,
+            key=lambda item: (
+                -self._search_score(item, album, album_artist),
+                item.get("date") or "9999-12-31",
+                item.get("id") or "",
+            ),
         )[:4]
         candidates: list[dict[str, Any]] = []
         for item in ranked:
@@ -124,7 +127,11 @@ class MusicBrainzReleaseProvider:
             # Alternatives are loaded only when the best candidate is uncertain.
             if len(candidates) == 1 and details["confidence"] >= 0.90:
                 break
-        candidates.sort(key=lambda item: item["confidence"], reverse=True)
+        candidates.sort(key=lambda item: (
+            -item["confidence"],
+            item.get("release_date") or "9999-12-31",
+            item.get("release_mbid") or "",
+        ))
         return candidates
 
     @staticmethod
@@ -166,13 +173,19 @@ class MusicBrainzReleaseProvider:
             for entry in (raw.get("label-info") or [])
             if (entry.get("label") or {}).get("name")
         ]
+        release_date = raw.get("date") or ""
+        first_release_date = release_group.get("first-release-date") or ""
         return {
             "release_mbid": raw.get("id") or "",
             "release_group_mbid": release_group.get("id") or "",
             "album": raw.get("title") or "",
             "album_artist": album_artist,
             "album_artists": album_entities,
-            "date": raw.get("date") or release_group.get("first-release-date") or "",
+            # Album metadata uses the release group's original publication
+            # date. Keep the selected edition's date separately for audit/UI.
+            "date": first_release_date or release_date,
+            "release_date": release_date,
+            "first_release_date": first_release_date,
             "country": raw.get("country") or "",
             "status": raw.get("status") or "",
             "barcode": raw.get("barcode") or "",

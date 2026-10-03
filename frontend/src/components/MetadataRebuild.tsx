@@ -176,9 +176,14 @@ const MetadataRebuild: React.FC = () => {
                   <Select size="small" fullWidth value={release?.release_mbid || ''} displayEmpty
                     onChange={e => chooseRelease(plan.id, String(e.target.value))} disabled={busy}>
                     {!release && <MenuItem value="" disabled>No confident release selected</MenuItem>}
-                    {plan.candidates.map((candidate: any) => <MenuItem key={candidate.release_mbid} value={candidate.release_mbid}>
-                      {candidate.album_artist} — {candidate.album} · {candidate.date || 'unknown date'} · {candidate.country || 'unknown country'} · {candidate.track_total} tracks
-                    </MenuItem>)}
+                    {plan.candidates.map((candidate: any) => {
+                      const dateLabel = candidate.release_date && candidate.release_date !== candidate.date
+                        ? `first released ${candidate.date} · edition ${candidate.release_date}`
+                        : candidate.date || 'unknown date';
+                      return <MenuItem key={candidate.release_mbid} value={candidate.release_mbid}>
+                        {candidate.album_artist} — {candidate.album} · {dateLabel} · {candidate.country || 'unknown country'} · {candidate.track_total} tracks
+                      </MenuItem>;
+                    })}
                   </Select>
                   <Stack direction={{ xs: 'column', sm: 'row' }} gap={1} mt={1}>
                     <TextField size="small" fullWidth label="Or paste an exact MusicBrainz release MBID"

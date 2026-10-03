@@ -83,6 +83,39 @@ class FailingProvider:
         raise RuntimeError("provider temporarily unavailable")
 
 
+@pytest.mark.asyncio
+async def test_musicbrainz_prefers_original_edition_and_release_group_date():
+    def raw_release(release_id: str, release_date: str) -> dict:
+        return {
+            "id": release_id, "title": "Favourite Worst Nightmare", "date": release_date,
+            "status": "Official", "country": "GB",
+            "artist-credit": [{"artist": {"id": "arctic", "name": "Arctic Monkeys"}}],
+            "release-group": {"id": "group", "first-release-date": "2007-04-18"},
+            "media": [{"position": 1, "tracks": [{"position": 1, "recording": {
+                "id": "recording", "title": "Brianstorm",
+                "artist-credit": [{"artist": {"id": "arctic", "name": "Arctic Monkeys"}}],
+            }}]}],
+        }
+
+    class Provider(MusicBrainzReleaseProvider):
+        async def _get(self, path, params):
+            if path == "/release":
+                return {"releases": [
+                    {"id": "reissue", "title": "Favourite Worst Nightmare", "date": "2022-01-01", "status": "Official",
+                     "artist-credit": [{"artist": {"name": "Arctic Monkeys"}}]},
+                    {"id": "original", "title": "Favourite Worst Nightmare", "date": "2007-04-18", "status": "Official",
+                     "artist-credit": [{"artist": {"name": "Arctic Monkeys"}}]},
+                ]}
+            return raw_release(path.rsplit("/", 1)[-1], "2022-01-01" if path.endswith("reissue") else "2007-04-18")
+
+    candidates = await Provider().match_release(
+        "Favourite Worst Nightmare", "Arctic Monkeys", [{"title": "Brianstorm"}],
+    )
+    assert candidates[0]["release_mbid"] == "original"
+    assert candidates[0]["date"] == "2007-04-18"
+    assert candidates[0]["release_date"] == "2007-04-18"
+
+
 class SlowProvider:
     async def match_release(self, album, album_artist, local_tracks):
         await asyncio.Event().wait()

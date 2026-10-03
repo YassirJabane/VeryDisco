@@ -131,3 +131,9 @@
 - Consultato il run GitHub Actions `37135220456` per il commit UI `bbd0a07`: il backend non era la causa. Falliva il test Vitest `Dashboard.test.tsx`, ancora in attesa dell'heading `Dashboard` e del pulsante `Manual Sync`; il redesign presenta l'heading `Your music, in motion.` e l'azione hero `Sync now`.
 - Aggiornato `frontend/src/__tests__/Dashboard.test.tsx` per verificare con ruolo accessibile l'heading e il pulsante effettivi, mantenendo il controllo che la sincronizzazione sia abilitata. Nessuna modifica al comportamento della Dashboard.
 - Verifica locale non eseguibile: su questa macchina `npm` non è disponibile nel PATH. Il run CI precedente ha invece installato Node e dipendenze correttamente; il prossimo run deve eseguire typecheck, Vitest e build prima di pubblicare l'immagine beta.
+
+## 2026-10-03 — Date originali MusicBrainz per gli album
+
+- Dal piano reale di `Favourite Worst Nightmare` è emerso che la pipeline aveva scelto una release MusicBrainz ufficiale del 2022 e proponeva di sostituire la data locale `2007-04-18`. La causa era doppia: il ranking ignorava la data della singola edizione e la normalizzazione privilegiava `release.date` rispetto a `release-group.first-release-date`.
+- `backend/app/metadata_pipeline/providers.py` ora preferisce, a parità di match testuale, l'edizione più antica; per il tag album usa sempre `first-release-date` del release group, conservando separatamente `release_date` dell'edizione selezionata. `MetadataRebuild.tsx` rende esplicito nella lista il caso `first released 2007 · edition 2022`.
+- Aggiunto test provider per ristampa 2022 contro originale 2007. Da eseguire: test metadata e typecheck/frontend CI; servirà un nuovo scan perché i piani già salvati mantengono il candidato/data calcolati con la vecchia logica.
