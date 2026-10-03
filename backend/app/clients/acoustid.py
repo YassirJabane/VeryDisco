@@ -206,6 +206,14 @@ class AcoustIDClient:
         main_art = extract_main_artist(tagged_artist)
         artist_aliases = [tagged_artist, main_art]
         norm_aliases = [norm(a) for a in artist_aliases if a]
+        # AcoustID/MusicBrainz returns joint credits as separate artist entities,
+        # while our expected credit can be a display string such as
+        # "Drake & 21 Savage feat. Travis Scott". Only compare the complete
+        # ordered credit here; do not split band names like "Florence and the Machine".
+        credit_without_joiners = re.sub(
+            r"(?i)\b(?:feat(?:uring)?|ft|and|with|x)\b\.?", "", tagged_artist or ""
+        )
+        norm_joint_credit = norm(credit_without_joiners)
 
         best_match_desc = ""
         highest_score = 0.0
@@ -234,6 +242,9 @@ class AcoustIDClient:
                             if any(alias == rec_art for alias in norm_aliases if alias):
                                 artist_match = True
                                 break
+                        if not artist_match and len(rec_artists) > 1 and norm_joint_credit:
+                            joined_credit = norm("".join(art.get("name", "") for art in rec_artists))
+                            artist_match = joined_credit == norm_joint_credit
 
                     # Do not accept a similarly named song by an unrelated artist.
                     if artist_match:

@@ -1702,18 +1702,17 @@ async def _download_single_track_internal(
                         logger.info(f"AcoustID verification skipped for single track '{title_tag}': {reason}")
                     else:
                         acoustid_retry_count += 1
-                        if config and hasattr(config, 'acoustid') and acoustid_retry_count >= config.acoustid.max_retries:
-                            logger.warning(f"AcoustID max retries ({config.acoustid.max_retries}) reached for single track '{title_tag}'. Keeping file despite mismatch: {reason}")
-                            acoustid_mismatch = False
-                        else:
-                            logger.warning(f"AcoustID mismatch detected for single track '{title_tag}': {reason}. Discarding downloaded file and retrying next candidate...")
-                            acoustid_mismatch = True
-                            if downloaded_file.exists():
-                                downloaded_file.unlink()
+                        acoustid_mismatch = True
+                        if downloaded_file.exists():
+                            downloaded_file.unlink()
+                        logger.warning(f"AcoustID mismatch detected for single track '{title_tag}': {reason}. Discarding downloaded file.")
             except Exception as ac_err:
                 logger.error(f"Error during AcoustID check for single track {downloaded_file}: {ac_err}")
 
             if acoustid_mismatch:
+                if config and hasattr(config, 'acoustid') and acoustid_retry_count >= max(1, config.acoustid.max_retries):
+                    logger.warning(f"AcoustID max retries ({config.acoustid.max_retries}) reached for single track '{title_tag}'. No mismatched file will be saved.")
+                    break
                 continue
 
             from backend.app.sync import resolve_album_dir, get_library_filename, get_safe_filename

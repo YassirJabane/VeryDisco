@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -164,3 +165,120 @@ async def test_acoustid_fingerprint_json_and_strict_identity(monkeypatch, tmp_pa
     monkeypatch.setattr(client, "read_musicbrainz_recording_id", lambda path: None)
     valid, _ = await client.verify_track_against_metadata(Path("song.mp3"), "Expected Artist", "Song")
     assert valid is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expected_artist,recording_artists,expected_valid", [
+    ("Drake & 21 Savage", ["Drake", "21 Savage"], True),
+    ("Drake & 21 Savage feat. Travis Scott", ["Drake", "21 Savage", "Travis Scott"], True),
+    ("Drake and 21 Savage", ["Drake", "21 Savage"], True),
+    ("Artist A with Artist B", ["Artist A", "Artist B"], True),
+    ("Florence and the Machine", ["Florence and the Machine"], True),
+    ("Drake & 21 Savage", ["Drake"], False),
+    ("Drake & 21 Savage", ["Drake", "Future"], False),
+])
+async def test_acoustid_joint_artist_credit(monkeypatch, expected_artist, recording_artists, expected_valid):
+    client = AcoustIDClient()
+    monkeypatch.setattr(client, "get_api_key", lambda: "test")
+    monkeypatch.setattr(client, "generate_fingerprint", lambda path: asyncio.sleep(0, result={"fingerprint": "abc", "duration": 180}))
+    monkeypatch.setattr(client, "read_musicbrainz_recording_id", lambda path: None)
+
+    async def lookup(*args):
+        return {"results": [{"score": 0.95, "recordings": [{
+            "title": "Major Distribution",
+            "artists": [{"name": name} for name in recording_artists],
+        }]}]}
+
+    monkeypatch.setattr(client, "lookup_fingerprint", lookup)
+    valid, _ = await client.verify_track_against_metadata(
+        Path("song.mp3"), expected_artist, "Major Distribution"
+    )
+    assert valid is expected_valid
+
+
+@pytest.mark.asyncio
+async def test_single_track_never_keeps_acoustid_mismatch_at_retry_limit(monkeypatch, tmp_path):
+    import backend.app.album_sync as album_sync
+    import backend.app.sync as sync
+    from backend.app.clients.acoustid import acoustid_client
+
+    candidates = [
+        {"username": "peer", "filename": f"track{i}.mp3", "size": 100}
+        for i in (1, 2)
+    ]
+    for candidate in candidates:
+        (tmp_path / candidate["filename"]).write_bytes(b"wrong audio")
+
+    class FakeSlskd:
+        def __init__(self, **kwargs):
+            pass
+
+        async def search_candidates(self, **kwargs):
+            return candidates, None
+
+        async def request_download(self, *args):
+            return True
+
+        async def get_download_progress(self, *args):
+            return "succeeded", "file-id", 100
+
+        async def delete_download(self, *args):
+            pass
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+    async def metadata(*args):
+        return {
+            "artist": "Drake", "title": "Song", "album": "Album", "track_num": 1,
+            "cover_bytes": None, "album_artist": "Drake", "date": None,
+        }
+
+    async def mismatch(*args, **kwargs):
+        return False, "Different recording"
+
+    monkeypatch.setattr(album_sync, "SlskdClient", FakeSlskd)
+    monkeypatch.setattr(album_sync, "LrcLibClient", FakeClient)
+    monkeypatch.setattr(album_sync, "DeezerClient", FakeClient)
+    monkeypatch.setattr(album_sync, "fetch_track_metadata_with_fallback", metadata)
+    monkeypatch.setattr(sync, "find_downloaded_file", lambda root, name, size: tmp_path / name)
+    monkeypatch.setattr(acoustid_client, "verify_track_against_metadata", mismatch)
+
+    config = SimpleNamespace(
+        paths=SimpleNamespace(music_dir=str(tmp_path / "music"), navidrome_playlists_dir=str(tmp_path / "playlists")),
+        listenbrainz=SimpleNamespace(active_playlists=[]),
+        slskd=SimpleNamespace(base_url="http://slskd", api_key="", downloads_dir=str(tmp_path), audio_quality={}),
+        lyrics=SimpleNamespace(base_url="http://lrclib"),
+        timeouts=SimpleNamespace(http_seconds=5, search_seconds=5, download_seconds=5),
+        schedule=SimpleNamespace(max_candidate_attempts=2),
+        acoustid=SimpleNamespace(max_retries=2),
+    )
+    assert await album_sync.download_single_track_task("Drake", "Song", "Album", config, force=True) is False
+    assert not list((tmp_path / "music").rglob("*.mp3"))
+    assert not (tmp_path / "track1.mp3").exists()
+    assert not (tmp_path / "track2.mp3").exists()
+
+
+@pytest.mark.asyncio
+async def test_explore_promotion_uses_metadata_fetched_on_app_event_loop(monkeypatch, tmp_path):
+    import backend.app.sync as sync
+    from backend.app.scheduler import _promote_track_sync
+
+    source = tmp_path / "explore" / "Drake - Song.mp3"
+    source.parent.mkdir()
+    source.write_bytes(b"audio")
+    destination_dir = tmp_path / "music" / "Drake" / "Album"
+    tagged = []
+    monkeypatch.setattr(sync, "resolve_album_dir", lambda *args, **kwargs: (destination_dir, "Drake", "Album"))
+    monkeypatch.setattr(sync, "get_library_filename", lambda *args: "01 - Song.mp3")
+    monkeypatch.setattr(sync, "embed_metadata", lambda **kwargs: tagged.append(kwargs))
+    monkeypatch.setattr(sync, "update_m3u_references", lambda *args: None)
+
+    destination = await asyncio.to_thread(
+        _promote_track_sync, source, tmp_path / "music", "Drake", "Song", "Album",
+        tmp_path / "playlists", None, {"artist": "Drake", "title": "Song", "album": "Album"},
+    )
+    assert destination == destination_dir / "01 - Song.mp3"
+    assert destination.read_bytes() == b"audio"
+    assert tagged[0]["artist"] == "Drake"

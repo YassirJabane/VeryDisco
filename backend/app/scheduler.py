@@ -9,25 +9,10 @@ from backend.app.logger import get_logger
 logger = get_logger()
 _state_file_lock = asyncio.Lock()
 
-def _promote_track_sync(explore_candidate_path, user_music_dir, artist, title, album, playlists_dir, config):
+def _promote_track_sync(explore_candidate_path, user_music_dir, artist, title, album, playlists_dir, config, meta_result):
     import shutil
-    import asyncio
     from pathlib import Path
     from backend.app.sync import resolve_album_dir, get_library_filename, embed_metadata, update_m3u_references
-    from backend.app.clients.deezer import DeezerClient
-    deezer_client = DeezerClient()
-
-    # 1. Fetch full canonical metadata
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        from backend.app.album_sync import fetch_track_metadata_with_fallback
-        meta_result = loop.run_until_complete(fetch_track_metadata_with_fallback(deezer_client, artist, title, album))
-    except Exception as e:
-        logger.warning(f"Metadata fetch during promotion for '{artist} - {title}' failed: {e}")
-        meta_result = {}
-    finally:
-        loop.close()
 
     dz_title = meta_result.get("title") or title
     dz_artist = meta_result.get("artist") or artist
@@ -583,7 +568,14 @@ class SchedulerManager:
                                 dest_folder = Path(user_music_dir) / safe_artist / safe_album
                                 dest_path = dest_folder / explore_candidate.name
                                 try:
-                                    dest_path = await asyncio.to_thread(_promote_track_sync, explore_candidate, user_music_dir, artist, title, album, user_playlists_dir, config)
+                                    from backend.app.album_sync import fetch_track_metadata_with_fallback
+                                    from backend.app.clients.deezer import DeezerClient
+                                    try:
+                                        meta_result = await fetch_track_metadata_with_fallback(DeezerClient(), artist, title, album)
+                                    except Exception as meta_err:
+                                        logger.warning(f"Metadata fetch during promotion for '{artist} - {title}' failed: {meta_err}")
+                                        meta_result = {}
+                                    dest_path = await asyncio.to_thread(_promote_track_sync, explore_candidate, user_music_dir, artist, title, album, user_playlists_dir, config, meta_result)
                                     logger.info(f"Promoted '{artist} - {title}' from explore to library for user {username}: {dest_path}")
                                     promoted = True
                                     if nd_client:
