@@ -1,4 +1,10 @@
 import pytest
+
+
+def test_album_batch_check_accepts_numeric_provider_id():
+    from backend.app.main import BatchCheckItem
+    item = BatchCheckItem(artist="fakemink", title="Terrified", album_id=12345)
+    assert str(item.album_id) == "12345"
 from fastapi import HTTPException
 
 from backend.app.database import Database

@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 from mutagen.id3 import COMM, ID3, TALB, TIT2, TPE1, TPE2, TPOS, TRCK
 
-from backend.app.metadata_pipeline.providers import artist_credit, normalize
+from backend.app.metadata_pipeline.providers import artist_credit, normalize, MusicBrainzReleaseProvider
 from backend.app.metadata_pipeline.service import MetadataRebuildService
-from backend.app.metadata_pipeline.tags import read_track
+from backend.app.metadata_pipeline.tags import read_track, write_track
 
 
 def _make_tagged_mp3(
@@ -98,6 +98,40 @@ def test_artist_credit_preserves_join_phrase_and_canonical_entities():
     assert normalize("Travi$ Scott") == normalize("Travis Scott")
 
 
+def test_writer_preserves_editorial_punctuation_and_joint_album_artists(tmp_path):
+    path = tmp_path / "track.mp3"
+    _make_tagged_mp3(
+        path, title="old", artist="old", album="old", album_artist="old", track=1,
+    )
+    write_track(path, {
+        "title": "Playlist .", "artist": "Drake & 21 Savage",
+        "artists": ["Drake", "21 Savage"], "album": "Terrified .",
+        "album_artist": "Drake & 21 Savage",
+        "album_artists": ["Drake", "21 Savage"],
+        "album_artist_mbid": "drake-mbid",
+        "album_artist_mbids": ["drake-mbid", "21-mbid"],
+        "track": 1, "track_total": 1, "disc": 1, "disc_total": 1,
+        "date": "2026", "compilation": False,
+    }, cover=None, replace_cover=False)
+    written = read_track(path)
+    assert written["title"] == "Playlist ."
+    assert written["album"] == "Terrified ."
+    assert written["album_artist"] == "Drake & 21 Savage"
+    assert written["album_artists"] == ["Drake", "21 Savage"]
+    assert written["album_artist_mbids"] == ["drake-mbid", "21-mbid"]
+
+
+def test_persisted_active_status_is_reconciled_after_process_restart(tmp_path):
+    service = MetadataRebuildService(tmp_path / "state", provider=FakeProvider())
+    service.mark_queued("user")
+    status = service.reconcile_orphaned("user", has_live_task=False)
+    assert status["status"] == "interrupted"
+    assert "start it again" in status["message"]
+
+    service.mark_queued("user")
+    assert service.reconcile_orphaned("user", has_live_task=True)["status"] == "queued"
+
+
 @pytest.mark.asyncio
 async def test_scan_is_read_only_and_builds_release_centric_plan(tmp_path):
     album_dir = tmp_path / "Travi$ Scott" / "Birds"
@@ -117,6 +151,7 @@ async def test_scan_is_read_only_and_builds_release_centric_plan(tmp_path):
     assert plan["matched_tracks"] == plan["total_tracks"] == 2
     assert plan["tracks"][1]["proposed"]["artist"] == "Travis Scott feat. Kendrick Lamar"
     assert plan["tracks"][1]["proposed"]["artists"] == ["Travis Scott", "Kendrick Lamar"]
+    assert plan["tracks"][1]["proposed"]["album_artists"] == ["Travis Scott"]
     assert all(path.read_bytes() == before[path] for path in (first, second))
 
 
@@ -205,3 +240,54 @@ async def test_scan_reports_phases_and_can_be_cancelled_without_writing_media(tm
         await task
     assert service.status(9)["status"] == "cancelled"
     assert track.read_bytes() == before
+
+
+def test_index_inventory_reuses_unchanged_catalog_rows(tmp_path, monkeypatch):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    track = album_dir / "track.mp3"
+    track.write_bytes(b"catalog-only fixture")
+    stat = track.stat()
+    row = {
+        "filepath": str(track), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+        "title": "Track", "artist": "Artist", "artists_json": '["Artist"]',
+        "album": "Album", "album_artist": "Artist", "year": "2020",
+        "track_num": 1, "total_tracks": 1, "disc_num": 1, "total_discs": 1,
+        "track_mbid": "recording", "album_mbid": "release", "duration": 123,
+        "compilation": 0,
+    }
+    monkeypatch.setattr(
+        "backend.app.metadata_pipeline.service.read_track",
+        lambda path: (_ for _ in ()).throw(AssertionError("unchanged file was reparsed")),
+    )
+    service = MetadataRebuildService(tmp_path / "state", provider=FakeProvider(), artwork=NoArtwork())
+    groups = service._inventory_from_index(tmp_path, {}, [row])
+    assert groups[0]["tracks"][0]["release_mbid"] == "release"
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_progressive_loading_and_persistent_cache():
+    cache, calls = {}, []
+    async def cache_get(key): return cache.get(key)
+    async def cache_set(key, value, ttl): cache.__setitem__(key, value)
+
+    class Provider(MusicBrainzReleaseProvider):
+        async def _get(self, path, params):
+            calls.append(path)
+            if path == "/release":
+                return {"releases": [{"id": "release-1", "title": "Album", "status": "Official",
+                    "artist-credit": [{"artist": {"id": "artist", "name": "Artist"}}]}]}
+            return {"id": "release-1", "title": "Album", "status": "Official", "date": "2020",
+                "artist-credit": [{"artist": {"id": "artist", "name": "Artist"}}],
+                "release-group": {"id": "group", "first-release-date": "2020"},
+                "media": [{"position": 1, "tracks": [{"position": 1, "recording": {
+                    "id": "recording", "title": "Track",
+                    "artist-credit": [{"artist": {"id": "artist", "name": "Artist"}}]}}]}]}
+
+    provider = Provider(cache_get, cache_set)
+    local = [{"title": "Track", "artist": "Artist", "album": "Album"}]
+    first = await provider.match_release("Album", "Artist", local)
+    second = await provider.match_release("Album", "Artist", local)
+    assert first[0]["confidence"] >= 0.9
+    assert second[0]["release_mbid"] == "release-1"
+    assert calls == ["/release", "/release/release-1"]

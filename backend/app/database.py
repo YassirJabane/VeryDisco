@@ -1,5 +1,8 @@
 import os
+import json
+import re
 import aiosqlite
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -149,9 +152,17 @@ class Database:
                 file_path TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
                 reason TEXT,
+                size INTEGER DEFAULT 0,
+                mtime_ns INTEGER DEFAULT 0,
                 scanned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """)
+            async with db.execute("PRAGMA table_info(acoustid_results)") as cursor:
+                acoustid_columns = {row[1] for row in await cursor.fetchall()}
+            if "size" not in acoustid_columns:
+                await db.execute("ALTER TABLE acoustid_results ADD COLUMN size INTEGER DEFAULT 0")
+            if "mtime_ns" not in acoustid_columns:
+                await db.execute("ALTER TABLE acoustid_results ADD COLUMN mtime_ns INTEGER DEFAULT 0")
             await db.execute("""
             CREATE TABLE IF NOT EXISTS file_metadata_cache (
                 filepath TEXT PRIMARY KEY,
@@ -166,7 +177,23 @@ class Database:
                 bit_depth INTEGER,
                 sample_rate INTEGER,
                 duration INTEGER,
-                year TEXT
+                year TEXT,
+                size INTEGER DEFAULT 0,
+                mtime_ns INTEGER DEFAULT 0,
+                ctime_ns INTEGER DEFAULT 0,
+                device INTEGER DEFAULT 0,
+                inode INTEGER DEFAULT 0,
+                album_artist TEXT,
+                artists_json TEXT DEFAULT '[]',
+                disc_num INTEGER DEFAULT 1,
+                total_discs INTEGER DEFAULT 1,
+                track_mbid TEXT,
+                album_mbid TEXT,
+                album_artist_mbid TEXT,
+                embedded_cover INTEGER DEFAULT 0,
+                has_comment INTEGER DEFAULT 0,
+                compilation INTEGER DEFAULT 0,
+                cache_version INTEGER DEFAULT 1
             );
             """)
             await db.execute("""
@@ -193,6 +220,22 @@ class Database:
                     await db.execute("ALTER TABLE file_metadata_cache ADD COLUMN year TEXT")
                 except Exception:
                     pass
+            metadata_cache_columns = {
+                "size": "INTEGER DEFAULT 0", "mtime_ns": "INTEGER DEFAULT 0",
+                "ctime_ns": "INTEGER DEFAULT 0", "device": "INTEGER DEFAULT 0",
+                "inode": "INTEGER DEFAULT 0", "album_artist": "TEXT",
+                "artists_json": "TEXT DEFAULT '[]'", "disc_num": "INTEGER DEFAULT 1",
+                "total_discs": "INTEGER DEFAULT 1", "track_mbid": "TEXT",
+                "album_mbid": "TEXT", "album_artist_mbid": "TEXT",
+                "embedded_cover": "INTEGER DEFAULT 0", "has_comment": "INTEGER DEFAULT 0",
+                "compilation": "INTEGER DEFAULT 0", "cache_version": "INTEGER DEFAULT 1",
+            }
+            async with db.execute("PRAGMA table_info(file_metadata_cache)") as cursor:
+                existing_metadata_columns = {row[1] for row in await cursor.fetchall()}
+            for column, definition in metadata_cache_columns.items():
+                if column not in existing_metadata_columns:
+                    await db.execute(f"ALTER TABLE file_metadata_cache ADD COLUMN {column} {definition}")
+            await db.commit()
 
             # Add user_id column to processed_starred_tracks if upgrading from old schema
             try:
@@ -403,6 +446,15 @@ class Database:
                 title_norm           TEXT,
                 scanned_at           TEXT DEFAULT (datetime('now')),
                 mbid_enriched_at     TEXT,
+                size                 INTEGER DEFAULT 0,
+                mtime_ns             INTEGER DEFAULT 0,
+                ctime_ns             INTEGER DEFAULT 0,
+                device               INTEGER DEFAULT 0,
+                inode                INTEGER DEFAULT 0,
+                artists_json         TEXT DEFAULT '[]',
+                embedded_cover       INTEGER DEFAULT 0,
+                has_comment          INTEGER DEFAULT 0,
+                compilation          INTEGER DEFAULT 0,
                 UNIQUE(user_id, filepath)
             );
             """)
@@ -412,6 +464,26 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_li_album_mbid    ON library_index(album_mbid);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_li_issues        ON library_index(user_id, issue_dirty_tags, issue_missing_meta, issue_naming, issue_duplicate, issue_misfiled);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_li_lyrics        ON library_index(user_id, lyrics_synced, lyrics_plain);")
+            async with db.execute("PRAGMA table_info(library_index)") as cursor:
+                existing_library_columns = {row[1] for row in await cursor.fetchall()}
+            library_columns = {
+                "size": "INTEGER DEFAULT 0", "mtime_ns": "INTEGER DEFAULT 0",
+                "ctime_ns": "INTEGER DEFAULT 0", "device": "INTEGER DEFAULT 0",
+                "inode": "INTEGER DEFAULT 0", "artists_json": "TEXT DEFAULT '[]'",
+                "embedded_cover": "INTEGER DEFAULT 0", "has_comment": "INTEGER DEFAULT 0",
+                "compilation": "INTEGER DEFAULT 0",
+            }
+            for column, definition in library_columns.items():
+                if column not in existing_library_columns:
+                    await db.execute(f"ALTER TABLE library_index ADD COLUMN {column} {definition}")
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS metadata_provider_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    payload TEXT NOT NULL,
+                    expires_at REAL NOT NULL,
+                    updated_at TEXT DEFAULT (datetime('now'))
+                )
+            """)
             await db.commit()
 
     # Runs Operations
@@ -669,11 +741,34 @@ class Database:
         async with self.get_db() as db:
             await db.executemany("""
                 INSERT OR REPLACE INTO file_metadata_cache 
-                (filepath, mtime, artist, album, title, track_num, total_tracks, quality_desc, bitrate, bit_depth, sample_rate, duration, year)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (filepath, mtime, artist, album, title, track_num, total_tracks, quality_desc,
+                 bitrate, bit_depth, sample_rate, duration, year, size, mtime_ns, ctime_ns,
+                 device, inode, album_artist, artists_json, disc_num, total_discs, track_mbid,
+                 album_mbid, album_artist_mbid, embedded_cover, has_comment, compilation, cache_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, entries)
             await db.commit()
         self.metadata_mem_cache = None
+
+    async def get_provider_cache(self, cache_key: str) -> Optional[Any]:
+        import json, time
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT payload FROM metadata_provider_cache WHERE cache_key = ? AND expires_at > ?",
+                (cache_key, time.time()),
+            ) as cursor:
+                row = await cursor.fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    async def set_provider_cache(self, cache_key: str, payload: Any, ttl_seconds: int) -> None:
+        import json, time
+        async with self.get_db() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO metadata_provider_cache(cache_key, payload, expires_at, updated_at) "
+                "VALUES (?, ?, ?, datetime('now'))",
+                (cache_key, json.dumps(payload, ensure_ascii=False), time.time() + ttl_seconds),
+            )
+            await db.commit()
 
     async def is_starred_track_processed(self, track_id: str, user_id: Optional[str] = None) -> bool:
         async with self.get_db() as db:
@@ -914,11 +1009,15 @@ class Database:
             await conn.commit()
             return cursor.rowcount == 1
 
-    async def save_acoustid_result(self, file_path: str, status: str, reason: Optional[str] = None):
+    async def save_acoustid_result(
+        self, file_path: str, status: str, reason: Optional[str] = None,
+        size: int = 0, mtime_ns: int = 0,
+    ):
         async with self.get_db() as conn:
             await conn.execute(
-                "INSERT OR REPLACE INTO acoustid_results (file_path, status, reason, scanned_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (file_path, status, reason)
+                "INSERT OR REPLACE INTO acoustid_results "
+                "(file_path, status, reason, size, mtime_ns, scanned_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+                (file_path, status, reason, size, mtime_ns)
             )
             await conn.commit()
 
@@ -927,6 +1026,22 @@ class Database:
             cursor = await conn.execute("SELECT * FROM acoustid_results")
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    async def get_acoustid_candidates(self, user_id: str, limit: int = 50) -> list:
+        sql = """
+            SELECT li.filepath, li.size, li.mtime_ns
+            FROM library_index li LEFT JOIN acoustid_results ar ON ar.file_path = li.filepath
+            WHERE li.user_id = ? AND (
+                ar.file_path IS NULL OR ar.size != li.size OR ar.mtime_ns != li.mtime_ns
+            ) ORDER BY li.filepath
+        """
+        params: tuple[Any, ...] = (user_id,)
+        if limit > 0:
+            sql += " LIMIT ?"
+            params = (user_id, limit)
+        async with self.get_db() as db:
+            async with db.execute(sql, params) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
 
     async def clear_acoustid_result(self, file_path: str):
         async with self.get_db() as conn:
@@ -957,6 +1072,8 @@ class Database:
             "issue_duplicate", "issue_duplicate_of",
             "issue_misfiled", "issue_misfiled_reason",
             "artist_norm", "album_norm", "title_norm",
+            "size", "mtime_ns", "ctime_ns", "device", "inode", "artists_json",
+            "embedded_cover", "has_comment", "compilation",
         ]
         placeholders = ", ".join(["?"] * len(cols))
         col_str = ", ".join(cols)
@@ -965,6 +1082,176 @@ class Database:
         async with self.get_db() as db:
             await db.executemany(sql, rows)
             await db.commit()
+
+    async def replace_library_index(self, user_id: str, entries: List[Dict[str, Any]]) -> None:
+        """Atomically publish a complete scan so readers never observe an empty index."""
+        cols = [
+            "user_id", "filepath", "mtime", "artist", "album", "title", "track_num",
+            "total_tracks", "disc_num", "total_discs", "year", "album_artist", "duration",
+            "ext", "bitrate", "bit_depth", "sample_rate", "track_mbid", "album_mbid",
+            "lyrics_synced", "lyrics_plain", "has_cover", "issue_missing_meta",
+            "issue_dirty_tags", "issue_dirty_reason", "issue_naming", "issue_naming_expected",
+            "issue_duplicate", "issue_duplicate_of", "issue_misfiled", "issue_misfiled_reason",
+            "artist_norm", "album_norm", "title_norm", "size", "mtime_ns", "ctime_ns",
+            "device", "inode", "artists_json", "embedded_cover", "has_comment", "compilation",
+        ]
+        placeholders = ", ".join(["?"] * len(cols))
+        sql = f"INSERT INTO library_index ({', '.join(cols)}) VALUES ({placeholders})"
+        rows = [tuple(entry.get(column) for column in cols) for entry in entries]
+        async with self.get_db() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute("DELETE FROM library_index WHERE user_id = ?", (user_id,))
+                if rows:
+                    await db.executemany(sql, rows)
+                await db.commit()
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def query_library_index_complete(self, user_id: str) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("SELECT * FROM library_index WHERE user_id = ?", (user_id,)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def invalidate_library_paths(self, user_id: str, paths: list[str]) -> None:
+        """Invalidate only mutated/deleted files; the next incremental scan reparses them."""
+        if not paths:
+            return
+        placeholders = ",".join("?" for _ in paths)
+        async with self.get_db() as db:
+            await db.execute(
+                f"DELETE FROM file_metadata_cache WHERE filepath IN ({placeholders})", tuple(paths)
+            )
+            await db.execute(
+                f"DELETE FROM library_index WHERE user_id = ? AND filepath IN ({placeholders})",
+                (user_id, *paths),
+            )
+            await db.execute(
+                f"DELETE FROM acoustid_results WHERE file_path IN ({placeholders})", tuple(paths)
+            )
+            await db.commit()
+        self.metadata_mem_cache = None
+
+    async def refresh_library_paths(self, user_id: str, paths: list[str]) -> None:
+        """Re-read changed media and publish their new catalog rows immediately."""
+        if not paths:
+            return
+        from backend.app.library_reader import AUDIO_SUFFIXES, read_library_file
+
+        unique_paths = list(dict.fromkeys(str(Path(value)) for value in paths))
+        placeholders = ",".join("?" for _ in unique_paths)
+        async with self.get_db() as db:
+            async with db.execute(
+                f"SELECT * FROM library_index WHERE user_id = ? AND filepath IN ({placeholders})",
+                (user_id, *unique_paths),
+            ) as cursor:
+                old_rows = {row["filepath"]: dict(row) for row in await cursor.fetchall()}
+
+        def norm(value: str) -> str:
+            return re.sub(r"[^\w]", "", (value or "").replace("$", "s").casefold())
+
+        entries: list[dict[str, Any]] = []
+        deleted: list[str] = []
+        for value in unique_paths:
+            path = Path(value)
+            if not path.is_file() or path.suffix.lower() not in AUDIO_SUFFIXES:
+                deleted.append(value)
+                continue
+            try:
+                meta = read_library_file(path)
+            except Exception:
+                # A failed point refresh must not destroy the last known-good row.
+                continue
+            previous = old_rows.get(value, {})
+            sidecar = path.with_suffix(".lrc")
+            lyrics_text = ""
+            if sidecar.is_file():
+                try:
+                    lyrics_text = sidecar.read_text(encoding="utf-8", errors="ignore")
+                except OSError:
+                    pass
+            has_folder_cover = any(
+                (path.parent / name).is_file()
+                for name in ("cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png")
+            )
+            artist = meta["artist"]
+            album = meta["album"]
+            title = meta["title"]
+            entry = {
+                **previous,
+                "user_id": user_id, "filepath": value, "mtime": meta["mtime"],
+                "artist": artist, "album": album, "title": title,
+                "track_num": meta["track_num"], "total_tracks": meta["total_tracks"],
+                "disc_num": meta["disc_num"], "total_discs": meta["disc_total"],
+                "year": meta["year"], "album_artist": meta["album_artist"],
+                "duration": meta["duration"], "ext": path.suffix.lower().lstrip("."),
+                "bitrate": meta["bitrate"], "bit_depth": meta["bit_depth"],
+                "sample_rate": meta["sample_rate"], "track_mbid": meta["track_mbid"] or None,
+                "album_mbid": meta["album_mbid"] or None,
+                "lyrics_synced": int(bool(re.search(r"\[\d{1,3}:\d{2}(?:\.\d+)?\]", lyrics_text))),
+                "lyrics_plain": int(bool(lyrics_text)),
+                "has_cover": int(meta["embedded_cover"] or has_folder_cover),
+                "issue_missing_meta": int(not artist or not album or not title),
+                "issue_dirty_tags": previous.get("issue_dirty_tags", 0) or 0,
+                "issue_dirty_reason": previous.get("issue_dirty_reason"),
+                "issue_naming": previous.get("issue_naming", 0) or 0,
+                "issue_naming_expected": previous.get("issue_naming_expected"),
+                "issue_duplicate": previous.get("issue_duplicate", 0) or 0,
+                "issue_duplicate_of": previous.get("issue_duplicate_of"),
+                "issue_misfiled": previous.get("issue_misfiled", 0) or 0,
+                "issue_misfiled_reason": previous.get("issue_misfiled_reason"),
+                "artist_norm": norm(meta["album_artist"] or artist),
+                "album_norm": norm(album), "title_norm": norm(title),
+                "size": meta["size"], "mtime_ns": meta["mtime_ns"],
+                "ctime_ns": meta["ctime_ns"], "device": meta["device"], "inode": meta["inode"],
+                "artists_json": meta.get("artists_json") or json.dumps([artist]),
+                "embedded_cover": int(meta["embedded_cover"]),
+                "has_comment": int(meta["has_comment"]), "compilation": int(meta["compilation"]),
+            }
+            entries.append(entry)
+        if deleted:
+            await self.invalidate_library_paths(user_id, deleted)
+        if entries:
+            await self.upsert_library_index_batch(entries)
+        self.metadata_mem_cache = None
+
+    async def query_library_missing_art_albums(self, user_id: str) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("""
+                SELECT COALESCE(album_artist, artist, 'Unknown Artist') AS artist_name,
+                       COALESCE(album, 'Unknown Album') AS album_name,
+                       MIN(filepath) AS sample_filepath,
+                       MAX(bitrate) AS bitrate, MAX(ext) AS format
+                FROM library_index WHERE user_id = ?
+                GROUP BY artist_norm, album_norm
+                HAVING MAX(has_cover) = 0
+                ORDER BY artist_name, album_name
+            """, (user_id,)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def query_library_duplicate_rows(self, user_id: str) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("""
+                SELECT filepath, artist, title, album, size, bitrate, ext, artist_norm, title_norm
+                FROM library_index
+                WHERE user_id = ? AND (artist_norm, title_norm) IN (
+                    SELECT artist_norm, title_norm FROM library_index WHERE user_id = ?
+                    GROUP BY artist_norm, title_norm HAVING COUNT(*) > 1
+                ) ORDER BY artist_norm, title_norm
+            """, (user_id, user_id)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def query_library_feat_rows(self, user_id: str) -> List[Dict[str, Any]]:
+        async with self.get_db() as db:
+            async with db.execute("""
+                SELECT filepath, artist, title, album FROM library_index
+                WHERE user_id = ? AND (
+                    lower(artist) LIKE '% feat.%' OR lower(artist) LIKE '% ft.%'
+                    OR lower(artist) LIKE '% featuring %'
+                ) ORDER BY artist, album, track_num
+            """, (user_id,)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
 
     async def mark_track_mbid(self, filepath: str, track_mbid: Optional[str], album_mbid: Optional[str]) -> None:
         """Update MBID columns for a single row after enrichment lookup."""
@@ -1088,6 +1375,7 @@ class Database:
                        album, artist_norm, album_norm,
                        MIN(filepath) as sample_filepath,
                        COUNT(*) as track_count,
+                       SUM(COALESCE(size, 0)) as total_size,
                        MAX(total_tracks) as total_tracks,
                        MAX(ext) as ext,
                        MAX(bitrate) as bitrate,
@@ -1108,6 +1396,20 @@ class Database:
             ) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in rows]
+
+    async def query_all_album_disc_track_counts(self, user_id: str) -> List[Dict[str, Any]]:
+        """Return disc counters for every album in one query (avoids album-list N+1)."""
+        async with self.get_db() as db:
+            async with db.execute(
+                """
+                SELECT artist_norm, album_norm, disc_num, COUNT(*) as track_count,
+                       MAX(track_num) as max_track_num, MAX(total_tracks) as max_total_tracks
+                FROM library_index WHERE user_id = ?
+                GROUP BY artist_norm, album_norm, disc_num
+                """,
+                (user_id,),
+            ) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
 
     async def query_album_disc_track_counts(
         self, user_id: str, artist_norm: str, album_norm: str

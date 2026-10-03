@@ -88,3 +88,31 @@ async def test_starred_track_status_is_per_user(test_db: Database):
     await test_db.mark_starred_track_processed("shared-track", "Artist", "Title", "bob")
     assert await test_db.is_starred_track_processed("shared-track", "alice")
     assert await test_db.is_starred_track_processed("shared-track", "bob")
+
+
+@pytest.mark.asyncio
+async def test_provider_cache_and_incremental_acoustid_candidates(test_db: Database):
+    await test_db.set_provider_cache("musicbrainz:test", {"ok": True}, 60)
+    assert await test_db.get_provider_cache("musicbrainz:test") == {"ok": True}
+    row = {
+        "user_id": "user", "filepath": "/music/track.mp3", "mtime": 1.0,
+        "artist": "Artist", "album": "Album", "title": "Track", "track_num": 1,
+        "total_tracks": 1, "disc_num": 1, "total_discs": 1, "year": "2020",
+        "album_artist": "Artist", "duration": 10, "ext": "mp3", "bitrate": 320,
+        "bit_depth": 0, "sample_rate": 44100, "track_mbid": None, "album_mbid": None,
+        "lyrics_synced": 0, "lyrics_plain": 0, "has_cover": 0,
+        "issue_missing_meta": 0, "issue_dirty_tags": 0, "issue_dirty_reason": None,
+        "issue_naming": 0, "issue_naming_expected": None, "issue_duplicate": 0,
+        "issue_duplicate_of": None, "issue_misfiled": 0, "issue_misfiled_reason": None,
+        "artist_norm": "artist", "album_norm": "album", "title_norm": "track",
+        "size": 100, "mtime_ns": 10, "ctime_ns": 10, "device": 1, "inode": 2,
+        "artists_json": '["Artist"]', "embedded_cover": 0, "has_comment": 0,
+        "compilation": 0,
+    }
+    await test_db.upsert_library_index_batch([row])
+    assert len(await test_db.get_acoustid_candidates("user")) == 1
+    await test_db.save_acoustid_result("/music/track.mp3", "verified", None, 100, 10)
+    assert await test_db.get_acoustid_candidates("user") == []
+    row["mtime_ns"] = 11
+    await test_db.upsert_library_index_batch([row])
+    assert len(await test_db.get_acoustid_candidates("user")) == 1

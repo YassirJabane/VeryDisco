@@ -48,6 +48,7 @@ async def fetch_track_metadata_with_fallback(
         "artist": artist,
         "credited_artists": [],
         "album_artist": artist,
+        "album_artists": [artist] if artist else [],
         "album": album or title,
         "date": None,
         "track_num": None,
@@ -70,6 +71,7 @@ async def fetch_track_metadata_with_fallback(
                 "artist": mb.get("artist", artist),
                 "credited_artists": mb.get("credited_artists") or [],
                 "album_artist": mb.get("album_artist", artist),
+                "album_artists": mb.get("album_artists") or [mb.get("album_artist", artist)],
                 "album": mb.get("album") or result["album"],
                 "date": mb.get("date"),
                 "track_num": mb.get("track_num"),
@@ -113,6 +115,7 @@ def clean_album_name(album: str) -> str:
     s = re.sub(r'[^\w\s-]', ' ', s)
     s = re.sub(r'\s+', ' ', s).strip()
     return s
+
 
 def clean_artist_name(artist: str) -> str:
     s = re.sub(r'\$', 'S', artist)
@@ -353,6 +356,21 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
 
     return None
 
+
+def official_position_for_file(file_entry: dict, path: Path, official_tracks: list) -> Optional[tuple[int, int]]:
+    """Prefer the pre-download match; renamed files can lose enough punctuation to rematch poorly."""
+    stored = file_entry.get("_official_position")
+    if stored and len(stored) == 2 and stored[1] is not None:
+        return int(stored[0] or 1), int(stored[1])
+    matched = match_file_to_official_track(path.name, official_tracks)
+    if not matched:
+        return None
+    track = matched.get("track_position") or matched.get("position") or matched.get("track_num")
+    if track is None:
+        return None
+    disc = matched.get("disk_number") or matched.get("disc_number") or matched.get("disc_num") or 1
+    return int(disc), int(track)
+
 def get_quality_priority(filename: str, bitrate: int, bit_depth: int, sample_rate: int, config) -> int:
     """Return profile list index (0 = best) if the file matches a profile, or -1 to reject."""
     ext = os.path.splitext(filename)[1].lower().strip(".")
@@ -448,6 +466,7 @@ async def _download_album_task_internal(
     logger.info(f"Starting background album download task for {artist} - {album} (ID: {download_id})")
     
     target_album_artist = None
+    target_album_artists: list[str] = []
     
     if not album:
         logger.warning(f"No album provided for {artist} - {track_title}. Aborting album download.")
@@ -510,6 +529,7 @@ async def _download_album_task_internal(
                 official_album_date = mb_album.get("release_date")
                 official_mb_release_mbid = mb_album.get("release_mbid")
                 target_album_artist = mb_album.get("album_artist") or artist
+                target_album_artists = mb_album.get("album_artists") or [target_album_artist]
                 logger.info(f"Fetched {len(official_album_tracks)} official tracks from MusicBrainz for '{album}' (MBID: {official_mb_release_mbid}).")
         except Exception as e:
             logger.warning(f"Could not pre-fetch official album tracklist from MusicBrainz for '{artist} - {album}': {e}")
@@ -813,7 +833,11 @@ async def _download_album_task_internal(
                 if matched:
                     clean_title = matched["title"]
                     f["track_num"] = matched.get("track_position")
-                    f["title_tag"] = matched["title"]
+                    f["title_tag"] = clean_title
+                    f["_official_position"] = (
+                        matched.get("disk_number") or matched.get("disc_number") or matched.get("disc_num") or 1,
+                        matched.get("track_position") or matched.get("position") or matched.get("track_num"),
+                    )
                 elif is_official_reliable:
                     logger.info(f"Skipping extra non-album file in search result folder: {filename_part}")
                     continue
@@ -971,7 +995,8 @@ async def _download_album_task_internal(
                                 is_explore=False,
                                 mbid_album=official_mb_release_mbid or mbid_album,
                                 mbid_recording=mbid_recording,
-                                credited_artists=credited_artists
+                                credited_artists=credited_artists,
+                                album_artists=target_album_artists or [target_album_artist or artist],
                             )
 
                             # Update M3U references and clean up the old file in explore/playlists
@@ -1174,13 +1199,24 @@ async def _download_album_task_internal(
                     fallback_track_num = parsed_track_num or f.get("track_num") or (file_idx + 1)
 
                     matched = match_file_to_official_track(local_path.name, official_album_tracks)
+                    if not matched and f.get("_official_position"):
+                        wanted_disc, wanted_track = f["_official_position"]
+                        matched = next((
+                            item for item in official_album_tracks
+                            if (item.get("disk_number") or item.get("disc_number") or item.get("disc_num") or 1) == wanted_disc
+                            and (item.get("track_position") or item.get("position") or item.get("track_num")) == wanted_track
+                        ), None)
                     official_disc_num = None
                     if matched:
                         clean_title = matched["title"]
                         track_num = matched.get("track_position") or fallback_track_num
                         official_disc_num = matched.get("disk_number") or matched.get("disc_num")
                         disc_num = official_disc_num or 1
-                        title_tag = matched["title"]
+                        title_tag = clean_title
+                        f["_official_position"] = (
+                            matched.get("disk_number") or matched.get("disc_number") or matched.get("disc_num") or 1,
+                            matched.get("track_position") or matched.get("position") or matched.get("track_num"),
+                        )
                     else:
                         clean_title = clean_track_title(basename, artist, album)
                         track_num = fallback_track_num
@@ -1338,7 +1374,8 @@ async def _download_album_task_internal(
                             is_explore=False,
                             mbid_album=official_mb_release_mbid or mbid_album,
                             mbid_recording=mbid_recording,
-                            credited_artists=credited_artists
+                            credited_artists=credited_artists,
+                            album_artists=target_album_artists or [target_album_artist or artist],
                         )
                     except Exception as e:
                         logger.error(f"Failed to embed metadata/lyrics for {dest_path}: {e}")
@@ -1355,11 +1392,9 @@ async def _download_album_task_internal(
 
             downloaded_official_positions = set()
             for f_item, dest_path in overall_downloaded + overall_copied:
-                m_tr = match_file_to_official_track(dest_path.name, official_album_tracks)
-                if m_tr and (m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")):
-                    d_n = m_tr.get("disk_number") or m_tr.get("disk_number") or m_tr.get("disc_num") or 1
-                    t_p = m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")
-                    downloaded_official_positions.add((d_n, t_p))
+                position = official_position_for_file(f_item, dest_path, official_album_tracks)
+                if position:
+                    downloaded_official_positions.add(position)
 
             target_total = len(official_album_tracks) if official_album_tracks else len(to_download)
             if official_album_tracks and len(downloaded_official_positions) >= target_total:
@@ -1385,11 +1420,9 @@ async def _download_album_task_internal(
         if official_album_tracks:
             downloaded_official_positions = set()
             for f_item, dest_path in overall_downloaded + overall_copied:
-                m_tr = match_file_to_official_track(dest_path.name, official_album_tracks)
-                if m_tr and (m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")):
-                    d_n = m_tr.get("disk_number") or m_tr.get("disk_number") or m_tr.get("disc_num") or 1
-                    t_p = m_tr.get("track_position") or m_tr.get("position") or m_tr.get("track_num")
-                    downloaded_official_positions.add((d_n, t_p))
+                position = official_position_for_file(f_item, dest_path, official_album_tracks)
+                if position:
+                    downloaded_official_positions.add(position)
 
             missing_official = [
                 t for t in official_album_tracks 
@@ -1408,7 +1441,7 @@ async def _download_album_task_internal(
                             album=album,
                             config=config,
                             db=db,
-                            force=True,
+                            force=False,
                             user_id=user_id,
                             mbid_album_override=official_mb_release_mbid
                         )
@@ -1419,6 +1452,10 @@ async def _download_album_task_internal(
             album_complete = album_complete or fallback_complete
 
         # Trigger Navidrome scan at the end of album download
+        if db and user_id:
+            await db.refresh_library_paths(
+                user_id, [str(path) for _, path in overall_downloaded + overall_copied]
+            )
         if config.navidrome.url and config.navidrome.username and config.navidrome.password:
             try:
                 from backend.app.clients.navidrome import NavidromeClient
@@ -1669,6 +1706,7 @@ async def _download_single_track_internal(
             dz_date = None
             dz_album_artist = None
             credited_artists = None
+            album_artists = None
             try:
                 meta_result = await fetch_track_metadata_with_fallback(
                     deezer_client, artist, title, album
@@ -1684,6 +1722,7 @@ async def _download_single_track_internal(
                 cover_bytes = meta_result["cover_bytes"]
                 dz_album_artist = meta_result["album_artist"]
                 credited_artists = meta_result.get("credited_artists")
+                album_artists = meta_result.get("album_artists")
                 dz_date = meta_result["date"]
             except Exception as meta_err:
                 logger.warning(f"Could not retrieve metadata: {meta_err}")
@@ -1771,11 +1810,15 @@ async def _download_single_track_internal(
                     is_explore=is_explore,
                     mbid_album=mbid_album_override or mbid_album,
                     mbid_recording=mbid_recording,
-                    credited_artists=credited_artists
+                    credited_artists=credited_artists,
+                    album_artists=album_artists or [dz_album_artist or artist],
                 )
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
             except Exception as e:
                 logger.warning(f"Could not embed metadata/lyrics for single track: {e}")
+
+            if db and user_id and not is_explore:
+                await db.refresh_library_paths(user_id, [str(dest_audio_path)])
 
             # Trigger scan
             if config.navidrome.url and config.navidrome.username and config.navidrome.password:
@@ -1906,6 +1949,7 @@ async def grab_single_track_task(
         dz_date = None
         dz_album_artist = None
         credited_artists = None
+        album_artists = None
         try:
             meta_result = await fetch_track_metadata_with_fallback(
                 deezer_client, artist, title, album
@@ -1921,6 +1965,7 @@ async def grab_single_track_task(
             cover_bytes = meta_result["cover_bytes"]
             dz_album_artist = meta_result["album_artist"]
             credited_artists = meta_result.get("credited_artists")
+            album_artists = meta_result.get("album_artists")
             dz_date = meta_result["date"]
         except Exception as meta_err:
             logger.warning(f"Could not retrieve metadata: {meta_err}")
@@ -1981,7 +2026,8 @@ async def grab_single_track_task(
                 is_explore=is_explore,
                 mbid_album=mbid_album,
                 mbid_recording=mbid_recording,
-                credited_artists=credited_artists
+                credited_artists=credited_artists,
+                album_artists=album_artists or [dz_album_artist or artist],
             )
             logger.info(f"Saved and embedded metadata for grabbed track '{fetched_artist} - {title_tag}'")
         except Exception as e:

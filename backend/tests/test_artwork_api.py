@@ -18,6 +18,9 @@ async def test_artwork_save_uses_detected_png_format_and_rejects_other_bytes(tmp
         async def get_user_by_id(self, user_id):
             return None
 
+        async def refresh_library_paths(self, user_id, paths):
+            return None
+
     async def no_scan():
         return None
 

@@ -489,26 +489,29 @@ def embed_metadata(
     mbid_album: Optional[str] = None,
     mbid_recording: Optional[str] = None,
     genre: Optional[str] = None,
-    credited_artists: Optional[List[str]] = None
+    credited_artists: Optional[List[str]] = None,
+    album_artists: Optional[List[str]] = None,
+    album_artist_mbids: Optional[List[str]] = None,
 ):
     """Embed metadata, cover art, and lyrics directly into the audio file metadata.
 
     Navidrome tag strategy (per official mappings.yaml and tagging guidelines):
     - TPE1 / ARTIST       : full display name incl. feat. ("Drake feat. Jay-Z")
-    - TPE2 / ALBUMARTIST  : album-level grouping artist only ("Drake") — prevents
-                            duplicate artist entries and album fragmentation.
-    - TXXX:artists        : multi-value list of individual artists, each becoming
-                            a separately clickable artist page in Navidrome.
+    - TPE2 / ALBUMARTIST  : exact album-credit display string.
+    - TXXX:artists and TXXX:albumartists: authoritative multi-value entities,
+      each becoming a separately clickable artist page in Navidrome.
     - ID3v2.4 is used for MP3 to support true multi-value frames.
     - All pre-existing tags are wiped before writing to eliminate scene-release junk.
     """
     ext = os.path.splitext(file_path)[1].lower()
 
-    clean_artist = sanitize_artist_name(artist) or artist
-    clean_title = strip_scene_tags(title) or title
+    # Provider display strings are editorial data. Preserve punctuation and
+    # join phrases verbatim; normalization is only for matching/search.
+    clean_artist = str(artist or "").strip()
+    clean_title = str(title or "").strip()
     title_feature = re.search(r'(?i)[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+([^\)\]]+)[\)\]]', clean_title)
     featured_from_title = title_feature.group(1).strip() if title_feature else ""
-    if featured_from_title and featured_from_title.lower() not in clean_artist.lower():
+    if featured_from_title and featured_from_title.casefold() not in clean_artist.casefold():
         clean_artist = f"{clean_artist} feat. {featured_from_title}"
 
     if is_explore:
@@ -517,8 +520,17 @@ def embed_metadata(
         compilation_val = "1"
     else:
         final_album = album or f"{clean_title} - Single"
-        final_album_artist = sanitize_artist_name(get_folder_artist_name(artist, album_artist or artist)) or clean_artist
+        final_album_artist = str(album_artist or artist or clean_artist).strip()
         compilation_val = "0"
+
+    final_album_artists = list(dict.fromkeys(
+        value.strip() for value in (
+            ["Various Artists"] if is_explore else (album_artists or [final_album_artist])
+        ) if value and value.strip()
+    ))
+    final_album_artist_mbids = list(dict.fromkeys(
+        value.strip() for value in (album_artist_mbids or []) if value and value.strip()
+    ))
 
     # ── Build individual artist list for Navidrome ARTISTS multi-value tag ──────
     # Splitting the display-artist string yields the individually linkable artists.
@@ -536,7 +548,7 @@ def embed_metadata(
             feat_artists = [a.strip() for a in re.split(r'(?i)\s+(?:feat\.?|ft\.?|featuring)\s+', normalized_credit) if a.strip()]
         if not feat_artists:
             feat_artists = [clean_artist]
-        if featured_from_title and not any(featured_from_title.lower() == name.lower() for name in feat_artists):
+        if featured_from_title and not any(featured_from_title.casefold() == name.casefold() for name in feat_artists):
             feat_artists.append(featured_from_title)
 
     cover_format = None
@@ -595,6 +607,10 @@ def embed_metadata(
                 # No splitting of TPE1 occurs; each feat. artist gets their own page.
                 if feat_artists:
                     tags.add(TXXX(encoding=3, desc="artists", text=feat_artists))
+                if final_album_artists:
+                    tags.add(TXXX(encoding=3, desc="albumartists", text=final_album_artists))
+                if final_album_artist_mbids:
+                    tags.add(TXXX(encoding=3, desc="musicbrainz album artist id", text=final_album_artist_mbids))
 
                 # ── MusicBrainz IDs (exact frame names from Navidrome mappings.yaml) ─
                 if mbid_recording:
@@ -660,6 +676,10 @@ def embed_metadata(
                 # giving Navidrome a clean individual artist list with no splitting needed.
                 if feat_artists:
                     audio["artists"] = feat_artists
+                if final_album_artists:
+                    audio["albumartists"] = final_album_artists
+                if final_album_artist_mbids:
+                    audio["musicbrainz_albumartistid"] = final_album_artist_mbids
 
                 # ── MusicBrainz IDs (exact Vorbis tag names from Navidrome mappings.yaml) ──
                 if mbid_recording:
@@ -717,16 +737,24 @@ def embed_metadata(
                     audio["----:com.apple.iTunes:artists"] = [
                         MP4FreeForm(a.encode("utf-8")) for a in feat_artists
                     ]
+                if final_album_artists:
+                    audio["----:com.apple.iTunes:albumartists"] = [
+                        MP4FreeForm(a.encode("utf-8")) for a in final_album_artists
+                    ]
+                if final_album_artist_mbids:
+                    audio["----:com.apple.iTunes:MusicBrainz Album Artist Id"] = [
+                        MP4FreeForm(value.encode("utf-8")) for value in final_album_artist_mbids
+                    ]
 
                 # ── MusicBrainz IDs (exact atom names from Navidrome mappings.yaml) ──
                 if mbid_recording:
                     # musicbrainz_recordingid → ----:com.apple.itunes:musicbrainz track id
-                    audio["----:com.apple.iTunes:musicbrainz track id"] = [
+                    audio["----:com.apple.iTunes:MusicBrainz Track Id"] = [
                         MP4FreeForm(mbid_recording.encode("utf-8"))
                     ]
                 if mbid_album:
                     # musicbrainz_albumid → ----:com.apple.itunes:musicbrainz album id
-                    audio["----:com.apple.iTunes:musicbrainz album id"] = [
+                    audio["----:com.apple.iTunes:MusicBrainz Album Id"] = [
                         MP4FreeForm(mbid_album.encode("utf-8"))
                     ]
 

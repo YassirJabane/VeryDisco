@@ -39,7 +39,8 @@ def read_track(path: Path, include_cover: bool = False) -> dict[str, Any]:
     suffix = path.suffix.lower()
     result: dict[str, Any] = {
         "path": str(path), "title": "", "artist": "", "artists": [], "album": "",
-        "album_artist": "", "album_artist_mbid": "", "date": "", "track": 0,
+        "album_artist": "", "album_artists": [], "album_artist_mbid": "",
+        "album_artist_mbids": [], "date": "", "track": 0,
         "track_total": 0, "disc": 1, "disc_total": 1, "release_mbid": "",
         "recording_mbid": "", "compilation": False, "duration": 0.0,
     }
@@ -65,10 +66,13 @@ def read_track(path: Path, include_cover: bool = False) -> dict[str, Any]:
             desc = frame.desc.casefold().replace("_", " ")
             if desc == "artists":
                 result["artists"] = [str(value) for value in frame.text]
+            elif desc == "albumartists":
+                result["album_artists"] = [str(value) for value in frame.text]
             elif desc == "musicbrainz album id":
                 result["release_mbid"] = _first(frame.text)
             elif desc == "musicbrainz album artist id":
                 result["album_artist_mbid"] = _first(frame.text)
+                result["album_artist_mbids"] = [str(value) for value in frame.text]
             elif desc == "musicbrainz recording id":
                 result["recording_mbid"] = _first(frame.text)
         ufid = tags.get("UFID:http://musicbrainz.org")
@@ -87,7 +91,9 @@ def read_track(path: Path, include_cover: bool = False) -> dict[str, Any]:
             "title": _first(audio.get("title")), "artist": _first(audio.get("artist")),
             "artists": list(audio.get("artists", [])), "album": _first(audio.get("album")),
             "album_artist": _first(audio.get("albumartist") or audio.get("album artist")),
+            "album_artists": list(audio.get("albumartists", [])),
             "album_artist_mbid": _first(audio.get("musicbrainz_albumartistid")),
+            "album_artist_mbids": list(audio.get("musicbrainz_albumartistid", [])),
             "date": _first(audio.get("releasedate") or audio.get("date")),
             "release_mbid": _first(audio.get("musicbrainz_albumid")),
             "recording_mbid": _first(audio.get("musicbrainz_trackid") or audio.get("musicbrainz_recordingid")),
@@ -107,7 +113,9 @@ def read_track(path: Path, include_cover: bool = False) -> dict[str, Any]:
             "title": _first(audio.get("title")), "artist": _first(audio.get("artist")),
             "artists": list(audio.get("artists", [])), "album": _first(audio.get("album")),
             "album_artist": _first(audio.get("albumartist") or audio.get("album artist")),
+            "album_artists": list(audio.get("albumartists", [])),
             "album_artist_mbid": _first(audio.get("musicbrainz_albumartistid")),
+            "album_artist_mbids": list(audio.get("musicbrainz_albumartistid", [])),
             "date": _first(audio.get("releasedate") or audio.get("date")),
             "release_mbid": _first(audio.get("musicbrainz_albumid")),
             "recording_mbid": _first(audio.get("musicbrainz_trackid") or audio.get("musicbrainz_recordingid")),
@@ -134,7 +142,9 @@ def read_track(path: Path, include_cover: bool = False) -> dict[str, Any]:
             "title": _first(audio.get("\xa9nam")), "artist": _first(audio.get("\xa9ART")),
             "artists": freeform("----:com.apple.iTunes:artists"), "album": _first(audio.get("\xa9alb")),
             "album_artist": _first(audio.get("aART")),
+            "album_artists": freeform("----:com.apple.iTunes:albumartists"),
             "album_artist_mbid": _first(freeform("----:com.apple.iTunes:MusicBrainz Album Artist Id")),
+            "album_artist_mbids": freeform("----:com.apple.iTunes:MusicBrainz Album Artist Id"),
             "date": _first(audio.get("\xa9day")),
             "release_mbid": _first(freeform("----:com.apple.iTunes:MusicBrainz Album Id")),
             "recording_mbid": _first(freeform("----:com.apple.iTunes:MusicBrainz Track Id")),
@@ -219,7 +229,7 @@ def _write_mp3(path: Path, values: dict[str, Any], cover: Optional[bytes], repla
         tags.delall(key)
     for frame in list(tags.getall("TXXX")):
         if frame.desc.casefold().replace("_", " ") in {
-            "artists", "musicbrainz album id", "musicbrainz album artist id", "musicbrainz recording id",
+            "artists", "albumartists", "musicbrainz album id", "musicbrainz album artist id", "musicbrainz recording id",
         }:
             tags.delall(f"TXXX:{frame.desc}")
     tags.delall("UFID:http://musicbrainz.org")
@@ -235,10 +245,13 @@ def _write_mp3(path: Path, values: dict[str, Any], cover: Optional[bytes], repla
         tags.add(TDRL(encoding=3, text=str(values["date"])))
     if values.get("artists"):
         tags.add(TXXX(encoding=3, desc="artists", text=list(values["artists"])))
+    if values.get("album_artists"):
+        tags.add(TXXX(encoding=3, desc="albumartists", text=list(values["album_artists"])))
     if values.get("release_mbid"):
         tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[values["release_mbid"]]))
-    if values.get("album_artist_mbid"):
-        tags.add(TXXX(encoding=3, desc="MusicBrainz Album Artist Id", text=[values["album_artist_mbid"]]))
+    album_artist_mbids = values.get("album_artist_mbids") or ([values["album_artist_mbid"]] if values.get("album_artist_mbid") else [])
+    if album_artist_mbids:
+        tags.add(TXXX(encoding=3, desc="MusicBrainz Album Artist Id", text=list(album_artist_mbids)))
     if values.get("recording_mbid"):
         tags.add(UFID(owner="http://musicbrainz.org", data=values["recording_mbid"].encode("utf-8")))
     if replace_cover:
@@ -253,7 +266,7 @@ def _write_flac(path: Path, values: dict[str, Any], cover: Optional[bytes], repl
     from mutagen.flac import FLAC, Picture
     audio = FLAC(path)
     managed = {
-        "title", "artist", "artists", "album", "albumartist", "releasedate", "date",
+        "title", "artist", "artists", "album", "albumartist", "albumartists", "releasedate", "date",
         "tracknumber", "tracktotal", "discnumber", "disctotal", "compilation",
         "musicbrainz_albumid", "musicbrainz_albumartistid", "musicbrainz_trackid",
         "musicbrainz_recordingid",
@@ -272,13 +285,16 @@ def _write_flac(path: Path, values: dict[str, Any], cover: Optional[bytes], repl
     audio["compilation"] = ["1" if values.get("compilation") else "0"]
     if values.get("artists"):
         audio["artists"] = list(values["artists"])
+    if values.get("album_artists"):
+        audio["albumartists"] = list(values["album_artists"])
     if values.get("date"):
         audio["date"] = [str(values["date"])]
         audio["releasedate"] = [str(values["date"])]
     if values.get("release_mbid"):
         audio["musicbrainz_albumid"] = [values["release_mbid"]]
-    if values.get("album_artist_mbid"):
-        audio["musicbrainz_albumartistid"] = [values["album_artist_mbid"]]
+    album_artist_mbids = values.get("album_artist_mbids") or ([values["album_artist_mbid"]] if values.get("album_artist_mbid") else [])
+    if album_artist_mbids:
+        audio["musicbrainz_albumartistid"] = list(album_artist_mbids)
     if values.get("recording_mbid"):
         audio["musicbrainz_trackid"] = [values["recording_mbid"]]
     if replace_cover:
@@ -298,7 +314,7 @@ def _write_ogg(path: Path, values: dict[str, Any], cover: Optional[bytes], repla
     from mutagen.oggvorbis import OggVorbis
     audio = OggVorbis(path)
     managed = {
-        "title", "artist", "artists", "album", "albumartist", "releasedate", "date",
+        "title", "artist", "artists", "album", "albumartist", "albumartists", "releasedate", "date",
         "tracknumber", "tracktotal", "discnumber", "disctotal", "compilation",
         "musicbrainz_albumid", "musicbrainz_albumartistid", "musicbrainz_trackid",
         "musicbrainz_recordingid",
@@ -317,13 +333,16 @@ def _write_ogg(path: Path, values: dict[str, Any], cover: Optional[bytes], repla
     audio["compilation"] = ["1" if values.get("compilation") else "0"]
     if values.get("artists"):
         audio["artists"] = list(values["artists"])
+    if values.get("album_artists"):
+        audio["albumartists"] = list(values["album_artists"])
     if values.get("date"):
         audio["date"] = [str(values["date"])]
         audio["releasedate"] = [str(values["date"])]
     if values.get("release_mbid"):
         audio["musicbrainz_albumid"] = [values["release_mbid"]]
-    if values.get("album_artist_mbid"):
-        audio["musicbrainz_albumartistid"] = [values["album_artist_mbid"]]
+    album_artist_mbids = values.get("album_artist_mbids") or ([values["album_artist_mbid"]] if values.get("album_artist_mbid") else [])
+    if album_artist_mbids:
+        audio["musicbrainz_albumartistid"] = list(album_artist_mbids)
     if values.get("recording_mbid"):
         audio["musicbrainz_trackid"] = [values["recording_mbid"]]
     if replace_cover:
@@ -344,6 +363,7 @@ def _write_mp4(path: Path, values: dict[str, Any], cover: Optional[bytes], repla
     managed = {
         "\xa9nam", "\xa9art", "aart", "\xa9alb", "\xa9day", "trkn", "disk", "cpil",
         "----:com.apple.itunes:artists", "----:com.apple.itunes:musicbrainz album id",
+        "----:com.apple.itunes:albumartists",
         "----:com.apple.itunes:musicbrainz album artist id", "----:com.apple.itunes:musicbrainz track id",
     }
     for key in list(audio.keys()):
@@ -360,13 +380,19 @@ def _write_mp4(path: Path, values: dict[str, Any], cover: Optional[bytes], repla
         audio["\xa9day"] = [str(values["date"])]
     if values.get("artists"):
         audio["----:com.apple.iTunes:artists"] = [MP4FreeForm(v.encode("utf-8")) for v in values["artists"]]
+    if values.get("album_artists"):
+        audio["----:com.apple.iTunes:albumartists"] = [MP4FreeForm(v.encode("utf-8")) for v in values["album_artists"]]
     mapping = {
         "release_mbid": "----:com.apple.iTunes:MusicBrainz Album Id",
         "album_artist_mbid": "----:com.apple.iTunes:MusicBrainz Album Artist Id",
         "recording_mbid": "----:com.apple.iTunes:MusicBrainz Track Id",
     }
     for field, key in mapping.items():
-        if values.get(field):
+        if field == "album_artist_mbid":
+            identifiers = values.get("album_artist_mbids") or ([values[field]] if values.get(field) else [])
+            if identifiers:
+                audio[key] = [MP4FreeForm(value.encode("utf-8")) for value in identifiers]
+        elif values.get(field):
             audio[key] = [MP4FreeForm(values[field].encode("utf-8"))]
     if replace_cover:
         audio.pop("covr", None)

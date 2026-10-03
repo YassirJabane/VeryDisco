@@ -9,7 +9,7 @@ from backend.app.clients.acoustid import AcoustIDClient
 from backend.app.clients.musicbrainz import _parse_artist_credit
 from backend.app.sync import find_downloaded_file, safe_copy_file, safe_move_file, extract_main_artist, embed_metadata
 from backend.app.clients.deezer import DeezerClient, _result_matches
-from backend.app.album_sync import match_file_to_official_track
+from backend.app.album_sync import match_file_to_official_track, official_position_for_file
 
 
 def test_musicbrainz_artist_credits_preserve_joinphrases():
@@ -39,6 +39,26 @@ def test_id3_preserves_display_and_explicit_artist_entities(tmp_path):
     assert tags.getall("APIC")[0].mime == "image/png"
 
 
+def test_joint_album_artists_are_separate_clickable_entities(tmp_path):
+    from mutagen.id3 import ID3
+
+    path = tmp_path / "her-loss.mp3"
+    path.write_bytes(b"")
+    embed_metadata(
+        str(path), "Drake & 21 Savage", "Rich Flex", "Her Loss",
+        album_artist="Drake & 21 Savage",
+        credited_artists=["Drake", "21 Savage"],
+        album_artists=["Drake", "21 Savage"],
+        album_artist_mbids=["drake-mbid", "21-mbid"],
+    )
+    tags = ID3(path)
+    assert tags["TPE1"].text == ["Drake & 21 Savage"]
+    assert tags["TPE2"].text == ["Drake & 21 Savage"]
+    assert tags["TXXX:artists"].text == ["Drake", "21 Savage"]
+    assert tags["TXXX:albumartists"].text == ["Drake", "21 Savage"]
+    assert tags["TXXX:musicbrainz album artist id"].text == ["drake-mbid", "21-mbid"]
+
+
 def test_explicit_title_feature_is_added_without_splitting_band_name(tmp_path):
     from mutagen.id3 import ID3
 
@@ -66,6 +86,14 @@ def test_album_track_number_requires_correct_disc():
     ]
     assert match_file_to_official_track("2-01 Intro Two.flac", tracks) is tracks[1]
     assert match_file_to_official_track("01 unknown.flac", tracks) is None
+
+
+def test_album_completion_keeps_pre_download_official_position():
+    tracks = [{"title": "Playlist .", "disk_number": 1, "track_position": 3}]
+    # The final filename no longer contains the provider's trailing punctuation.
+    assert official_position_for_file(
+        {"_official_position": (1, 3)}, Path("Artist_Album_03_Playlist.mp3"), tracks
+    ) == (1, 3)
 
 
 @pytest.mark.asyncio

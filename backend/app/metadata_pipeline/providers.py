@@ -7,7 +7,7 @@ import subprocess
 import time
 import urllib.parse
 from difflib import SequenceMatcher
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from backend.app.clients.http_client import get_http_client
 
@@ -44,9 +44,15 @@ def artist_credit(credits: list[dict[str, Any]] | None) -> tuple[str, list[dict[
 class MusicBrainzReleaseProvider:
     """MusicBrainz release matcher with the public API rate limit enforced."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        cache_get: Optional[Callable[[str], Awaitable[Optional[Any]]]] = None,
+        cache_set: Optional[Callable[[str, Any, int], Awaitable[None]]] = None,
+    ) -> None:
         self._lock = asyncio.Lock()
         self._last_request = 0.0
+        self._cache_get = cache_get
+        self._cache_set = cache_set
 
     async def _get(self, path: str, params: dict[str, Any]) -> Optional[dict[str, Any]]:
         async with self._lock:
@@ -66,11 +72,19 @@ class MusicBrainzReleaseProvider:
         return response.json()
 
     async def release_details(self, release_mbid: str) -> Optional[dict[str, Any]]:
+        cache_key = f"musicbrainz:release:{release_mbid}"
+        if self._cache_get:
+            cached = await self._cache_get(cache_key)
+            if cached is not None:
+                return cached
         raw = await self._get(
             f"/release/{release_mbid}",
             {"inc": "recordings+artist-credits+release-groups+media+labels", "fmt": "json"},
         )
-        return self._normalize_release(raw) if raw else None
+        result = self._normalize_release(raw) if raw else None
+        if result and self._cache_set:
+            await self._cache_set(cache_key, result, 30 * 24 * 3600)
+        return result
 
     async def match_release(
         self,
@@ -78,13 +92,21 @@ class MusicBrainzReleaseProvider:
         album_artist: str,
         local_tracks: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        known_mbids = {track.get("release_mbid") for track in local_tracks if track.get("release_mbid")}
+        if len(known_mbids) == 1:
+            known = await self.release_details(next(iter(known_mbids)))
+            if known:
+                known["confidence"] = self._release_confidence(known, album, album_artist, local_tracks)
+                return [known]
         query = f'release:"{album}"'
         if album_artist:
             query += f' AND artist:"{album_artist}"'
-        data = await self._get(
-            "/release",
-            {"query": query, "limit": 8, "fmt": "json"},
-        )
+        search_key = f"musicbrainz:search:{normalize(album_artist)}:{normalize(album)}"
+        data = await self._cache_get(search_key) if self._cache_get else None
+        if data is None:
+            data = await self._get("/release", {"query": query, "limit": 8, "fmt": "json"})
+            if self._cache_set:
+                await self._cache_set(search_key, data or {}, 7 * 24 * 3600)
         releases = (data or {}).get("releases", [])
         ranked = sorted(
             releases,
@@ -98,6 +120,10 @@ class MusicBrainzReleaseProvider:
                 continue
             details["confidence"] = self._release_confidence(details, album, album_artist, local_tracks)
             candidates.append(details)
+            # Most well-tagged albums need only search + one release request.
+            # Alternatives are loaded only when the best candidate is uncertain.
+            if len(candidates) == 1 and details["confidence"] >= 0.90:
+                break
         candidates.sort(key=lambda item: item["confidence"], reverse=True)
         return candidates
 

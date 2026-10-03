@@ -8,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from backend.app.auth import get_current_user
+from backend.app.library_coordinator import library_scan_coordinator
+from .providers import MusicBrainzReleaseProvider
 from .service import MetadataRebuildService
 
 
@@ -31,7 +33,8 @@ def create_metadata_rebuild_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/api/metadata-rebuild", tags=["metadata-rebuild"])
     state_root = Path(db.db_path).resolve().parent / "metadata-rebuild"
-    service = MetadataRebuildService(state_root)
+    provider = MusicBrainzReleaseProvider(db.get_provider_cache, db.set_provider_cache)
+    service = MetadataRebuildService(state_root, provider=provider)
     tasks: dict[Any, asyncio.Task] = {}
 
     async def context(request: Request) -> tuple[dict[str, Any], Path]:
@@ -55,7 +58,12 @@ def create_metadata_rebuild_router(
         api_key = getattr(config_manager.config.acoustid, "api_key", "") or ""
 
         async def run() -> None:
-            await service.scan(user["id"], root, aliases, body.verify_acoustid, api_key)
+            async with library_scan_coordinator.operation(user["id"], "metadata-rebuild"):
+                indexed_tracks = await db.query_library_index_complete(user["id"])
+                await service.scan(
+                    user["id"], root, aliases, body.verify_acoustid, api_key,
+                    indexed_tracks=indexed_tracks,
+                )
 
         service.mark_queued(user["id"])
         task = asyncio.create_task(run())
@@ -77,6 +85,9 @@ def create_metadata_rebuild_router(
         user, _ = await context(request)
         task = tasks.get(user["id"])
         if not task or task.done():
+            status = service.reconcile_orphaned(user["id"], has_live_task=False)
+            if status.get("status") == "interrupted":
+                return status
             raise HTTPException(status_code=409, detail="No metadata scan is currently running.")
         service.request_cancel(user["id"])
         task.cancel()
@@ -85,7 +96,10 @@ def create_metadata_rebuild_router(
     @router.get("/status")
     async def get_status(request: Request):
         user, _ = await context(request)
-        return service.status(user["id"])
+        task = tasks.get(user["id"])
+        return service.reconcile_orphaned(
+            user["id"], has_live_task=bool(task and not task.done())
+        )
 
     @router.get("/albums")
     async def get_albums(request: Request):
@@ -118,7 +132,9 @@ def create_metadata_rebuild_router(
                 user["id"], plan_id, root, body.include_artwork,
                 body.allow_itunes_artwork, rescan,
             )
-            await db.clear_file_metadata_cache()
+            await db.refresh_library_paths(
+                user["id"], [track["path"] for track in service.plan(user["id"], plan_id)["tracks"]]
+            )
             return result
         except KeyError:
             raise HTTPException(status_code=404, detail="Metadata plan not found.")
@@ -132,7 +148,9 @@ def create_metadata_rebuild_router(
         user, root = await context(request)
         try:
             result = await service.rollback(user["id"], plan_id, root, rescan)
-            await db.clear_file_metadata_cache()
+            await db.refresh_library_paths(
+                user["id"], [track["path"] for track in service.plan(user["id"], plan_id)["tracks"]]
+            )
             return result
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))

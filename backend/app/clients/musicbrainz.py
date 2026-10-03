@@ -279,7 +279,7 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
         full = await get_release_with_media(best_candidate["id"])
         if full:
             media_list = full.get("media", [])
-            album_artist, _ = _parse_artist_credit(full.get("artist-credit"))
+            album_artist, album_artists = _parse_artist_credit(full.get("artist-credit"))
             discs = []
             for m in media_list:
                 disc_num = m.get("position", 1)
@@ -307,6 +307,7 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
                 "country": full.get("country"),
                 "date": full.get("date"),
                 "album_artist": album_artist,
+                "album_artists": album_artists,
                 "disc_total": len(media_list),
                 "discs": discs
             }
@@ -547,6 +548,7 @@ class MusicBrainzClient:
             "nb_discs": total_discs,
             "title": winner.get("title", album),
             "album_artist": winner.get("album_artist") or artist,
+            "album_artists": winner.get("album_artists") or [winner.get("album_artist") or artist],
         }
 
     # -----------------------------------------------------------------------
@@ -613,6 +615,7 @@ class MusicBrainzClient:
                                 "artist": t.get("artist") or artist,
                                 "credited_artists": t.get("credited_artists") or [],
                                 "album_artist": mb_album.get("album_artist") or clean_art or artist,
+                                "album_artists": mb_album.get("album_artists") or [mb_album.get("album_artist") or clean_art or artist],
                                 "album": mb_album.get("title", album),
                                 "date": mb_album.get("release_date", ""),
                                 "track_num": t.get("track_position"),
@@ -637,6 +640,7 @@ class MusicBrainzClient:
         full_artist, credited_artists = _parse_artist_credit(credits)
         full_artist = full_artist or artist
         primary_artist = credited_artists[0] if credited_artists else artist
+        album_artists = [primary_artist]
 
         releases = recording.get("releases", [])
         best_release = None
@@ -655,6 +659,11 @@ class MusicBrainzClient:
             release_mbid = best_release.get("id")
             release_title = best_release.get("title", release_title)
             release_date = best_release.get("date", "")
+            release_artist, release_artist_names = _parse_artist_credit(best_release.get("artist-credit"))
+            if release_artist:
+                primary_artist = release_artist
+            if release_artist_names:
+                album_artists = release_artist_names
 
             # The search_recording endpoint does not include media data.
             # Fetch the full release with inc=media+recordings to get disc/track positions.
@@ -663,9 +672,11 @@ class MusicBrainzClient:
                 full_release = await get_release_with_media(release_mbid)
                 if full_release:
                     media_list = full_release.get("media", [])
-                    release_artist, _ = _parse_artist_credit(full_release.get("artist-credit"))
+                    release_artist, release_artist_names = _parse_artist_credit(full_release.get("artist-credit"))
                     if release_artist:
                         primary_artist = release_artist
+                    if release_artist_names:
+                        album_artists = release_artist_names
 
             disc_total = len(media_list) if media_list else 1
             for m_idx, m in enumerate(media_list, start=1):
@@ -686,6 +697,7 @@ class MusicBrainzClient:
             "artist": full_artist,
             "credited_artists": credited_artists,
             "album_artist": primary_artist,
+            "album_artists": album_artists,
             "album": release_title,
             "date": release_date,
             "track_num": track_num,

@@ -106,6 +106,21 @@ class MetadataRebuildService:
             "started_at": _now(), "message": "Metadata inventory is queued.",
         })
 
+    def reconcile_orphaned(self, user_id: str, has_live_task: bool) -> dict[str, Any]:
+        """Turn persisted active state from a previous process into a restartable state."""
+        status = self.status(user_id)
+        if not has_live_task and status.get("status") in {"queued", "scanning", "cancelling"}:
+            status.update({
+                "status": "interrupted",
+                "finished_at": _now(),
+                "message": (
+                    "The previous metadata scan was interrupted by an application restart. "
+                    "No media files were modified; you can start it again."
+                ),
+            })
+            _atomic_json(self._status_path(user_id), status)
+        return status
+
     def request_cancel(self, user_id: Any) -> None:
         event = self._cancel_events.get(user_id)
         if event:
@@ -122,6 +137,7 @@ class MetadataRebuildService:
         aliases: Optional[dict[str, str]] = None,
         verify_acoustid: bool = False,
         acoustid_api_key: str = "",
+        indexed_tracks: Optional[list[dict[str, Any]]] = None,
     ) -> list[dict[str, Any]]:
         lock = self._locks.setdefault(user_id, asyncio.Lock())
         if lock.locked():
@@ -156,9 +172,15 @@ class MetadataRebuildService:
                             job_id, files_scanned, folders_found,
                         )
 
-                groups = await asyncio.to_thread(
-                    self._inventory, root, aliases or {}, inventory_progress, cancel_event
-                )
+                if indexed_tracks:
+                    groups = await asyncio.to_thread(
+                        self._inventory_from_index, root, aliases or {}, indexed_tracks,
+                        inventory_progress, cancel_event,
+                    )
+                else:
+                    groups = await asyncio.to_thread(
+                        self._inventory, root, aliases or {}, inventory_progress, cancel_event
+                    )
                 status.update({
                     "phase": "resolving", "processed": 0, "total": len(groups),
                     "message": f"Inventory complete. Resolving {len(groups)} albums with MusicBrainz.",
@@ -287,6 +309,68 @@ class MetadataRebuildService:
             })
         return groups
 
+    def _inventory_from_index(
+        self,
+        root: Path,
+        aliases: dict[str, str],
+        rows: list[dict[str, Any]],
+        progress: Optional[Callable[[int, int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> list[dict[str, Any]]:
+        """Build album groups from the unified index, reopening changed files only."""
+        alias_map = {normalize(key): value for key, value in aliases.items()}
+        folders: dict[Path, list[dict[str, Any]]] = {}
+        for index, row in enumerate(rows, start=1):
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError
+            path = Path(row["filepath"])
+            if not path.exists() or not path.resolve().is_relative_to(root):
+                continue
+            stat = path.stat()
+            if (int(row.get("size") or -1) != stat.st_size
+                    or int(row.get("mtime_ns") or -1) != stat.st_mtime_ns):
+                track = read_track(path)
+            else:
+                try:
+                    artists = json.loads(row.get("artists_json") or "[]")
+                except Exception:
+                    artists = []
+                track = {
+                    "path": str(path), "title": row.get("title") or path.stem,
+                    "artist": row.get("artist") or "", "artists": artists,
+                    "album": row.get("album") or "", "album_artist": row.get("album_artist") or "",
+                    "album_artist_mbid": "", "date": row.get("year") or "",
+                    "track": row.get("track_num") or 0, "track_total": row.get("total_tracks") or 0,
+                    "disc": row.get("disc_num") or 1, "disc_total": row.get("total_discs") or 1,
+                    "release_mbid": row.get("album_mbid") or "",
+                    "recording_mbid": row.get("track_mbid") or "",
+                    "compilation": bool(row.get("compilation")), "duration": row.get("duration") or 0,
+                    "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
+                }
+            folders.setdefault(path.parent, []).append(track)
+            if progress and (index % 100 == 0 or index == len(rows)):
+                progress(index, len(folders))
+        groups = []
+        for folder, tracks in sorted(folders.items(), key=lambda item: str(item[0])):
+            albums = [track["album"] for track in tracks if track["album"]]
+            album = Counter(albums).most_common(1)[0][0] if albums else folder.name
+            raw_album_artists = [track["album_artist"] for track in tracks if track["album_artist"]]
+            raw_artists = [track["artist"] for track in tracks if track["artist"]]
+            candidate = Counter(raw_album_artists).most_common(1)[0][0] if raw_album_artists else (
+                Counter(raw_artists).most_common(1)[0][0] if raw_artists else folder.parent.name
+            )
+            candidate = re.split(r"(?i)\s+(?:feat\.?|ft\.?|featuring)\s+", candidate)[0].strip()
+            canonical = alias_map.get(normalize(candidate), candidate)
+            identity = hashlib.sha256("\n".join(track["path"] for track in tracks).encode()).hexdigest()[:20]
+            groups.append({
+                "id": identity, "folder": str(folder), "album": album, "album_artist": canonical,
+                "tracks": tracks, "variants": {
+                    "albums": sorted(set(albums)), "album_artists": sorted(set(raw_album_artists)),
+                    "dates": sorted(set(track["date"] for track in tracks if track["date"])),
+                },
+            })
+        return groups
+
     def _build_plan(
         self,
         root: Path,
@@ -304,12 +388,16 @@ class MetadataRebuildService:
                 if remote:
                     remaining.remove(remote)
                     matched += 1
-                    album_artist_mbid = (winner.get("album_artists") or [{}])[0].get("mbid", "")
+                    album_entities = winner.get("album_artists") or []
+                    album_artist_mbid = (album_entities or [{}])[0].get("mbid", "")
                     proposed = {
                         "title": remote["title"], "artist": remote["artist"],
                         "artists": [item["name"] for item in remote["artists"]],
                         "album": winner["album"], "album_artist": winner["album_artist"],
-                        "album_artist_mbid": album_artist_mbid, "date": winner["date"],
+                        "album_artists": [item["name"] for item in album_entities],
+                        "album_artist_mbid": album_artist_mbid,
+                        "album_artist_mbids": [item["mbid"] for item in album_entities if item.get("mbid")],
+                        "date": winner["date"],
                         "track": remote["track"], "track_total": winner["track_total"],
                         "disc": remote["disc"], "disc_total": winner["disc_total"],
                         "release_mbid": winner["release_mbid"],

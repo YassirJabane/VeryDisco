@@ -941,26 +941,12 @@ async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] 
         if user_row and user_row.get("music_dir"):
             music_dir = Path(user_row["music_dir"])
 
-    # Fetch already scanned files from the database
-    scanned_results = await db.get_acoustid_results()
-    scanned_paths = {r["file_path"] for r in scanned_results}
-
-    # Find unscanned files
-    unscanned_files = []
-    for root, dirs, files in os.walk(str(music_dir)):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in ["playlists", "navidrome_playlists", "explore"]]
-        if ".staging" in root:
-            continue
-        for f in files:
-            if f.lower().endswith((".mp3", ".flac", ".m4a")):
-                f_path = str(Path(root) / f)
-                if f_path not in scanned_paths:
-                    unscanned_files.append(Path(root) / f)
-                    # batch_size=0 means scan ALL remaining
-                    if batch_size > 0 and len(unscanned_files) >= batch_size:
-                        break
-        if batch_size > 0 and len(unscanned_files) >= batch_size:
-            break
+    if not user_id:
+        logger.error("Cannot run incremental AcoustID scan without a user library index.")
+        return
+    candidates = await db.get_acoustid_candidates(user_id, batch_size or 0)
+    unscanned_files = [Path(row["filepath"]) for row in candidates if Path(row["filepath"]).exists()]
+    candidate_stats = {row["filepath"]: row for row in candidates}
 
     if not unscanned_files:
         logger.info("No unscanned files left in the library.")
@@ -974,7 +960,11 @@ async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] 
         try:
             is_valid, reason = await acoustid_client.verify_track_against_metadata(file_path)
             status = "verified" if is_valid else "failed"
-            await db.save_acoustid_result(str(file_path), status, reason)
+            indexed = candidate_stats[str(file_path)]
+            await db.save_acoustid_result(
+                str(file_path), status, reason, indexed.get("size") or 0,
+                indexed.get("mtime_ns") or 0,
+            )
             
             if is_valid:
                 logger.info(f"[{idx}/{len(unscanned_files)}] Verified: {file_path.name}")
@@ -982,7 +972,11 @@ async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] 
                 logger.warning(f"[{idx}/{len(unscanned_files)}] Failure: {file_path.name} -> {reason}")
         except Exception as e:
             logger.error(f"Error scanning {file_path}: {e}")
-            await db.save_acoustid_result(str(file_path), "failed", f"Unexpected error during scan: {e}")
+            indexed = candidate_stats[str(file_path)]
+            await db.save_acoustid_result(
+                str(file_path), "failed", f"Unexpected error during scan: {e}",
+                indexed.get("size") or 0, indexed.get("mtime_ns") or 0,
+            )
 
         # Sleep for 0.5 seconds to respect the 2 queries/sec rate limit
         await asyncio.sleep(0.5)
@@ -1385,7 +1379,7 @@ async def deezer_search(query: str, type: str = "track"):
 class BatchCheckItem(BaseModel):
     artist: str
     title: str
-    album_id: Optional[str] = None
+    album_id: Optional[str | int] = None
 
 @app.post("/api/search/check/batch")
 async def batch_check_existence(items: List[BatchCheckItem], request: Request):
@@ -2912,7 +2906,7 @@ def get_primary_artist(artist: str) -> str:
 class DeleteAlbumRequest(BaseModel):
     folder_path: str
 
-def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_entries: list) -> dict:
+def _legacy_read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_entries: list) -> dict:
     import os, re
     f_path_str = str(str(f_path))
     ext = f_path.suffix.lower().strip(".")
@@ -3116,6 +3110,40 @@ def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_
             res["year"]
         ))
     return res
+
+
+def read_file_metadata_with_cache(f_path: Path, metadata_cache: dict, new_cache_entries: list) -> dict:
+    """Incremental complete-tag reader shared by every library view."""
+    import json
+    from backend.app.library_reader import read_library_file
+    path_key = str(f_path)
+    stat = f_path.stat()
+    entry = (metadata_cache or {}).get(path_key)
+    if entry and int(entry.get("cache_version") or 0) >= 2:
+        if (int(entry.get("size") or -1) == stat.st_size
+                and int(entry.get("mtime_ns") or -1) == stat.st_mtime_ns
+                and int(entry.get("ctime_ns") or -1) == stat.st_ctime_ns):
+            result = dict(entry)
+            try:
+                result["artists"] = json.loads(result.get("artists_json") or "[]")
+            except Exception:
+                result["artists"] = []
+            result["disc_total"] = result.get("total_discs") or 1
+            result["date"] = result.get("year") or ""
+            return result
+    result = read_library_file(f_path)
+    if new_cache_entries is not None:
+        new_cache_entries.append((
+            path_key, result["mtime"], result["artist"], result["album"], result["title"],
+            result["track_num"], result["total_tracks"], result["quality_desc"], result["bitrate"],
+            result["bit_depth"], result["sample_rate"], result["duration"], result["year"],
+            result["size"], result["mtime_ns"], result["ctime_ns"], result["device"], result["inode"],
+            result["album_artist"], result["artists_json"], result["disc_num"], result["disc_total"],
+            result["track_mbid"], result["album_mbid"], result["album_artist_mbid"],
+            1 if result["embedded_cover"] else 0, 1 if result["has_comment"] else 0,
+            1 if result["compilation"] else 0, 2,
+        ))
+    return result
 
 def check_file_has_embedded_artwork(f_path: Path) -> bool:
     ext = f_path.suffix.lower().strip(".")
@@ -3604,6 +3632,7 @@ def _build_library_index_sync(
     # ── Phase 1: walk and collect per-file rows ────────────────────────────────
     rows = []
     audio_files = []
+    cover_folders: set = set()
     for root, dirs, files in _os.walk(str(music_dir)):
         dirs[:] = [d for d in dirs if not d.startswith('.')]
         root_path = Path(root).resolve()
@@ -3613,25 +3642,16 @@ def _build_library_index_sync(
         if any(p.lower() in ('playlists', '.staging', 'explore', '.explore', 'explore tracks') for p in root_path.parts):
             continue
         for f in files:
-            if f.lower().endswith(('.mp3', '.flac', '.m4a')):
+            lower = f.lower()
+            if lower.endswith(('.mp3', '.flac', '.m4a', '.mp4', '.ogg')):
                 audio_files.append(Path(root) / f)
+            elif lower in ('cover.jpg', 'cover.jpeg', 'cover.png', 'folder.jpg',
+                           'folder.jpeg', 'folder.png', 'front.jpg', 'front.jpeg', 'front.png'):
+                cover_folders.add(root)
 
     total = len(audio_files)
     logger.info(f"📂 [Library Scan] Discovered {total} audio files in {music_dir}")
     new_entries = []
-
-    # Pre-build cover set: folders that have a cover image file
-    cover_folders: set = set()
-    for root, dirs, files in _os.walk(str(music_dir)):
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
-        root_path = Path(root).resolve()
-        if root_path == playlists_dir or playlists_dir in root_path.parents:
-            continue
-        for f in files:
-            if f.lower() in ('cover.jpg', 'cover.jpeg', 'cover.png',
-                              'folder.jpg', 'folder.jpeg', 'folder.png',
-                              'front.jpg', 'front.jpeg', 'front.png'):
-                cover_folders.add(root)
 
     for idx, f_path in enumerate(audio_files, 1):
         try:
@@ -3655,34 +3675,11 @@ def _build_library_index_sync(
         bit_depth    = meta.get('bit_depth') or 0
         sample_rate  = meta.get('sample_rate') or 0
 
-        # album_artist from raw tags (EasyID3/FLAC/MP4)
-        album_artist = ''
-        try:
-            if ext == 'mp3':
-                from mutagen.id3 import ID3
-                _tags = ID3(f_path)
-                tpe2 = _tags.getall('TPE2')
-                album_artist = tpe2[0].text[0] if tpe2 and tpe2[0].text else ''
-            elif ext == 'flac':
-                from mutagen.flac import FLAC
-                _audio = FLAC(f_path)
-                album_artist = (_audio.get('albumartist', [''])[0]
-                                or _audio.get('album artist', [''])[0])
-            elif ext in ('m4a', 'mp4'):
-                from mutagen.mp4 import MP4
-                _audio = MP4(f_path)
-                aART = _audio.get('aART', [''])
-                album_artist = aART[0] if aART else ''
-        except Exception:
-            pass
+        album_artist = meta.get('album_artist') or ''
 
         # ── MBIDs from embedded tags ───────────────────────────────────────────
-        from backend.app.sync import extract_audio_mbids
-        track_mbid, album_mbid = None, None
-        try:
-            track_mbid, album_mbid = extract_audio_mbids(f_path)
-        except Exception:
-            pass
+        track_mbid = meta.get('track_mbid') or None
+        album_mbid = meta.get('album_mbid') or None
 
         # ── Lyrics ────────────────────────────────────────────────────────────
         lrc_path = f_path.with_suffix('.lrc')
@@ -3706,22 +3703,7 @@ def _build_library_index_sync(
         parent_str = str(f_path.parent)
         has_cover = 1 if parent_str in cover_folders else 0
         if not has_cover:
-            # Check embedded artwork
-            try:
-                if ext == 'mp3':
-                    from mutagen.mp3 import MP3
-                    _a = MP3(f_path)
-                    has_cover = 1 if any(k.startswith('APIC:') for k in _a.keys()) else 0
-                elif ext == 'flac':
-                    from mutagen.flac import FLAC
-                    _a = FLAC(f_path)
-                    has_cover = 1 if _a.pictures else 0
-                elif ext in ('m4a', 'mp4'):
-                    from mutagen.mp4 import MP4
-                    _a = MP4(f_path)
-                    has_cover = 1 if 'covr' in _a else 0
-            except Exception:
-                pass
+            has_cover = 1 if meta.get('embedded_cover') else 0
 
         # ── Issue: missing metadata ────────────────────────────────────────────
         issue_missing_meta = 0
@@ -3732,42 +3714,13 @@ def _build_library_index_sync(
         issue_dirty_tags = 0
         issue_dirty_reason = ''
         try:
-            has_comment = False
             dirty_reasons = []
-            if ext == 'mp3':
-                from mutagen.id3 import ID3
-                _tags = ID3(f_path)
-                has_comment = any(k.startswith('COMM') for k in _tags.keys())
-                if has_comment:
-                    comments = []
-                    for k in _tags.keys():
-                        if k.startswith('COMM'):
-                            for t in _tags[k].text:
-                                if t.strip():
-                                    comments.append(t.strip())
-                    dirty_reasons.append(f'Comment tag: {chr(34)}{chr(34).join(comments)}{chr(34)}')
-                if not is_valid_album_artist(album_artist, artist):
-                    dirty_reasons.append(
-                        f"Album Artist '{album_artist}' doesn't match Track Artist '{artist}'"
-                    )
-            elif ext == 'flac':
-                from mutagen.flac import FLAC
-                _audio = FLAC(f_path)
-                if 'comment' in _audio:
-                    dirty_reasons.append(f'Comment tag present')
-                if not is_valid_album_artist(album_artist, artist):
-                    dirty_reasons.append(
-                        f"Album Artist '{album_artist}' doesn't match Track Artist '{artist}'"
-                    )
-            elif ext in ('m4a', 'mp4'):
-                from mutagen.mp4 import MP4
-                _audio = MP4(f_path)
-                if '\xa9cmt' in _audio:
-                    dirty_reasons.append(f'Comment tag present')
-                if not is_valid_album_artist(album_artist, artist):
-                    dirty_reasons.append(
-                        f"Album Artist '{album_artist}' doesn't match Track Artist '{artist}'"
-                    )
+            if meta.get('has_comment'):
+                dirty_reasons.append('Comment tag present')
+            if not is_valid_album_artist(album_artist, artist):
+                dirty_reasons.append(
+                    f"Album Artist '{album_artist}' doesn't match Track Artist '{artist}'"
+                )
             if dirty_reasons:
                 issue_dirty_tags = 1
                 issue_dirty_reason = ' | '.join(dirty_reasons)
@@ -3844,6 +3797,15 @@ def _build_library_index_sync(
             'artist_norm':          _norm(album_artist or extract_main_artist(artist) or artist),
             'album_norm':           _norm_album(album),
             'title_norm':           _norm(title),
+            'size':                 meta.get('size') or 0,
+            'mtime_ns':             meta.get('mtime_ns') or 0,
+            'ctime_ns':             meta.get('ctime_ns') or 0,
+            'device':               meta.get('device') or 0,
+            'inode':                meta.get('inode') or 0,
+            'artists_json':         meta.get('artists_json') or '[]',
+            'embedded_cover':       1 if meta.get('embedded_cover') else 0,
+            'has_comment':          1 if meta.get('has_comment') else 0,
+            'compilation':          1 if meta.get('compilation') else 0,
         })
 
         if idx % 50 == 0 or idx == total:
@@ -3938,8 +3900,7 @@ async def run_library_scan_task(user_id: str, music_dir: Path):
 
         # Persist to DB
         logger.info(f"💾 [Library Scan] Writing {len(rows)} track records to library_index database table...")
-        await db.clear_library_index(user_id)
-        await db.upsert_library_index_batch(rows)
+        await db.replace_library_index(user_id, rows)
         await db.invalidate_user_caches(user_id)
 
         issues_found = sum(
@@ -3990,8 +3951,12 @@ async def trigger_full_library_scan(request: Request):
     if library_scan_progress.get(user_id, {}).get("status") == "scanning":
         return {"status": "success", "message": "Scan already in progress."}
         
+    from backend.app.library_coordinator import library_scan_coordinator
+    async def coordinated_scan():
+        async with library_scan_coordinator.operation(user_id, "library-index"):
+            await run_library_scan_task(user_id, music_dir)
     _create_tracked_task(
-        run_library_scan_task(user_id, music_dir),
+        coordinated_scan(),
         task_id=f"library_scan:{user_id}",
         task_type="library_scan",
         metadata={"user_id": user_id}
@@ -4020,6 +3985,11 @@ async def get_library_albums(request: Request):
     
     db_albums = await db.query_library_albums_grouped(user_id)
     if db_albums:
+        all_disc_rows = await db.query_all_album_disc_track_counts(user_id)
+        disc_rows_by_album: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for disc_row in all_disc_rows:
+            key = (disc_row.get("artist_norm") or "", disc_row.get("album_norm") or "")
+            disc_rows_by_album.setdefault(key, []).append(disc_row)
         result = []
         for a in db_albums:
             sample_fp = a.get("sample_filepath") or ""
@@ -4030,7 +4000,7 @@ async def get_library_albums(request: Request):
             art_norm = a.get("artist_norm", "")
             alb_norm = a.get("album_norm", "")
             if art_norm and alb_norm:
-                disc_rows = await db.query_album_disc_track_counts(user_id, art_norm, alb_norm)
+                disc_rows = disc_rows_by_album.get((art_norm, alb_norm), [])
                 if len(disc_rows) > 1:
                     tot_tracks = sum(
                         max(r.get("max_total_tracks") or 0, r.get("max_track_num") or 0, r.get("track_count") or 0)
@@ -4043,16 +4013,7 @@ async def get_library_albums(request: Request):
                         t_count
                     )
 
-            total_size = 0
-            if folder_p and os.path.isdir(folder_p):
-                try:
-                    total_size = sum(
-                        os.path.getsize(os.path.join(folder_p, fn))
-                        for fn in os.listdir(folder_p)
-                        if os.path.isfile(os.path.join(folder_p, fn))
-                    )
-                except Exception:
-                    total_size = 0
+            total_size = a.get("total_size") or 0
 
             if tot_tracks > 0 and t_count >= tot_tracks:
                 status = 'fully'
@@ -5317,6 +5278,7 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
                 album_artist=dz_album_artist,
                 date=dz_date
             )
+            await db.refresh_library_paths(user_id, [str(target_path)])
             return {"status": "success", "message": "Metadata fixed successfully using Deezer."}
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to fix metadata: {e}")
@@ -5956,25 +5918,15 @@ async def scan_missing_art_for_user(user_id: str):
     if not music_dir.exists():
         return []
         
-    import json
-    albums = await asyncio.to_thread(get_all_album_folders, music_dir)
+    rows = await db.query_library_missing_art_albums(user_id)
     missing = []
-    for alb in albums:
-        if not alb.get("has_cover"):
-            folders_raw = alb.get("folder_path")
-            try:
-                folders = json.loads(folders_raw)
-            except Exception:
-                folders = [folders_raw]
-            
-            missing.append({
-                "artist_name": alb.get("artist_name"),
-                "album_name": alb.get("album_name"),
-                "folder_path": folders[0] if folders else folders_raw,
-                "folders": folders,
-                "bitrate": alb.get("bitrate"),
-                "format": alb.get("format")
-            })
+    for row in rows:
+        folder = str(Path(row.get("sample_filepath") or "").parent)
+        missing.append({
+            "artist_name": row.get("artist_name"), "album_name": row.get("album_name"),
+            "folder_path": folder, "folders": [folder], "bitrate": row.get("bitrate"),
+            "format": (row.get("format") or "").upper(),
+        })
             
     cache_path = get_file_checks_cache_path(user_id)
     data = {}
@@ -6085,12 +6037,14 @@ async def save_art_endpoint(req: SaveArtRequest, request: Request):
             finally:
                 temporary_path.unlink(missing_ok=True)
             
+        import glob
+        audio_files = []
+        for ext in ["*.mp3", "*.flac", "*.m4a", "*.mp4", "*.ogg"]:
+            audio_files.extend(glob.glob(str(target_path / ext)))
+            audio_files.extend(glob.glob(str(target_path / "**" / ext), recursive=True))
+        audio_files = list(dict.fromkeys(audio_files))
+
         if req.embed:
-            import glob
-            audio_files = []
-            for ext in ["*.mp3", "*.flac", "*.m4a"]:
-                audio_files.extend(glob.glob(str(target_path / ext)))
-                audio_files.extend(glob.glob(str(target_path / "**" / ext), recursive=True))
                 
             embed_failures = []
             for filepath in audio_files:
@@ -6138,7 +6092,8 @@ async def save_art_endpoint(req: SaveArtRequest, request: Request):
                     embed_failures.append(f_path.name)
         else:
             embed_failures = []
-                    
+
+        await db.refresh_library_paths(user_id, audio_files)
         await trigger_navidrome_scan_debounced()
         return {
             "status": "partial" if embed_failures else "success",
@@ -6275,6 +6230,7 @@ async def edit_track_tags_endpoint(req: EditTagsRequest, request: Request):
                 audio["\xa9gen"] = req.genre
             audio.save()
             
+        await db.refresh_library_paths(user_id, [str(target_path)])
         await trigger_navidrome_scan_debounced()
         return {"status": "success", "message": "Tags updated successfully."}
     except Exception as e:
@@ -6362,10 +6318,11 @@ async def organize_preview_endpoint(request: Request):
     preview = await asyncio.to_thread(_organize_preview_sync, music_dir, pattern)
     return preview
 
-def _organize_execute_sync(music_dir: Path, pattern: str) -> tuple[int, list]:
+def _organize_execute_sync(music_dir: Path, pattern: str) -> tuple[int, list, list]:
     import shutil
     moved_count = 0
     errors = []
+    moved_paths = []
     for root, dirs, files in os.walk(str(music_dir)):
         for f in files:
             if f.lower().endswith((".mp3", ".flac", ".m4a")):
@@ -6382,6 +6339,7 @@ def _organize_execute_sync(music_dir: Path, pattern: str) -> tuple[int, list]:
                         dst_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.move(str(src_path), str(dst_path))
                         moved_count += 1
+                        moved_paths.append((str(src_path), str(dst_path)))
                         
                         parent = src_path.parent
                         while parent != music_dir and parent.is_dir() and not os.listdir(str(parent)):
@@ -6389,7 +6347,7 @@ def _organize_execute_sync(music_dir: Path, pattern: str) -> tuple[int, list]:
                             parent = parent.parent
                 except Exception as e:
                     errors.append({"file": str(src_path), "error": str(e)})
-    return moved_count, errors
+    return moved_count, errors, moved_paths
 
 @app.post("/api/library/organize")
 async def organize_execute_endpoint(request: Request):
@@ -6412,7 +6370,10 @@ async def organize_execute_endpoint(request: Request):
     if not music_dir.exists():
         raise HTTPException(status_code=404, detail="Library directory does not exist")
         
-    moved_count, errors = await asyncio.to_thread(_organize_execute_sync, music_dir, pattern)
+    moved_count, errors, moved_paths = await asyncio.to_thread(_organize_execute_sync, music_dir, pattern)
+    if moved_paths:
+        await db.invalidate_library_paths(user_id, [old for old, _ in moved_paths])
+        await db.refresh_library_paths(user_id, [new for _, new in moved_paths])
                     
     await trigger_navidrome_scan_debounced()
     return {"status": "success", "moved_count": moved_count, "errors": errors}
@@ -6523,7 +6484,23 @@ async def scan_duplicates_for_user(user_id: str):
     if not music_dir.exists():
         return []
         
-    duplicates_groups = await asyncio.to_thread(_get_duplicates_sync, music_dir)
+    rows = await db.query_library_duplicate_rows(user_id)
+    grouped = {}
+    for row in rows:
+        key = f"{row.get('artist_norm') or ''}|{row.get('title_norm') or ''}"
+        grouped.setdefault(key, []).append({
+            "path": row["filepath"], "artist": row.get("artist") or "Unknown",
+            "title": row.get("title") or "Unknown", "album": row.get("album") or "Unknown",
+            "size": row.get("size") or 0, "bitrate": row.get("bitrate") or 0,
+            "format": (row.get("ext") or "").upper(),
+        })
+    duplicates_groups = []
+    for key, tracks in grouped.items():
+        tracks.sort(key=lambda item: (item["format"] == "FLAC", item["bitrate"], item["size"]), reverse=True)
+        duplicates_groups.append({
+            "key": key, "artist": tracks[0]["artist"], "title": tracks[0]["title"],
+            "best_track": tracks[0], "tracks": tracks,
+        })
     
     cache_path = get_file_checks_cache_path(user_id)
     data = {}
@@ -6589,6 +6566,7 @@ async def resolve_duplicates_endpoint(req: ResolveDuplicatesRequest, request: Re
         music_dir = Path(user_row["music_dir"]).resolve()
         
     deleted_count, errors = await asyncio.to_thread(_resolve_duplicates_sync, req.paths_to_delete, music_dir)
+    await db.invalidate_library_paths(user_id, req.paths_to_delete)
             
     await trigger_navidrome_scan_debounced()
     return {"status": "success", "deleted_count": deleted_count, "errors": errors}
@@ -6903,6 +6881,10 @@ async def mass_rename_files(req: MassRenameRequest, request: Request):
         return renamed, errors
 
     renamed, errors = await asyncio.to_thread(_rename_sync)
+    if not req.dry_run:
+        applied = [item for item in renamed if item.get("applied")]
+        await db.invalidate_library_paths(user_id, [item["from"] for item in applied])
+        await db.refresh_library_paths(user_id, [item["to"] for item in applied])
     return {
         "renamed": renamed,
         "errors": errors,
@@ -6928,56 +6910,26 @@ async def scan_feat_artists(request: Request):
     user = await get_current_user(request)
     user_id = user["id"]
 
-    cfg = config_manager.config
-    music_dir = Path(cfg.paths.music_dir)
-    user_row = await db.get_user_by_id(user_id)
-    if user_row and user_row.get("music_dir"):
-        music_dir = Path(user_row["music_dir"])
-
     _FEAT_RE = re.compile(
         r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+)(.+?)[\)\]]?\s*$',
         re.IGNORECASE
     )
 
-    def _scan_sync():
-        import os as _os
-        results = []
-        for root, dirs, files in _os.walk(str(music_dir)):
-            dirs[:] = [d for d in dirs if not d.startswith(".")]
-            for f in files:
-                if not f.lower().endswith((".mp3", ".flac", ".m4a")):
-                    continue
-                f_path = Path(root) / f
-                try:
-                    meta = read_basic_tags(f_path)
-                    artist = meta.get("artist", "")
-                    title = meta.get("title", "")
-                    if not artist:
-                        continue
-                    m = _FEAT_RE.search(artist)
-                    if not m:
-                        continue
-                    primary = artist[:m.start()].strip()
-                    featured = m.group(1).strip()
-                    # Suggest new title if feat not already in title
-                    if "feat" not in title.lower() and "ft." not in title.lower():
-                        new_title = f"{title} (feat. {featured})"
-                    else:
-                        new_title = title
-                    results.append({
-                        "path": str(f_path),
-                        "file_path": str(f_path),
-                        "current_artist": artist,
-                        "current_title": title,
-                        "proposed_artist": primary,
-                        "proposed_title": new_title,
-                        "featured_artist": featured,
-                    })
-                except Exception:
-                    pass
-        return results
-
-    affected = await asyncio.to_thread(_scan_sync)
+    affected = []
+    for row in await db.query_library_feat_rows(user_id):
+        artist = row.get("artist") or ""
+        title = row.get("title") or ""
+        match = _FEAT_RE.search(artist)
+        if not match:
+            continue
+        primary, featured = artist[:match.start()].strip(), match.group(1).strip()
+        affected.append({
+            "path": row["filepath"], "file_path": row["filepath"],
+            "current_artist": artist, "current_title": title,
+            "proposed_artist": primary,
+            "proposed_title": title if "feat" in title.lower() or "ft." in title.lower() else f"{title} (feat. {featured})",
+            "featured_artist": featured,
+        })
     return {"affected": affected, "count": len(affected)}
 
 
@@ -7087,8 +7039,10 @@ async def fix_feat_artists(req: FeatFixRequest, request: Request):
 
     fixed, errors = await asyncio.to_thread(_fix_sync)
     
-    if fixed:
-        await db.clear_file_metadata_cache()
+    if fixed and not req.dry_run:
+        await db.refresh_library_paths(
+            user_id, [item["path"] for item in fixed if item.get("applied")]
+        )
 
     return {
         "fixed": fixed,
@@ -7127,6 +7081,12 @@ async def fix_folder_tags_endpoint(req: FixFolderTagsRequest, request: Request):
         target_album=req.target_album,
         config=config_manager.config
     )
+
+    changed_paths = [
+        str(path) for path in folder.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".mp3", ".flac", ".m4a", ".mp4", ".ogg"}
+    ]
+    await db.refresh_library_paths(user["id"], changed_paths)
 
     return {"status": "success", "updated_files": count}
 
@@ -7268,6 +7228,10 @@ async def retag_library_musicbrainz(req: RetageRequest, request: Request):
             "dry_run": req.dry_run,
         }
         await db.set_cache("retag_last_summary", summary)
+        if not req.dry_run:
+            await db.refresh_library_paths(
+                user_id, [item["path"] for item in results if item.get("applied")]
+            )
         logger.info(f"MusicBrainz re-tag complete: {summary}")
 
     if req.dry_run or req.paths:
