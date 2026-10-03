@@ -29,7 +29,8 @@ import {
   Pause as PauseIcon,
   Close as CloseIcon,
   Fingerprint as FingerprintIcon,
-  Album as AlbumIcon
+  Album as AlbumIcon,
+  AutoFixHigh as RebuildIcon
 } from '@mui/icons-material';
 import getTheme from './theme';
 import Dashboard from './components/Dashboard';
@@ -53,17 +54,17 @@ import RunningTasks from './components/RunningTasks';
 import AcoustIDManager from './components/AcoustIDManager';
 import NamingConvention from './components/NamingConvention';
 import FeatFixer from './components/FeatFixer';
-import RetagManager from './components/RetagManager';
 import ArtistAliases from './components/ArtistAliases';
 import MusicBrainzInspector from './components/MusicBrainzInspector';
 import MusicRequests from './components/MusicRequests';
+import MetadataRebuild from './components/MetadataRebuild';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const DRAWER_WIDTH = 260;
 
-type TabId = 'dashboard' | 'explore' | 'search' | 'requests' | 'feedback' | 'listenbrainz' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'retag' | 'aliases' | 'musicbrainz-inspector' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
+type TabId = 'dashboard' | 'explore' | 'search' | 'requests' | 'feedback' | 'listenbrainz' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'metadata-rebuild' | 'aliases' | 'musicbrainz-inspector' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
 
-const VALID_TABS: TabId[] = ['dashboard', 'explore', 'search', 'requests', 'feedback', 'listenbrainz', 'my-artists', 'server-health', 'acoustid', 'library-manager', 'lyrics', 'album-art', 'duplicates', 'naming', 'feat-fixer', 'retag', 'aliases', 'musicbrainz-inspector', 'tasks', 'config', 'history', 'logs', 'user-settings'];
+const VALID_TABS: TabId[] = ['dashboard', 'explore', 'search', 'requests', 'feedback', 'listenbrainz', 'my-artists', 'server-health', 'acoustid', 'library-manager', 'lyrics', 'album-art', 'duplicates', 'naming', 'feat-fixer', 'metadata-rebuild', 'aliases', 'musicbrainz-inspector', 'tasks', 'config', 'history', 'logs', 'user-settings'];
 
 const fmtTime = (secs: number) => {
   if (!secs || isNaN(secs)) return '0:00';
@@ -328,7 +329,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
     { id: 'library-manager', text: 'Library Manager', icon: <LibraryIcon /> },
     { id: 'naming', text: 'Naming Conventions', icon: <SettingsIcon /> },
     { id: 'feat-fixer', text: 'Feature Artist Fixer', icon: <ArtistsIcon /> },
-    { id: 'retag', text: 'MusicBrainz Retag', icon: <LibraryIcon /> },
+    { id: 'metadata-rebuild', text: 'Metadata Rebuild', icon: <RebuildIcon /> },
     { id: 'musicbrainz-inspector', text: 'MusicBrainz Inspector', icon: <AlbumIcon /> },
     { id: 'lyrics', text: 'Lyrics Manager', icon: <MusicIcon /> },
     { id: 'album-art', text: 'Album Art Finder', icon: <AlbumArtIcon /> },
@@ -552,7 +553,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         {activeTab === 'library-manager' && <LibraryManager />}
         {activeTab === 'naming' && <NamingConvention />}
         {activeTab === 'feat-fixer' && <FeatFixer />}
-        {activeTab === 'retag' && <RetagManager />}
+        {activeTab === 'metadata-rebuild' && <MetadataRebuild />}
         {activeTab === 'aliases' && <ArtistAliases />}
         {activeTab === 'musicbrainz-inspector' && <MusicBrainzInspector />}
         {activeTab === 'lyrics' && <LyricsManager />}

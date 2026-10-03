@@ -101,7 +101,11 @@ const IssueCard: React.FC<{
   const [previewLoading, setPreviewLoading] = useState(false);
 
   React.useEffect(() => {
-    if (expanded && (issue.type === 'dirty_metadata' || issue.type === 'missing_metadata') && !preview && !previewLoading) {
+    // Dirty/split metadata must be resolved against a complete release, not by
+    // inheriting tags from neighbouring files.  The release-centric rebuild
+    // page owns that preview; keep the legacy single-file preview only for
+    // genuinely missing tags.
+    if (expanded && issue.type === 'missing_metadata' && !preview && !previewLoading) {
       setPreviewLoading(true);
       apiService.previewMaintenanceFix(issue.type, issue.target_path)
         .then(res => setPreview(res))

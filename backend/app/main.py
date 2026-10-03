@@ -3501,7 +3501,7 @@ async def run_maintenance_scan_internal_user(user_id: str):
                 "title": f"Dirty/Incorrect Metadata: '{Path(f_path).name}'",
                 "description": f"Track '{title}' has metadata issues:\n- {r.get('issue_dirty_reason') or ''}",
                 "target_path": f_path,
-                "actions": [{"name": "Clean Tags", "action": "clean_metadata", "label": "Clean & Fix Tags"}]
+                "actions": []
             })
         if r.get("issue_naming"):
             issues.append({
@@ -4950,9 +4950,7 @@ def run_maintenance_scan_internal_sync(music_dir: Path, silenced: set, playlists
                 "title": f"Dirty/Incorrect Metadata: '{os.path.basename(track['path'])}'",
                 "description": f"Track '{track['title']}' has metadata issues:\n- {track['dirty_meta_reason']}",
                 "target_path": track["path"],
-                "actions": [
-                    {"name": "Clean Tags", "action": "clean_metadata", "label": "Clean & Fix Tags"}
-                ]
+                "actions": []
             })
 
     # 5. Orphaned Lyrics Check
@@ -5324,6 +5322,16 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
             raise HTTPException(status_code=500, detail=f"Failed to fix metadata: {e}")
             
     elif req.action == "clean_metadata":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Legacy single-file tag cleaning is disabled because it can "
+                "propagate split album metadata. Use Metadata Rebuild to "
+                "review and apply a MusicBrainz release plan."
+            ),
+        )
+        # Kept below temporarily for compatibility archaeology; unreachable by
+        # design until the legacy implementation is removed in a later cleanup.
         try:
             meta = read_basic_tags(target_path)
             ext = target_path.suffix.lower().strip(".")
@@ -7338,6 +7346,11 @@ async def resolve_artist_from_musicbrainz(artist_name: str, request: Request):
         "all_names": all_names,
         "suggested_alias": {artist_name: canonical} if canonical != artist_name else {}
     }
+
+
+# Release-centric metadata rebuild. Kept separate from the legacy per-track retagger.
+from backend.app.metadata_pipeline.router import create_metadata_rebuild_router
+app.include_router(create_metadata_rebuild_router(db, config_manager, trigger_navidrome_scan_debounced))
 
 
 # Frontend static serving

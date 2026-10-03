@@ -734,6 +734,40 @@ export const apiService = {
     return resp.data;
   },
 
+  // ── Release-centric metadata rebuild ──────────────────────────────────────
+  async startMetadataRebuildScan(verifyAcoustid: boolean = false): Promise<any> {
+    const resp = await api.post('/api/metadata-rebuild/scan', { verify_acoustid: verifyAcoustid });
+    return resp.data;
+  },
+
+  async getMetadataRebuildStatus(): Promise<any> {
+    const resp = await api.get('/api/metadata-rebuild/status');
+    return resp.data;
+  },
+
+  async getMetadataRebuildAlbums(): Promise<any[]> {
+    const resp = await api.get('/api/metadata-rebuild/albums');
+    return resp.data;
+  },
+
+  async selectMetadataRelease(planId: string, releaseMbid: string): Promise<any> {
+    const resp = await api.post(`/api/metadata-rebuild/albums/${encodeURIComponent(planId)}/release`, { release_mbid: releaseMbid });
+    return resp.data;
+  },
+
+  async applyMetadataAlbum(planId: string, includeArtwork: boolean, allowItunesArtwork: boolean): Promise<any> {
+    const resp = await api.post(`/api/metadata-rebuild/albums/${encodeURIComponent(planId)}/apply`, {
+      include_artwork: includeArtwork,
+      allow_itunes_artwork: allowItunesArtwork,
+    });
+    return resp.data;
+  },
+
+  async rollbackMetadataAlbum(planId: string): Promise<any> {
+    const resp = await api.post(`/api/metadata-rebuild/albums/${encodeURIComponent(planId)}/rollback`);
+    return resp.data;
+  },
+
   // ── Artist Aliases ──────────────────────────────────────────────────────────
   async getArtistAliases(): Promise<any> {
     const resp = await api.get('/api/admin/artist-aliases');

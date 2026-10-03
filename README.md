@@ -13,6 +13,7 @@
 - **SQLite Database**: Persists history of past sync runs, individual track sync states, and structured system logs inside a shared persistent volume.
 - **Config Hot-Reloading**: Edit settings in the UI or raw YAML, save them, and they are hot-reloaded in-memory without container restarts.
 - **Recoverable playlist updates**: Downloads are prepared in a staging folder, then promoted with directory renames while the previous generation is kept for rollback. A crash during the swap is recovered on startup; keep independent backups of your playlist volume.
+- **Release-centric metadata rebuild**: A read-only global inventory resolves complete releases through MusicBrainz, keeps track artists separate from Album Artist, writes MBIDs/disc totals/compilation flags, sources artwork from Cover Art Archive with an exact-match iTunes fallback, and applies one reviewed album at a time with rollback. Deezer is not part of this pipeline.
 
 ---
 
@@ -95,6 +96,16 @@ To use the published beta image, run `docker compose pull` and `docker compose u
 To prepare a release from a real Git clone (this distributed source snapshot has no `.git`), commit and push the changes to `beta`, verify the beta image in Docker with real slskd/Navidrome services, merge the verified commit into `main`, and only then create/push an annotated `vX.Y.Z` tag on that main commit. Do not push `latest` while downloads and migrations remain unverified in a real deployment.
 
 The new Music Requests page keeps per-user requests and lets administrators approve or decline them. Search Music offers a Request button as well as the existing direct Download action. Requests are a first step toward a full Seerr-like workflow; notifications, calendars, subscriptions, full provider search parity, and robust reboot recovery for in-flight requests are not yet implemented.
+
+### Rebuilding library metadata
+
+Open **Metadata Rebuild** and start a library scan. The scan reads tags and groups physical album folders, then asks MusicBrainz for release candidates; it does not modify audio files. Review low-confidence or unmatched albums, select a candidate or paste an exact MusicBrainz release MBID, and apply only after every local track is matched.
+
+The applied tag model is designed for Navidrome: Album Artist comes from the release credit, track Artist and multi-value ARTISTS come from the recording credit, and release/recording/album-artist MBIDs, track/disc totals, release date and compilation state are written together. Words such as `and` or `with` are never parsed heuristically into artists. Historical credited-as aliases are replaced with the current canonical MusicBrainz artist name.
+
+Artwork order is Cover Art Archive release, Cover Art Archive release group, then an optional iTunes result only when normalized artist and album are exact matches. Existing artwork is preserved if none of those checks succeeds. AcoustID is optional and can only validate the proposed recording MBID; it cannot choose an album or override MusicBrainz release structure.
+
+Apply creates a per-album metadata/cover backup under the persistent data directory and supports rollback from the same page. Managed tags are updated without deleting lyrics, comments or unrelated custom tags. Hardlinked playlist files retain their inode. Back up the mounted music library before the first beta run and test a small album before applying broadly.
 
 ### Volume Mount Matching (The Most Common Issue ⚠️)
 For VeryDisco to find downloaded audio files, **both VeryDisco and slskd containers must mount the exact same physical folder** on the host. 
