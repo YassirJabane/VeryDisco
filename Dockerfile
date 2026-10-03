@@ -6,7 +6,7 @@ WORKDIR /build
 
 # Copy frontend source files
 COPY frontend/package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY frontend/ ./
 RUN npm run build
@@ -30,8 +30,8 @@ RUN groupadd -g 1000 appgroup && \
     useradd -r -u 1000 -g appgroup appuser
 
 # Pre-create required directory structures
-RUN mkdir -p /data /app/frontend/dist /slskd_downloads /music && \
-    chown -R appuser:appgroup /data /app /slskd_downloads /music
+RUN mkdir -p /data /app/frontend/dist /slskd_downloads /music /navidrome_playlists && \
+    chown -R appuser:appgroup /data /app /slskd_downloads /music /navidrome_playlists
 
 # Install Python backend dependencies (production only)
 COPY backend/requirements.txt ./

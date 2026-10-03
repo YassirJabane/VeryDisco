@@ -52,10 +52,10 @@ describe('Configuration Component', () => {
   test('renders form input fields with loaded values', async () => {
     render(<Configuration />);
     
-    // Wait for values to populate
-    const input = await screen.findByLabelText(/ListenBrainz Username/i) as HTMLInputElement;
+    // The admin configuration now starts with the slskd section.
+    const input = await screen.findByLabelText(/slskd Base URL/i) as HTMLInputElement;
     expect(input).toBeInTheDocument();
-    expect(input.value).toBe("testuser");
+    expect(input.value).toBe("http://slskd:5030");
 
     const saveButton = await screen.findByRole('button', { name: /Save Changes/i });
     expect(saveButton).toBeInTheDocument();

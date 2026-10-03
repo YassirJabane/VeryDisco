@@ -13,6 +13,7 @@ import {
   Close as CloseIcon
 } from '@mui/icons-material';
 import { apiService } from '../api';
+import { useNotification } from '../context/NotificationContext';
 
 interface MissingAlbum {
   artist_name: string;
@@ -34,6 +35,7 @@ interface ArtCandidate {
 }
 
 const AlbumArtManager: React.FC = () => {
+  const { confirm } = useNotification();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [albums, setAlbums] = useState<MissingAlbum[]>([]);
@@ -100,15 +102,19 @@ const AlbumArtManager: React.FC = () => {
     }
   };
 
-  const handleSaveArt = async (candidate: ArtCandidate) => {
+  const applyArt = async (candidate: ArtCandidate) => {
     if (!selectedAlbum) return;
     setSearchLoading(true);
     try {
-      await apiService.saveArt({
+      const result = await apiService.saveArt({
         folder_path: selectedAlbum.folder_path,
         url: candidate.url,
         embed: embedTags
       });
+      if (result.status === 'partial') {
+        setSearchError(`Cover files were saved, but embedding failed for: ${(result.embed_failures || []).join(', ')}.`);
+        return;
+      }
       // Remove from list
       setAlbums(prev => prev.filter(a => a.folder_path !== selectedAlbum.folder_path));
       setSearchOpen(false);
@@ -118,6 +124,16 @@ const AlbumArtManager: React.FC = () => {
     } finally {
       setSearchLoading(false);
     }
+  };
+
+  const handleSaveArt = (candidate: ArtCandidate) => {
+    if (!selectedAlbum) return;
+    confirm({
+      title: 'Apply album artwork?',
+      message: `Apply ${candidate.source} artwork for "${candidate.artist} — ${candidate.album}" to "${selectedAlbum.artist_name} — ${selectedAlbum.album_name}"? ${embedTags ? 'This will also replace embedded artwork in audio files.' : 'Embedded audio artwork will not change.'} Check that the editions match before continuing.`,
+      confirmText: 'Apply artwork',
+      onConfirm: () => { void applyArt(candidate); },
+    });
   };
 
   return (
@@ -224,6 +240,8 @@ const AlbumArtManager: React.FC = () => {
               </Button>
             </Box>
           )}
+
+          {selectedAlbum && <Alert severity="info">Target: {selectedAlbum.artist_name} — {selectedAlbum.album_name}. Check the release version, date and artwork before applying a candidate.</Alert>}
 
           <FormControlLabel
             control={<Checkbox checked={embedTags} onChange={e => setEmbedTags(e.target.checked)} />}

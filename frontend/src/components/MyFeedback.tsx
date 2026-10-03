@@ -24,10 +24,6 @@ export const MyFeedback: React.FC = () => {
     message: '',
     severity: 'success'
   });
-  const [, setLikedTracks] = useState<Set<string>>(() => {
-    const saved = localStorage.getItem('likedTracks');
-    return saved ? new Set(JSON.parse(saved)) : new Set();
-  });
 
   const fetchFeedback = async () => {
     setLoading(true);
@@ -57,7 +53,12 @@ export const MyFeedback: React.FC = () => {
           try {
             const deezerRes = await apiService.searchDeezer(t.artist + ' ' + t.title, 'track');
             if (deezerRes && deezerRes.data && deezerRes.data.length > 0) {
-              const coverUrl = deezerRes.data[0].album?.cover_medium;
+              const normalize = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+              const match = deezerRes.data.find((candidate: any) =>
+                normalize(candidate.artist?.name || '') === normalize(t.artist || '') &&
+                normalize(candidate.title || '') === normalize(t.title || '')
+              );
+              const coverUrl = match?.album?.cover_medium;
               if (coverUrl) coverMap.set(`${t.artist}-${t.title}`, coverUrl);
             }
           } catch (e) {
@@ -230,15 +231,7 @@ export const MyFeedback: React.FC = () => {
                             try {
                               await apiService.likeTrack(track.artist, track.title, "", 0);
                               setFeedbackTracks(prev => prev.filter(t => t.mbid !== track.mbid || t.title !== track.title));
-                              if (isLoved) {
-                                const key = `${track.artist}-${track.title}`;
-                                setLikedTracks(prev => {
-                                  const next = new Set(prev);
-                                  next.delete(key);
-                                  localStorage.setItem('likedTracks', JSON.stringify(Array.from(next)));
-                                  return next;
-                                });
-                              }
+                              window.dispatchEvent(new Event('verydisco-feedback-changed'));
                               setSnackbar({
                                 open: true,
                                 message: `Successfully removed ${isLoved ? 'love' : 'hate'} rating.`,

@@ -62,6 +62,7 @@ navidrome:
         assert manager.validation_errors is None
         assert manager.config.listenbrainz.username == "actual-user"
         assert manager.config.slskd.base_url == "http://slskd-service:5030"
-        assert manager.config.schedule.cron == "0 3 * * 1" # default value
+        assert manager.config.schedule.daily_time == "04:00"
+        assert manager.config.schedule.weekly_day == "tue"
     finally:
         os.unlink(path)

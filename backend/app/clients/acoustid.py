@@ -88,7 +88,7 @@ class AcoustIDClient:
         
         mbids = set()
         for result in data.get("results", []):
-            if result.get("score", 0) >= 0.15:
+            if result.get("score", 0) >= 0.6:
                 for recording in result.get("recordings", []):
                     if "id" in recording:
                         mbids.add(recording["id"])
@@ -174,7 +174,7 @@ class AcoustIDClient:
         # Check if there is any actual non-empty metadata in the results to compare against
         has_any_valid_metadata = False
         for result in results:
-            if result.get("score", 0.0) >= 0.15:
+            if result.get("score", 0.0) >= 0.6:
                 for rec in result.get("recordings", []):
                     if rec.get("title") and rec.get("title").strip():
                         has_any_valid_metadata = True
@@ -188,7 +188,7 @@ class AcoustIDClient:
         # 4. If we have a tagged MBID, check if it matches AcoustID
         if tagged_mbid:
             for result in results:
-                if result.get("score", 0.0) >= 0.15:
+                if result.get("score", 0.0) >= 0.6:
                     for rec in result.get("recordings", []):
                         if rec.get("id") == tagged_mbid:
                             logger.info(f"[AcoustID] Track: '{tagged_title}' — Generated MBID: {tagged_mbid} | Expected MBID: {tagged_mbid} | Match: True")
@@ -196,7 +196,7 @@ class AcoustIDClient:
 
         # 5. Fallback: string matching
         import re
-        from backend.app.sync import extract_main_artist, clean_search_title, get_artist_aliases
+        from backend.app.sync import extract_main_artist, clean_search_title
         def norm(s: str) -> str:
             return re.sub(r'[^\w]', '', s).lower()
 
@@ -204,7 +204,7 @@ class AcoustIDClient:
         norm_tagged_title = norm(tagged_title)
         
         main_art = extract_main_artist(tagged_artist)
-        artist_aliases = get_artist_aliases(tagged_artist) + get_artist_aliases(main_art)
+        artist_aliases = [tagged_artist, main_art]
         norm_aliases = [norm(a) for a in artist_aliases if a]
 
         best_match_desc = ""
@@ -212,36 +212,31 @@ class AcoustIDClient:
 
         for result in results:
             score = result.get("score", 0.0)
-            if score < 0.15:
+            if score < 0.6:
                 continue
 
             for rec in result.get("recordings", []):
                 rec_title = norm(rec.get("title", ""))
                 clean_rec_title = norm(clean_search_title(rec.get("title", "")))
 
-                title_match = (
-                    clean_tagged_title in rec_title or 
-                    rec_title in clean_tagged_title or
-                    norm_tagged_title in rec_title or
-                    rec_title in norm_tagged_title or
-                    (clean_rec_title and clean_rec_title in clean_tagged_title) or
-                    (clean_rec_title and clean_tagged_title in clean_rec_title)
-                )
+                title_match = bool(clean_tagged_title and clean_rec_title and clean_tagged_title == clean_rec_title)
+                if not title_match:
+                    title_match = bool(norm_tagged_title and rec_title and norm_tagged_title == rec_title)
 
                 if title_match:
                     rec_artists = rec.get("artists") or []
                     artist_match = False
                     if not rec_artists:
-                        artist_match = True
+                        artist_match = not tagged_artist
                     else:
                         for art in rec_artists:
                             rec_art = norm(art.get("name", ""))
-                            if any(alias in rec_art or rec_art in alias for alias in norm_aliases if alias):
+                            if any(alias == rec_art for alias in norm_aliases if alias):
                                 artist_match = True
                                 break
 
-                    # Accept if artist matches OR if title match is high confidence (handles guest/solo tracks on joint albums)
-                    if artist_match or (score >= 0.40 and len(clean_tagged_title) >= 4):
+                    # Do not accept a similarly named song by an unrelated artist.
+                    if artist_match:
                         if score > highest_score:
                             highest_score = score
                             art_name = rec_artists[0].get("name") if rec_artists else "Unknown"
@@ -249,7 +244,7 @@ class AcoustIDClient:
 
         generated_mbid = None
         for r in results:
-            if r.get("score", 0.0) >= 0.15:
+            if r.get("score", 0.0) >= 0.6:
                 for rec in r.get("recordings", []):
                     if rec.get("id"):
                         generated_mbid = rec.get("id")

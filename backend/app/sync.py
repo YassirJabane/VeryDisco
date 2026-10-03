@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import tempfile
+import errno
 import asyncio
 import time
 from pathlib import Path
@@ -21,38 +22,53 @@ logger = app_logger.get_logger()
 
 
 def safe_move_file(src: Any, dst: Any):
-    """
-    Safely moves or copies a file across filesystem boundaries (handling Docker mounts / sendfile Errno 5).
-    """
+    """Atomically publish a download, including when Docker mounts differ."""
     src_path = Path(src)
     dst_path = Path(dst)
+    if src_path.resolve() == dst_path.resolve():
+        return
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        shutil.move(str(src_path), str(dst_path))
-    except Exception as e:
-        logger.warning(f"Standard shutil.move failed ({e}) for {src_path} -> {dst_path}, using chunked fallback copy...")
-        with open(src_path, "rb") as fsrc:
-            with open(dst_path, "wb") as fdst:
-                shutil.copyfileobj(fsrc, fdst)
-        try:
-            os.remove(src_path)
-        except Exception:
-            pass
+        os.replace(src_path, dst_path)
+        return
+    except OSError as e:
+        if e.errno not in (errno.EXDEV, errno.EIO):
+            raise
+
+    fd, temporary_name = tempfile.mkstemp(prefix=".verydisco-", suffix=dst_path.suffix, dir=dst_path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as fdst, open(src_path, "rb") as fsrc:
+            shutil.copyfileobj(fsrc, fdst)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+        if temporary_path.stat().st_size != src_path.stat().st_size:
+            raise IOError(f"Incomplete copy from {src_path} to {temporary_path}")
+        os.replace(temporary_path, dst_path)
+        src_path.unlink()
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 def safe_copy_file(src: Any, dst: Any):
-    """
-    Safely copies a file across filesystem boundaries (handling Docker mounts / sendfile Errno 5).
-    """
+    """Copy to a sibling temporary file before replacing the destination."""
     src_path = Path(src)
     dst_path = Path(dst)
+    if src_path.resolve() == dst_path.resolve():
+        return
     dst_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=".verydisco-", suffix=dst_path.suffix, dir=dst_path.parent)
+    temporary_path = Path(temporary_name)
     try:
-        shutil.copy2(str(src_path), str(dst_path))
-    except Exception as e:
-        logger.warning(f"Standard shutil.copy2 failed ({e}) for {src_path} -> {dst_path}, using chunked fallback copy...")
-        with open(src_path, "rb") as fsrc:
-            with open(dst_path, "wb") as fdst:
-                shutil.copyfileobj(fsrc, fdst)
+        with os.fdopen(fd, "wb") as fdst, open(src_path, "rb") as fsrc:
+            shutil.copyfileobj(fsrc, fdst)
+            fdst.flush()
+            os.fsync(fdst.fileno())
+        if temporary_path.stat().st_size != src_path.stat().st_size:
+            raise IOError(f"Incomplete copy from {src_path} to {temporary_path}")
+        shutil.copystat(src_path, temporary_path)
+        os.replace(temporary_path, dst_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 # Global state tracker for real-time dashboard updates
 is_syncing = False
@@ -472,7 +488,8 @@ def embed_metadata(
     is_explore: bool = False,
     mbid_album: Optional[str] = None,
     mbid_recording: Optional[str] = None,
-    genre: Optional[str] = None
+    genre: Optional[str] = None,
+    credited_artists: Optional[List[str]] = None
 ):
     """Embed metadata, cover art, and lyrics directly into the audio file metadata.
 
@@ -489,6 +506,10 @@ def embed_metadata(
 
     clean_artist = sanitize_artist_name(artist) or artist
     clean_title = strip_scene_tags(title) or title
+    title_feature = re.search(r'(?i)[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+([^\)\]]+)[\)\]]', clean_title)
+    featured_from_title = title_feature.group(1).strip() if title_feature else ""
+    if featured_from_title and featured_from_title.lower() not in clean_artist.lower():
+        clean_artist = f"{clean_artist} feat. {featured_from_title}"
 
     if is_explore:
         final_album = "Explore Tracks"
@@ -496,7 +517,7 @@ def embed_metadata(
         compilation_val = "1"
     else:
         final_album = album or f"{clean_title} - Single"
-        final_album_artist = sanitize_artist_name(album_artist or artist) or clean_artist
+        final_album_artist = sanitize_artist_name(get_folder_artist_name(artist, album_artist or artist)) or clean_artist
         compilation_val = "0"
 
     # ── Build individual artist list for Navidrome ARTISTS multi-value tag ──────
@@ -505,14 +526,27 @@ def embed_metadata(
     # ----:com.apple.iTunes:artists (M4A). See Navidrome mappings.yaml.
     feat_artists: list[str] = []
     if not is_explore:
-        _artist_norm = re.sub(r'[\(\[].*?[\)\]]', '', clean_artist)
-        _parts = re.split(
-            r'(?i)\b(?:feat\.?|ft\.?|featuring|and|with)\b|\s+&\s+|\s+[xX]\s+|,|/',
-            _artist_norm
-        )
-        feat_artists = [p.strip() for p in _parts if p.strip()]
+        if credited_artists:
+            feat_artists = list(dict.fromkeys(a.strip() for a in credited_artists if a and a.strip()))
+        else:
+            # 'and' and 'with' can be part of a band's name: never invent
+            # artist entities from those words without provider credits.
+            normalized_credit = re.sub(r'(?i)[\(\[]\s*(feat\.?|ft\.?|featuring)\s+', r' \1 ', clean_artist)
+            normalized_credit = re.sub(r'[\)\]]\s*$', '', normalized_credit)
+            feat_artists = [a.strip() for a in re.split(r'(?i)\s+(?:feat\.?|ft\.?|featuring)\s+', normalized_credit) if a.strip()]
         if not feat_artists:
-            feat_artists = [extract_main_artist(clean_artist) or clean_artist]
+            feat_artists = [clean_artist]
+        if featured_from_title and not any(featured_from_title.lower() == name.lower() for name in feat_artists):
+            feat_artists.append(featured_from_title)
+
+    cover_format = None
+    if cover_bytes:
+        if cover_bytes.startswith(b'\xff\xd8\xff'):
+            cover_format = 'jpeg'
+        elif cover_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            cover_format = 'png'
+        else:
+            logger.warning(f"Skipping unsupported cover format for {file_path}")
 
     try:
         if ext == ".mp3":
@@ -581,8 +615,8 @@ def embed_metadata(
             if lyrics_text:
                 # USLT desc='' matches Navidrome alias: uslt:description
                 tags.add(USLT(encoding=3, lang='eng', desc='', text=lyrics_text))
-            if cover_bytes:
-                tags.add(APIC(encoding=3, mime='image/jpeg',
+            if cover_format:
+                tags.add(APIC(encoding=3, mime=f'image/{cover_format}',
                                type=3, desc='Cover', data=cover_bytes))
 
             # Save as ID3v2.4 — required for true multi-value frame support
@@ -643,10 +677,10 @@ def embed_metadata(
             if lyrics_text:
                 # lyrics → Navidrome mappings.yaml: unsyncedlyrics/lyrics alias
                 audio["lyrics"] = [lyrics_text]
-            if cover_bytes:
+            if cover_format:
                 pic = Picture()
                 pic.type = 3
-                pic.mime = "image/jpeg"
+                pic.mime = f"image/{cover_format}"
                 pic.desc = "Cover"
                 pic.data = cover_bytes
                 audio.add_picture(pic)
@@ -701,8 +735,9 @@ def embed_metadata(
                                    int(track_total or 0) if not is_explore else 0)]
             if lyrics_text:
                 audio["©lyr"] = [lyrics_text]
-            if cover_bytes:
-                audio["covr"] = [MP4Cover(cover_bytes, imageformat=MP4Cover.FORMAT_JPEG)]
+            if cover_format:
+                image_format = MP4Cover.FORMAT_PNG if cover_format == 'png' else MP4Cover.FORMAT_JPEG
+                audio["covr"] = [MP4Cover(cover_bytes, imageformat=image_format)]
             audio.save()
 
         # Touch mtime so Navidrome's file watcher immediately notices changes
@@ -728,7 +763,7 @@ def extract_main_artist(artist_name: str) -> str:
     # Remove parenthetical extras
     art = re.sub(r'[\(\[].*?[\)\]]', '', art).strip()
     # Split on feature/joint separators
-    parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring|and|with)\b|\s+&\s+|\s+[xX]\s+|,|/', art)
+    parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring)\b', art)
     main = parts[0].strip() if parts else art
     return main or art
 
@@ -741,7 +776,7 @@ def get_artist_aliases(artist_name: str) -> list[str]:
 
     # 1. Convert $ to s / S so A$AP becomes ASAP
     normalized_art = re.sub(r'\$', 's', artist_name, flags=re.IGNORECASE)
-    parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring|and|with)\b|\s+&\s+|\s+[xX]\s+|,|/', normalized_art)
+    parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring)\b', normalized_art)
     for p in parts:
         clean_p = re.sub(r'[^\w]', '', p).lower().strip()
         if clean_p:
@@ -752,7 +787,7 @@ def get_artist_aliases(artist_name: str) -> list[str]:
                 aliases.add(w)
 
     # 2. Also keep raw parts without $ conversion (e.g. A$AP -> aap)
-    raw_parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring|and|with)\b|\s+&\s+|\s+[xX]\s+|,|/', artist_name)
+    raw_parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring)\b', artist_name)
     for rp in raw_parts:
         clean_rp = re.sub(r'[^\w]', '', rp).lower().strip()
         if clean_rp:
@@ -954,8 +989,7 @@ def find_existing_track_file(
     return None, None
 
 def find_downloaded_file(downloads_dir: str, target_filename: str, target_size: int) -> Optional[Path]:
-    """Search recursively for downloaded file using 4 robust strategies."""
-    import time
+    """Locate one completed file without guessing among unrelated downloads."""
     import re
 
     basename = os.path.basename(target_filename.replace("\\", "/"))
@@ -966,7 +1000,6 @@ def find_downloaded_file(downloads_dir: str, target_filename: str, target_size: 
         return None
 
     audio_exts = {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".alac"}
-    now = time.time()
 
     candidates = []
     try:
@@ -980,45 +1013,32 @@ def find_downloaded_file(downloads_dir: str, target_filename: str, target_size: 
         logger.error(f"Error scanning downloads directory {downloads_dir}: {e}")
         return None
 
-    # Strategy 1: Exact basename + size within 15%
-    for path in candidates:
-        if path.name.lower() == basename.lower():
-            try:
-                actual_size = path.stat().st_size
-                if actual_size > 0 and (target_size == 0 or abs(actual_size - target_size) / target_size < 0.15):
-                    return path
-            except Exception:
-                pass
+    # slskd reports the expected size. Never fall back to an unrelated size.
+    def valid_size(path: Path) -> bool:
+        try:
+            actual_size = path.stat().st_size
+            return actual_size > 0 and (target_size <= 0 or abs(actual_size - target_size) / target_size < 0.05)
+        except OSError:
+            return False
 
-    # Strategy 2: Exact basename match (ignoring size variance)
-    for path in candidates:
-        if path.name.lower() == basename.lower():
-            return path
-
-    # Strategy 3: Cleaned basename matching (strip punctuation/accents)
     def norm_name(s: str) -> str:
         name_no_ext = os.path.splitext(s)[0]
         return re.sub(r'[^\w]', '', name_no_ext).lower()
 
+    exact = [p for p in candidates if p.name.lower() == basename.lower() and valid_size(p)]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        logger.warning(f"Ambiguous slskd download: {basename} has {len(exact)} matching files")
+        return None
+
     target_norm = norm_name(basename)
-    if target_norm:
-        for path in candidates:
-            if norm_name(path.name) == target_norm:
-                return path
-
-    # Strategy 4: Fallback to most recently modified audio file (within last 180s)
-    recent_files = []
-    for path in candidates:
-        try:
-            mtime = path.stat().st_mtime
-            if (now - mtime) <= 180:
-                recent_files.append((mtime, path))
-        except Exception:
-            pass
-
-    if recent_files:
-        recent_files.sort(key=lambda x: x[0], reverse=True)
-        return recent_files[0][1]
+    normalized = [p for p in candidates if p.suffix.lower() == Path(basename).suffix.lower()
+                  and norm_name(p.name) == target_norm and valid_size(p)] if target_norm else []
+    if len(normalized) == 1:
+        return normalized[0]
+    if len(normalized) > 1:
+        logger.warning(f"Ambiguous normalized slskd download: {basename}")
 
     return None
 
@@ -1182,7 +1202,8 @@ async def relocate_and_tag_download(
         disc_total=disc_total,
         is_explore=is_explore,
         mbid_album=mbid_album,
-        mbid_recording=mbid_recording
+        mbid_recording=mbid_recording,
+        credited_artists=meta_result.get("credited_artists")
     )
 
     return "downloaded", str(dest_audio_path), lyrics_status
@@ -1482,16 +1503,65 @@ async def enrich_library_index_mbids(user_id: str, db: "Database") -> None:
     logger.info(f"✅ [MBID Enrichment Summary] Finished background enrichment: {enriched}/{total_to_check} tracks updated with MusicBrainz IDs.")
 
 
+def restore_previous_playlist(output_path: Path, interrupted_id: str) -> None:
+    """Recover an interrupted promotion without discarding either generation."""
+    backup = output_path.with_name(f".{output_path.name}.previous")
+    if not backup.exists():
+        return
+    if output_path.exists():
+        interrupted = output_path.with_name(f".{output_path.name}.interrupted_{interrupted_id}")
+        os.replace(output_path, interrupted)
+    os.replace(backup, output_path)
+
+
+def recover_playlist_backups(roots: List[Path]) -> None:
+    """Restore any previous generation left by a process crash on startup."""
+    from uuid import uuid4
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for backup in root.glob(".*.previous"):
+            source = backup.name[1:-len(".previous")]
+            if backup.is_dir() and re.fullmatch(r"[A-Za-z0-9_-]+", source):
+                restore_previous_playlist(root / source, uuid4().hex[:8])
+
+
+def promote_playlist_staging(staging_path: Path, output_path: Path) -> Optional[Path]:
+    """Swap directories on one volume, retaining the previous one for rollback."""
+    if not staging_path.is_dir() or staging_path.resolve().parent != output_path.resolve().parent:
+        raise ValueError("Staging must be a directory beside the playlist output")
+    backup = output_path.with_name(f".{output_path.name}.previous")
+    if backup.exists():
+        raise RuntimeError(f"Unrecovered playlist backup: {backup}")
+    if output_path.exists():
+        if not output_path.is_dir():
+            raise ValueError("Playlist output is not a directory")
+        preserved = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".nfo", ".txt"}
+        for item in output_path.iterdir():
+            if item.is_file() and item.suffix.lower() in preserved and not (staging_path / item.name).exists():
+                shutil.copy2(item, staging_path / item.name)
+        os.replace(output_path, backup)
+    try:
+        os.replace(staging_path, output_path)
+    except Exception:
+        if backup.exists():
+            os.replace(backup, output_path)
+        raise
+    return backup if backup.exists() else None
+
+
 async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[str] = None, user_id: Optional[str] = None):
     """Executes the complete synchronization run."""
     global is_syncing, current_run_id, sync_progress, current_sync_task
     if _sync_lock.locked():
         logger.warning("Synchronization is already running. Skipping trigger.")
-        return
+        return False
 
     async with _sync_lock:
       if not playlist_source:
           raise ValueError("playlist_source must be provided to run_sync")
+      if not re.fullmatch(r"[A-Za-z0-9_-]+", playlist_source):
+          raise ValueError("Invalid playlist source")
 
       is_syncing = True
       current_sync_task = asyncio.current_task()
@@ -1535,6 +1605,7 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
 
       # Create staging folder structure inside the Navidrome playlist destination
       staging_dir = None
+      backup_path = None
       playlist_output_dir = os.path.join(playlists_dir, playlist_source)
       output_path = Path(playlist_output_dir)
       parent_dir = output_path.parent
@@ -1545,6 +1616,7 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           # Pre-create parent directory to avoid FileNotFoundError
           try:
               await asyncio.to_thread(parent_dir.mkdir, parents=True, exist_ok=True)
+              await asyncio.to_thread(restore_previous_playlist, output_path, str(run_id))
           except PermissionError as e:
               logger.error(
                   f"Sync run #{run_id} failed: cannot create playlist directory '{parent_dir}'. "
@@ -1608,9 +1680,8 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
 
           if not tracks:
               logger.warning(f"ListenBrainz playlist '{playlist_source}' is empty. Nothing to synchronize.")
-              await db.update_run(run_id, "completed", 0, 0, 0, 0)
-              sync_progress["status"] = "completed"
-              return
+              # Still promote an empty M3U so stale tracks from the previous
+              # generation do not remain visible forever.
 
           # 2. Build library index once to avoid O(n*m) filesystem walks
           logger.info(f"Building music library index from {music_dir}...")
@@ -1703,6 +1774,7 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
               grabbed_candidate = None
               audio_quality_dict = config.slskd.audio_quality.model_dump() if hasattr(config.slskd.audio_quality, "model_dump") else dict(config.slskd.audio_quality)
 
+              valid_candidates = []
               for strategy_idx, query in enumerate(search_queries):
                   logger.info(f"Search strategy {strategy_idx+1}/{len(search_queries)} for '{artist} - {title}': '{query}'")
                   try:
@@ -1968,35 +2040,12 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           # 5. Promotion to final output path
           expected_parent = Path(playlists_dir).resolve()
           resolved_output = output_path.resolve()
-          if not str(resolved_output).startswith(str(expected_parent)):
+          if not resolved_output.is_relative_to(expected_parent):
               raise ValueError(f"Output path {resolved_output} is outside allowed directory {expected_parent}. Aborting.")
 
-          PRESERVE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".nfo", ".txt"}
-
-          if output_path.exists() and output_path.is_dir():
-              # Delete only non-preserved files and subdirectories.
-              # Files matching PRESERVE_EXTENSIONS (artwork etc.) are left untouched in-place.
-              for item in list(output_path.iterdir()):
-                  if item.is_dir():
-                      shutil.rmtree(item)
-                  elif item.is_file() and item.suffix.lower() not in PRESERVE_EXTENSIONS:
-                      item.unlink()
-                  else:
-                      logger.info(f"Preserving user file across sync: {item.name}")
-          else:
-              output_path.mkdir(parents=True, exist_ok=True)
-
-          # Move all staging files into the (now cleaned) output directory
+          # Keep the old generation until the new one and its M3U are complete.
           staging_path = Path(staging_dir)
-          for item in list(staging_path.iterdir()):
-              dest = output_path / item.name
-              if dest.exists():
-                  if dest.is_dir():
-                      shutil.rmtree(dest)
-                  else:
-                      dest.unlink()
-              shutil.move(str(item), str(dest))
-          staging_path.rmdir()
+          backup_path = await asyncio.to_thread(promote_playlist_staging, staging_path, output_path)
           logger.info(f"Staging directory promoted to: {output_path}")
 
           # 6. Generate M3U playlist
@@ -2044,6 +2093,7 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
               logger.info(f"Generated playlist file at {m3u_path}")
           except Exception as e:
               logger.error(f"Failed to generate playlist: {e}")
+              raise
 
           # 6. Trigger Navidrome Scan
           if config.navidrome.url and config.navidrome.username and config.navidrome.password:
@@ -2056,7 +2106,12 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
               logger.info("Triggering Navidrome scan...")
               await nd_client.trigger_scan()
 
-          # 7. Cleanup unreferenced master tracks
+          # Promotion is committed only after playlist generation and scan.
+          if backup_path and backup_path.exists():
+              await asyncio.to_thread(shutil.rmtree, backup_path)
+              backup_path = None
+
+          # 7. Cleanup only after the previous generation is no longer needed.
           try:
               cleanup_explore_master(Path(playlists_dir))
           except Exception as e:
@@ -2098,6 +2153,12 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
               else:
                   logger.warning(f"Staging dir preserved at {staging_dir} — {downloaded_count} tracks already downloaded.")
       finally:
+          if backup_path and backup_path.exists():
+              try:
+                  await asyncio.to_thread(restore_previous_playlist, output_path, str(run_id))
+                  logger.warning("Restored previous playlist after interrupted sync; new files kept in an interrupted directory.")
+              except Exception as restore_error:
+                  logger.error(f"Could not restore previous playlist {output_path}: {restore_error}")
           is_syncing = False
           app_logger.current_run_id = None
           current_run_id = None
@@ -2108,3 +2169,4 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
               logger.info("Cleared ListenBrainz playlist cache.")
           except Exception as e:
               logger.debug(f"Failed to clear playlist cache: {e}")
+      return sync_progress["status"] == "completed"

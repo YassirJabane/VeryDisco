@@ -11,43 +11,18 @@ from backend.app.clients.slskd import SlskdClient
 from backend.app.clients.lrclib import LrcLibClient
 from backend.app.sync import sanitize_filename, find_downloaded_file, embed_metadata
 from backend.app.clients.deezer import DeezerClient
+from backend.app.config import AppConfig
 
 logger = get_logger()
 
 
 def safe_move_file(src: Any, dst: Any):
-    """
-    Safely moves or copies a file across filesystem boundaries (handling Docker mounts / sendfile Errno 5).
-    """
-    src_path = Path(src)
-    dst_path = Path(dst)
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        shutil.move(str(src_path), str(dst_path))
-    except Exception as e:
-        logger.warning(f"Standard shutil.move failed ({e}) for {src_path} -> {dst_path}, using chunked fallback copy...")
-        with open(src_path, "rb") as fsrc:
-            with open(dst_path, "wb") as fdst:
-                shutil.copyfileobj(fsrc, fdst)
-        try:
-            os.remove(src_path)
-        except Exception:
-            pass
+    from backend.app.sync import safe_move_file as atomic_move
+    return atomic_move(src, dst)
 
 def safe_copy_file(src: Any, dst: Any):
-    """
-    Safely copies a file across filesystem boundaries (handling Docker mounts / sendfile Errno 5).
-    """
-    src_path = Path(src)
-    dst_path = Path(dst)
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        shutil.copy2(str(src_path), str(dst_path))
-    except Exception as e:
-        logger.warning(f"Standard shutil.copy2 failed ({e}) for {src_path} -> {dst_path}, using chunked fallback copy...")
-        with open(src_path, "rb") as fsrc:
-            with open(dst_path, "wb") as fdst:
-                shutil.copyfileobj(fsrc, fdst)
+    from backend.app.sync import safe_copy_file as atomic_copy
+    return atomic_copy(src, dst)
 
 
 async def fetch_track_metadata_with_fallback(
@@ -71,6 +46,7 @@ async def fetch_track_metadata_with_fallback(
     result = {
         "title": title,
         "artist": artist,
+        "credited_artists": [],
         "album_artist": artist,
         "album": album or title,
         "date": None,
@@ -92,6 +68,7 @@ async def fetch_track_metadata_with_fallback(
             result.update({
                 "title": mb.get("title", title),
                 "artist": mb.get("artist", artist),
+                "credited_artists": mb.get("credited_artists") or [],
                 "album_artist": mb.get("album_artist", artist),
                 "album": mb.get("album") or result["album"],
                 "date": mb.get("date"),
@@ -106,21 +83,18 @@ async def fetch_track_metadata_with_fallback(
     except Exception as e:
         logger.debug(f"MusicBrainz metadata lookup failed for '{artist} - {title}': {e}")
 
-    # --- Fetch cover art from Deezer (cover_xl) ---
+    # A release-specific MBID is stronger evidence than a text search on Deezer.
     target_album = result["album"] or album or title
     target_artist = result["artist"] or artist
 
-    # 1. Search track directly on Deezer FIRST (matches Explore tab behavior 1:1)
-    try:
-        dz_tr = await deezer_client.get_track_metadata(target_artist, title)
-        if dz_tr:
-            cov_url = dz_tr.get("album", {}).get("cover_xl") or dz_tr.get("album", {}).get("cover_big")
-            if cov_url:
-                result["cover_bytes"] = await deezer_client.download_cover_art(cov_url)
-    except Exception as e:
-        logger.debug(f"Deezer track cover lookup failed for '{target_artist} - {title}': {e}")
+    if result.get("mbid_album"):
+        try:
+            from backend.app.clients.musicbrainz import musicbrainz_client
+            result["cover_bytes"] = await musicbrainz_client.get_cover_art(result["mbid_album"])
+        except Exception as e:
+            logger.debug(f"MusicBrainz release cover lookup failed: {e}")
 
-    # 2. Try album-level Deezer lookup if track lookup yielded no cover
+    # Fall back only to a candidate matching the requested album.
     if not result["cover_bytes"]:
         try:
             cover = await deezer_client.get_album_cover(target_artist, target_album)
@@ -128,16 +102,6 @@ async def fetch_track_metadata_with_fallback(
                 result["cover_bytes"] = cover
         except Exception as e:
             logger.debug(f"Deezer album cover lookup failed for '{target_artist} - {target_album}': {e}")
-
-    # 3. Fallback to MusicBrainz Cover Art Archive
-    if not result["cover_bytes"] and result.get("mbid_album"):
-        try:
-            from backend.app.clients.musicbrainz import musicbrainz_client
-            cover = await musicbrainz_client.get_cover_art(result["mbid_album"])
-            if cover:
-                result["cover_bytes"] = cover
-        except Exception:
-            pass
 
     return result
 
@@ -341,31 +305,27 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
         s = re.sub(r'\bparts?\s+6[-–—]9\b', 'parts 6 9', s)
         return re.sub(r'[^\w]', '', s)
 
-    # 1. Match by track position number in filename FIRST (e.g. "_01_", "01 -", "01.", "01_")
-    m_tr_num = re.match(r'^(\d{1,3})\b', filename_lower)
-    if m_tr_num:
-        try:
-            num = int(m_tr_num.group(1))
-            for track in official_tracks:
-                pos = track.get("track_position") or track.get("position") or track.get("track_num")
-                if pos and int(pos) == num:
-                    return track
-        except Exception:
-            pass
-
-    # 2. Multi-disc track pattern (e.g., "2-01 ...", "2.01 ...", "cd1-05 ...", "disc 2 - 01 ...")
+    # Match an explicit disc/track pair before the generic position: track 01
+    # exists on multiple discs and must not silently select disc one.
     m_disc_tr = re.search(r'^(?:cd|disc)?\s*(\d{1,2})[-_\.](\d{1,2})\b', filename_lower)
     if m_disc_tr:
         try:
             d_num = int(m_disc_tr.group(1))
             t_num = int(m_disc_tr.group(2))
             for track in official_tracks:
-                if track.get("disc_number") == d_num and track.get("track_position") == t_num:
-                    return track
-                elif track.get("track_position") == t_num:
+                if (track.get("disk_number") or track.get("disc_number") or track.get("disc_num") or 1) == d_num and track.get("track_position") == t_num:
                     return track
         except Exception:
             pass
+        return None
+
+    # A bare position is safe only if it is unique across all discs.
+    m_tr_num = re.match(r'^(\d{1,3})\b', filename_lower)
+    if m_tr_num:
+        num = int(m_tr_num.group(1))
+        matches = [track for track in official_tracks if str(track.get("track_position") or track.get("position") or track.get("track_num") or "") == str(num)]
+        if len(matches) == 1:
+            return matches[0]
 
     # 3. Match by normalized title (stripping leading artist/album self-titled prefixes to prevent false positive collisions)
     clean_filename = _norm(filename_lower)
@@ -549,26 +509,24 @@ async def _download_album_task_internal(
                 official_album_tracks = mb_album.get("tracks", [])
                 official_album_date = mb_album.get("release_date")
                 official_mb_release_mbid = mb_album.get("release_mbid")
+                target_album_artist = mb_album.get("album_artist") or artist
                 logger.info(f"Fetched {len(official_album_tracks)} official tracks from MusicBrainz for '{album}' (MBID: {official_mb_release_mbid}).")
         except Exception as e:
             logger.warning(f"Could not pre-fetch official album tracklist from MusicBrainz for '{artist} - {album}': {e}")
 
-        # 2. Fetch HD cover art from Deezer (cover_xl), falling back to MusicBrainz Cover Art Archive
-        try:
-            logger.info(f"Pre-fetching HD album cover art for '{artist} - {album}' from Deezer...")
-            official_album_cover_bytes = await deezer_client.get_album_cover(artist, album)
-            if official_album_cover_bytes:
-                logger.info(f"Retrieved 1000x1000 HD cover art from Deezer for '{album}'.")
-        except Exception as e:
-            logger.debug(f"Deezer cover art pre-fetch failed for '{artist} - {album}': {e}")
-
-        if not official_album_cover_bytes and official_mb_release_mbid:
+        # The selected MusicBrainz release determines the preferred artwork.
+        if official_mb_release_mbid:
             try:
                 from backend.app.clients.musicbrainz import musicbrainz_client
-                logger.info(f"Pre-fetching cover art from MusicBrainz Cover Art Archive for '{album}'...")
                 official_album_cover_bytes = await musicbrainz_client.get_cover_art(official_mb_release_mbid)
             except Exception as e:
                 logger.debug(f"MusicBrainz cover art pre-fetch failed for '{album}': {e}")
+
+        if not official_album_cover_bytes:
+            try:
+                official_album_cover_bytes = await deezer_client.get_album_cover(artist, album)
+            except Exception as e:
+                logger.debug(f"Deezer cover art pre-fetch failed for '{artist} - {album}': {e}")
 
         if chosen_username and chosen_folder and chosen_files:
             logger.info(f"Using manually chosen candidate from peer '{chosen_username}' for folder '{chosen_folder}'")
@@ -820,8 +778,10 @@ async def _download_album_task_internal(
 
             if not candidates:
                 logger.warning(f"No valid album directory found for '{artist} - {album}' after all fallback searches.")
-                await db.update_album_download_status(download_id, "failed")
-                return
+                if not official_album_tracks:
+                    await db.update_album_download_status(download_id, "failed")
+                    return
+                logger.info("Official tracklist is available; trying single-track downloads for the whole album.")
 
         max_attempts = getattr(config.schedule, "max_candidate_attempts", 3) or 3
         overall_downloaded = []
@@ -925,6 +885,7 @@ async def _download_album_task_internal(
                         dz_date = None
                         dz_album_artist = None
                         dz_artist = artist
+                        credited_artists = matched.get("credited_artists") if matched else None
 
                         filename_part = os.path.basename(str(existing_path))
                         matched = match_file_to_official_track(filename_part, official_album_tracks)
@@ -953,10 +914,14 @@ async def _download_album_task_internal(
                                 track_total = track_total or meta_result["track_total"]
                             cover_bytes = meta_result["cover_bytes"]
                             dz_artist = meta_result["artist"]
+                            credited_artists = credited_artists or meta_result.get("credited_artists")
                             dz_album_artist = meta_result["album_artist"]
                             dz_date = meta_result["date"]
                             mbid_album = meta_result.get("mbid_album")
                             mbid_recording = meta_result.get("mbid_recording")
+                            if matched and matched.get("artist"):
+                                dz_artist = matched["artist"]
+                                mbid_recording = matched.get("id") or mbid_recording
                         except Exception as e:
                             logger.error(f"Metadata lookup failed for existing '{clean_title}': {e}")
 
@@ -1005,7 +970,8 @@ async def _download_album_task_internal(
                                 disc_total=disc_total,
                                 is_explore=False,
                                 mbid_album=official_mb_release_mbid or mbid_album,
-                                mbid_recording=mbid_recording
+                                mbid_recording=mbid_recording,
+                                credited_artists=credited_artists
                             )
 
                             # Update M3U references and clean up the old file in explore/playlists
@@ -1231,6 +1197,7 @@ async def _download_album_task_internal(
                     dz_date = None
                     dz_album_artist = None
                     dz_artist = artist
+                    credited_artists = matched.get("credited_artists") if matched else None
                     try:
                         meta_result = await fetch_track_metadata_with_fallback(
                             deezer_client, artist, clean_title, album
@@ -1266,10 +1233,14 @@ async def _download_album_task_internal(
                                     disc_total = max(disc_total, meta_result["disc_total"])
                                 cover_bytes = meta_result.get("cover_bytes")
                                 dz_artist = meta_result.get("artist") or artist
+                                credited_artists = credited_artists or meta_result.get("credited_artists")
                                 dz_album_artist = meta_result.get("album_artist") or artist
                                 dz_date = meta_result.get("date")
                                 mbid_album = meta_result.get("mbid_album")
                                 mbid_recording = meta_result.get("mbid_recording")
+                                if matched and matched.get("artist"):
+                                    dz_artist = matched["artist"]
+                                    mbid_recording = matched.get("id") or mbid_recording
                     except Exception as e:
                         logger.error(f"Metadata lookup failed for '{clean_title}': {e}")
 
@@ -1366,7 +1337,8 @@ async def _download_album_task_internal(
                             disc_total=disc_total,
                             is_explore=False,
                             mbid_album=official_mb_release_mbid or mbid_album,
-                            mbid_recording=mbid_recording
+                            mbid_recording=mbid_recording,
+                            credited_artists=credited_artists
                         )
                     except Exception as e:
                         logger.error(f"Failed to embed metadata/lyrics for {dest_path}: {e}")
@@ -1404,7 +1376,7 @@ async def _download_album_task_internal(
                 else:
                     logger.warning(f"Attempt {attempt + 1} finished with {len(downloaded_official_positions)}/{target_total} official tracks. Trying next candidate peer for remaining tracks...")
 
-        if not overall_downloaded and not overall_copied:
+        if not overall_downloaded and not overall_copied and not official_album_tracks:
             logger.error(f"Failed to download or copy any tracks for '{artist} - {album}' across all peer candidates.")
             await db.update_album_download_status(download_id, "failed")
             return
@@ -1423,13 +1395,14 @@ async def _download_album_task_internal(
                 t for t in official_album_tracks 
                 if ((t.get("disk_number") or t.get("disk_number") or t.get("disc_num") or 1), (t.get("track_position") or t.get("position") or t.get("track_num"))) not in downloaded_official_positions
             ]
+            fallback_complete = True
             if missing_official:
                 logger.warning(f"Album download for '{artist} - {album}' is missing {len(missing_official)} track(s) after checking peer candidates. Running automatic single-track fallbacks...")
                 for missing_t in missing_official:
                     t_title = missing_t["title"]
                     logger.info(f"Running automatic single-track fallback for missing track #{missing_t.get('track_position')} ('{artist} - {t_title}')...")
                     try:
-                        await download_single_track_task(
+                        fallback_ok = await download_single_track_task(
                             artist=artist,
                             title=t_title,
                             album=album,
@@ -1439,8 +1412,11 @@ async def _download_album_task_internal(
                             user_id=user_id,
                             mbid_album_override=official_mb_release_mbid
                         )
+                        fallback_complete = bool(fallback_ok) and fallback_complete
                     except Exception as fallback_err:
+                        fallback_complete = False
                         logger.error(f"Single-track fallback for '{t_title}' failed: {fallback_err}")
+            album_complete = album_complete or fallback_complete
 
         # Trigger Navidrome scan at the end of album download
         if config.navidrome.url and config.navidrome.username and config.navidrome.password:
@@ -1465,7 +1441,7 @@ async def _download_album_task_internal(
         except Exception as cleanup_err:
             logger.error(f"Failed to cleanup explore tracks for downloaded album {album}: {cleanup_err}")
             
-        await db.update_album_download_status(download_id, "completed")
+        await db.update_album_download_status(download_id, "completed" if album_complete else "partial")
         
     except asyncio.CancelledError:
         logger.warning(f"Album download {download_id} cancelled.")
@@ -1501,8 +1477,26 @@ async def download_single_track_task(
 ):
     """Background task to search, download and organize a single track."""
     async with _single_track_semaphore:
-        logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
-    
+        return await _download_single_track_internal(
+            artist, title, album, config, db, force, user_id, is_explore,
+            dest_dir_override, mbid_album_override
+        )
+
+
+async def _download_single_track_internal(
+    artist: str,
+    title: str,
+    album: str,
+    config: 'AppConfig',
+    db=None,
+    force: bool = False,
+    user_id: Optional[str] = None,
+    is_explore: bool = False,
+    dest_dir_override: Optional[str] = None,
+    mbid_album_override: Optional[str] = None
+) -> bool:
+    logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
+
     music_dir = config.paths.music_dir
     playlists_dir = config.paths.navidrome_playlists_dir
     active_playlists = config.listenbrainz.active_playlists or ["weekly-exploration"]
@@ -1537,7 +1531,7 @@ async def download_single_track_task(
                 q_status = check_quality_status(ext, bitrate, bit_depth, sample_rate, config)
                 if q_status in ["same", "better"]:
                     logger.info(f"Single track '{artist} - {title}' already exists in library in same/better quality ({ext.upper()} {bitrate}kbps). Skipping download.")
-                    return
+                    return True
 
         slskd_client = SlskdClient(
             base_url=config.slskd.base_url,
@@ -1603,7 +1597,7 @@ async def download_single_track_task(
 
         if not candidates:
             logger.warning(f"No candidates found for single track '{artist} - {title}'")
-            return
+            return False
 
         # Try downloading the best candidate
         attempts = min(len(candidates), config.schedule.max_candidate_attempts)
@@ -1674,6 +1668,7 @@ async def download_single_track_task(
             cover_bytes = None
             dz_date = None
             dz_album_artist = None
+            credited_artists = None
             try:
                 meta_result = await fetch_track_metadata_with_fallback(
                     deezer_client, artist, title, album
@@ -1688,6 +1683,7 @@ async def download_single_track_task(
                 mbid_recording = meta_result.get("mbid_recording")
                 cover_bytes = meta_result["cover_bytes"]
                 dz_album_artist = meta_result["album_artist"]
+                credited_artists = meta_result.get("credited_artists")
                 dz_date = meta_result["date"]
             except Exception as meta_err:
                 logger.warning(f"Could not retrieve metadata: {meta_err}")
@@ -1769,13 +1765,14 @@ async def download_single_track_task(
                     track_num=track_num,
                     cover_bytes=cover_bytes,
                     lyrics_text=lyrics_content,
-                    album_artist=artist,
+                    album_artist=dz_album_artist or artist,
                     date=dz_date,
                     disc_num=disc_num,
                     disc_total=disc_total,
                     is_explore=is_explore,
-                    mbid_album=official_mb_release_mbid or mbid_album_override or mbid_album,
-                    mbid_recording=mbid_recording
+                    mbid_album=mbid_album_override or mbid_album,
+                    mbid_recording=mbid_recording,
+                    credited_artists=credited_artists
                 )
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
             except Exception as e:
@@ -1792,12 +1789,14 @@ async def download_single_track_task(
                 await nd_client.trigger_scan()
                 
             logger.info(f"Single track download complete for {artist} - {title}")
-            return
+            return True
             
         logger.error(f"All candidate attempts failed for single track '{artist} - {title}'")
+        return False
         
     except Exception as e:
         logger.error(f"Error in single track download task: {e}")
+        return False
 
 
 async def grab_single_track_task(
@@ -1907,6 +1906,7 @@ async def grab_single_track_task(
         cover_bytes = None
         dz_date = None
         dz_album_artist = None
+        credited_artists = None
         try:
             meta_result = await fetch_track_metadata_with_fallback(
                 deezer_client, artist, title, album
@@ -1921,6 +1921,7 @@ async def grab_single_track_task(
             mbid_recording = meta_result.get("mbid_recording")
             cover_bytes = meta_result["cover_bytes"]
             dz_album_artist = meta_result["album_artist"]
+            credited_artists = meta_result.get("credited_artists")
             dz_date = meta_result["date"]
         except Exception as meta_err:
             logger.warning(f"Could not retrieve metadata: {meta_err}")
@@ -1974,13 +1975,14 @@ async def grab_single_track_task(
                 track_num=track_num,
                 cover_bytes=cover_bytes,
                 lyrics_text=lyrics_content,
-                album_artist=artist,
+                album_artist=dz_album_artist or artist,
                 date=dz_date,
                 disc_num=disc_num,
                 disc_total=disc_total,
                 is_explore=is_explore,
-                mbid_album=official_mb_release_mbid or mbid_album,
-                mbid_recording=mbid_recording
+                mbid_album=mbid_album,
+                mbid_recording=mbid_recording,
+                credited_artists=credited_artists
             )
             logger.info(f"Saved and embedded metadata for grabbed track '{fetched_artist} - {title_tag}'")
         except Exception as e:

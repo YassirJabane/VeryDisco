@@ -41,7 +41,7 @@ const FeatFixer: React.FC = () => {
     try {
       const paths = results.map(r => r.path);
       const res = await apiService.fixFeatArtists(paths, dryRun);
-      showToast(`Applied fixes! Successful: ${res.successful.length}, Failed: ${res.failed.length}`);
+      showToast(`Applied fixes! Successful: ${res.fixed.length}, Failed: ${res.errors.length}`);
       if (!dryRun) {
         setResults(null);
       }

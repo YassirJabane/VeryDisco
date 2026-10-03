@@ -4,7 +4,6 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from backend.app.config import AppConfig
 from backend.app.database import Database
-from backend.app.sync import run_sync
 from backend.app.logger import get_logger
 
 logger = get_logger()
@@ -83,7 +82,8 @@ def _promote_track_sync(explore_candidate_path, user_music_dir, artist, title, a
         disc_total=disc_total,
         is_explore=False,
         mbid_album=mbid_album,
-        mbid_recording=mbid_recording
+        mbid_recording=mbid_recording,
+        credited_artists=meta_result.get("credited_artists")
     )
 
     try:
@@ -263,32 +263,23 @@ class SchedulerManager:
 
         # Execute sync for all updated playlists
         for user_id, lb_username, lb_token, source, new_mbid, new_hash, cache_key in all_to_sync:
-            if new_mbid:
-                last_mbids[cache_key] = new_mbid
-            if new_hash:
-                last_hashes[cache_key] = new_hash
-                
-            state["last_mbids"] = last_mbids
-            state["last_hashes"] = last_hashes
             try:
+                logger.info(f"Starting sync run for: {source} (user: {lb_username})")
+                completed = await sync_module.run_sync(self.db, config, playlist_source=source, user_id=user_id)
+                if not completed:
+                    logger.warning(f"Sync for {source} did not complete; keeping previous scheduler state.")
+                    continue
+                if new_mbid:
+                    last_mbids[cache_key] = new_mbid
+                if new_hash:
+                    last_hashes[cache_key] = new_hash
+                state["last_mbids"] = last_mbids
+                state["last_hashes"] = last_hashes
                 async with _state_file_lock:
                     def _write_state(s):
                         with open(state_file, "w") as f:
                             json.dump(s, f)
                     await asyncio.to_thread(_write_state, state)
-            except Exception as e:
-                logger.warning(f"Failed to write state file: {e}", exc_info=True)
-                
-            logger.info(f"Starting sync run for: {source} (user: {lb_username})")
-            from backend.app.main import _create_tracked_task
-            task = _create_tracked_task(
-                sync_module.run_sync(self.db, config, playlist_source=source, user_id=user_id),
-                task_id=f"sync:{source}",
-                task_type="sync",
-                metadata={"source": source, "user_id": user_id}
-            )
-            try:
-                pass # Fire and forget in the background
             except Exception as e:
                 logger.error(f"Sync run failed for {source} (user: {lb_username}): {e}")
 
@@ -399,22 +390,20 @@ class SchedulerManager:
         # Schedule Automated File Checks Job
         try:
             async def run_file_checks():
-                from backend.app.main import scan_missing_art_endpoint, scan_duplicates_endpoint, trigger_acoustid_scan
+                from backend.app.main import scan_missing_art_for_user, scan_duplicates_for_user, scan_acoustid_batch_task
                 logger.info("Running automated file checks (Missing Art, Duplicates, AcoustID)...")
-                try:
-                    await scan_missing_art_endpoint(None)
-                except Exception as e:
-                    logger.error(f"Automated missing art scan failed: {e}")
-                
-                try:
-                    await scan_duplicates_endpoint(None)
-                except Exception as e:
-                    logger.error(f"Automated duplicates scan failed: {e}")
-                    
-                try:
-                    await trigger_acoustid_scan(batch_size=50, request=None)
-                except Exception as e:
-                    logger.error(f"Automated AcoustID scan failed: {e}")
+                for user in await self.db.list_users():
+                    user_id = user["id"]
+                    for operation in (scan_missing_art_for_user, scan_duplicates_for_user):
+                        try:
+                            await operation(user_id)
+                        except Exception as e:
+                            logger.error(f"Automated {operation.__name__} failed for {user_id}: {e}")
+                    if config.acoustid.api_key:
+                        try:
+                            await scan_acoustid_batch_task(batch_size=50, user_id=user_id)
+                        except Exception as e:
+                            logger.error(f"Automated AcoustID scan failed for {user_id}: {e}")
 
             self.scheduler.add_job(
                 run_file_checks,

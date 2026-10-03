@@ -34,23 +34,26 @@ export const Explore: React.FC = () => {
   const [stopping, setStopping] = useState(false);
   const [triggering, setTriggering] = useState(false);
   
-  const [likedTracks, setLikedTracks] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem('likedTracks');
-      return saved ? new Set(JSON.parse(saved)) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
+  const [likedTracks, setLikedTracks] = useState<Set<string>>(new Set());
+  const [hatedTracks, setHatedTracks] = useState<Set<string>>(new Set());
 
-  const [hatedTracks, setHatedTracks] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem('hatedTracks');
-      return saved ? new Set(JSON.parse(saved)) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
+  useEffect(() => {
+    let active = true;
+    const refreshFeedback = async () => {
+      try {
+        const data = await apiService.getFeedback(undefined, 100);
+        if (!active) return;
+        const key = (track: any) => `${track.artist}-${track.title}`;
+        setLikedTracks(new Set(data.feedback.filter((track: any) => track.score === 1).map(key)));
+        setHatedTracks(new Set(data.feedback.filter((track: any) => track.score === -1).map(key)));
+      } catch (error) {
+        console.error('Failed to load ListenBrainz feedback', error);
+      }
+    };
+    void refreshFeedback();
+    window.addEventListener('verydisco-feedback-changed', refreshFeedback);
+    return () => { active = false; window.removeEventListener('verydisco-feedback-changed', refreshFeedback); };
+  }, []);
 
   const [manualSearchOpen, setManualSearchOpen] = useState(false);
   const [searchTrack, setSearchTrack] = useState<any | null>(null);
@@ -137,7 +140,12 @@ export const Explore: React.FC = () => {
           try {
             const deezerRes = await apiService.searchDeezer(t.artist + ' ' + t.title, 'track');
             if (deezerRes && deezerRes.data && deezerRes.data.length > 0) {
-              const coverUrl = deezerRes.data[0].album?.cover_medium;
+              const normalize = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+              const match = deezerRes.data.find((candidate: any) =>
+                normalize(candidate.artist?.name || '') === normalize(t.artist || '') &&
+                normalize(candidate.title || '') === normalize(t.title || '')
+              );
+              const coverUrl = match?.album?.cover_medium;
               if (coverUrl) coverMap.set(`${t.artist}-${t.title}`, coverUrl);
             }
           } catch (e) {
@@ -243,7 +251,6 @@ export const Explore: React.FC = () => {
       } else {
         next.delete(key);
       }
-      localStorage.setItem('likedTracks', JSON.stringify(Array.from(next)));
       return next;
     });
 
@@ -254,19 +261,17 @@ export const Explore: React.FC = () => {
       } else {
         next.delete(key);
       }
-      localStorage.setItem('hatedTracks', JSON.stringify(Array.from(next)));
       return next;
     });
 
     try {
       await apiService.likeTrack(track.artist, track.title, track.album, finalScore);
+      window.dispatchEvent(new Event('verydisco-feedback-changed'));
     } catch (e: any) {
       console.error("Failed to submit feedback", e);
       notify(e.response?.data?.detail || "Failed to submit feedback to ListenBrainz. Check your token.", "error");
       setLikedTracks(previousLiked);
-      localStorage.setItem('likedTracks', JSON.stringify(Array.from(previousLiked)));
       setHatedTracks(previousHated);
-      localStorage.setItem('hatedTracks', JSON.stringify(Array.from(previousHated)));
     }
   };
 

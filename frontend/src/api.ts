@@ -339,6 +339,21 @@ export const apiService = {
     return resp.data;
   },
 
+  async createMusicRequest(kind: 'track' | 'album', artist: string, title: string, album: string): Promise<any> {
+    const resp = await api.post('/api/requests', { kind, artist, title, album });
+    return resp.data;
+  },
+
+  async getMusicRequests(): Promise<{ requests: any[] }> {
+    const resp = await api.get('/api/requests');
+    return resp.data;
+  },
+
+  async decideMusicRequest(id: number, decision: 'approve' | 'decline'): Promise<any> {
+    const resp = await api.post(`/api/requests/${id}/${decision}`);
+    return resp.data;
+  },
+
   async searchAlbumCandidates(artist: string, album: string): Promise<any[]> {
     const resp = await api.get<any[]>(`/api/download/album/search?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`);
     return resp.data;

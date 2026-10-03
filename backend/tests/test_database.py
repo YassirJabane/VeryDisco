@@ -68,3 +68,23 @@ async def test_database_logs(test_db: Database):
     assert logs[0]["message"] == "Starting system test"
     assert logs[1]["message"] == "An error occurred"
     assert logs[1]["run_id"] == 5
+
+
+@pytest.mark.asyncio
+async def test_expired_disk_cache_is_not_rehydrated(test_db: Database):
+    await test_db.set_cache("audit", {"private": True})
+    async with test_db.get_db() as conn:
+        await conn.execute("UPDATE library_cache SET updated_at = datetime('now', '-2 hours') WHERE key = 'audit'")
+        await conn.commit()
+    test_db.mem_cache.clear()
+    assert await test_db.get_cache("audit") is None
+
+
+@pytest.mark.asyncio
+async def test_starred_track_status_is_per_user(test_db: Database):
+    await test_db.mark_starred_track_processed("shared-track", "Artist", "Title", "alice")
+    assert await test_db.is_starred_track_processed("shared-track", "alice")
+    assert not await test_db.is_starred_track_processed("shared-track", "bob")
+    await test_db.mark_starred_track_processed("shared-track", "Artist", "Title", "bob")
+    assert await test_db.is_starred_track_processed("shared-track", "alice")
+    assert await test_db.is_starred_track_processed("shared-track", "bob")

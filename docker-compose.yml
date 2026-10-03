@@ -1,13 +1,22 @@
 services:
   verydisco:
-    image: ghcr.io/yassirjabane/verydisco:1.0.0
+    image: ghcr.io/yassirjabane/verydisco:${VERYDISCO_TAG:-beta}
+    build: .
     container_name: verydisco
     ports:
-      - "8086:8080"
+      - "127.0.0.1:8086:8080"
     user: "1000:1000"
+    environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      JWT_SECRET: ${JWT_SECRET:-}
     volumes:
       # Mount the configuration file. It will be created automatically if it does not exist.
-      - ./config.yml:/app/config.yml
+      - type: bind
+        source: ./config.yml
+        target: /app/config.yml
+        read_only: false
+        bind:
+          create_host_path: false
       
       # SQLite database and weekly synchronized files directory
       - ./data:/data
@@ -20,5 +29,6 @@ services:
       # Main music library root (mount host music root, e.g., /navidrome/music:/music)
       # Each user sets their personal subfolder in the UI (e.g. /music/a, /music/b/playlists)
       - ${MUSIC_HOST_PATH:-./music}:/music
+      - ${PLAYLISTS_HOST_PATH:-./navidrome_playlists}:/navidrome_playlists
       
     restart: unless-stopped

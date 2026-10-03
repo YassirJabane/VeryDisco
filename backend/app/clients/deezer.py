@@ -12,21 +12,13 @@ def _normalize(s: str) -> str:
     return re.sub(r'[^\w]', '', s).lower()
 
 def _result_matches(result: dict, artist: str, title: str) -> bool:
-    """Check if a Deezer result is a reasonable match for the expected artist/title."""
+    """Avoid attaching metadata from a similarly named song or another artist."""
     r_artist = _normalize(result.get("artist", {}).get("name", ""))
     r_title = _normalize(result.get("title", ""))
     n_artist = _normalize(artist)
     n_title = _normalize(title)
 
-    # Title must match at least partially (allow for remaster/version suffixes)
-    title_match = n_title in r_title or r_title in n_title
-    if not title_match:
-        return False
-
-    # At least one significant word of the artist must appear
-    artist_words = [re.sub(r'[^\w]', '', w).lower() for w in artist.split() if len(w) > 2]
-    artist_match = any(w in r_artist for w in artist_words) if artist_words else (n_artist in r_artist)
-    return artist_match
+    return bool(n_artist and n_title and n_artist == r_artist and n_title == r_title)
 
 import asyncio
 
@@ -166,12 +158,6 @@ class DeezerClient:
                 return None
             results = data.get("data", [])
             if not results:
-                # Fallback: try searching tracks directly on Deezer to extract album cover
-                dz_tr = await self.get_track_metadata(clean_artist, clean_album)
-                if dz_tr:
-                    cover_url = dz_tr.get("album", {}).get("cover_xl") or dz_tr.get("album", {}).get("cover_big")
-                    if cover_url:
-                        return await self.download_cover_art(cover_url)
                 return None
 
             best_cover_url = None
@@ -181,9 +167,8 @@ class DeezerClient:
                 r_artist = _normalize(res.get("artist", {}).get("name", ""))
                 n_artist = _normalize(clean_artist)
 
-                title_match = a_title in r_title or r_title in a_title
-                artist_words = [re.sub(r'[^\w]', '', w).lower() for w in clean_artist.split() if len(w) > 2]
-                artist_match = any(w in r_artist for w in artist_words) if artist_words else (n_artist in r_artist)
+                title_match = bool(a_title) and a_title == r_title
+                artist_match = bool(n_artist) and n_artist == r_artist
 
                 if title_match and artist_match:
                     best_cover_url = res.get("cover_xl") or res.get("cover_big")
@@ -194,4 +179,30 @@ class DeezerClient:
         except Exception as e:
             logger.debug(f"Deezer get_album_cover failed for '{artist} - {album}': {e}")
         return None
+
+    async def search_album_artwork(self, artist: str, album: str) -> List[Dict[str, Any]]:
+        """Expose only album-cover candidates with exact artist and album matches."""
+        query = urllib.parse.quote(f"{artist} {album}")
+        data = await self._request_json(f"{self.base_url}/search/album?q={query}&limit=10")
+        expected_artist = _normalize(artist)
+        expected_album = _normalize(album)
+        results = []
+        for item in (data or {}).get("data", []):
+            item_artist = (item.get("artist") or {}).get("name", "")
+            item_album = item.get("title", "")
+            if (_normalize(item_artist) != expected_artist or _normalize(item_album) != expected_album
+                    or not expected_artist or not expected_album):
+                continue
+            cover_url = item.get("cover_xl") or item.get("cover_big")
+            if cover_url:
+                results.append({
+                    "artist": item_artist,
+                    "album": item_album,
+                    "url": cover_url,
+                    "thumbnail": item.get("cover_medium") or cover_url,
+                    "resolution": "High resolution" if item.get("cover_xl") else "Large",
+                    "source": "Deezer",
+                    "release_date": "",
+                })
+        return results
 

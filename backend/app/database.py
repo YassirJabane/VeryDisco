@@ -24,12 +24,9 @@ class Database:
     @asynccontextmanager
     async def get_db(self):
         """Asynchronous context manager returning a configured sqlite connection."""
-        try:
-            conn = await aiosqlite.connect(self.db_path)
-        except Exception:
-            # Fallback if primary db_path is not writable (e.g., permission error in docker)
-            fallback = os.path.join(os.getcwd(), "verydisco.db")
-            conn = await aiosqlite.connect(fallback)
+        # Do not silently create a different, non-persistent database when /data
+        # is unavailable. A failed mount must be visible to the operator.
+        conn = await aiosqlite.connect(self.db_path)
         conn.row_factory = aiosqlite.Row
         try:
             await conn.execute("PRAGMA journal_mode=WAL;")
@@ -182,13 +179,10 @@ class Database:
             
             # Create essential indexes for fast status polling and query performance
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_run_id ON tracks(run_id);")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_runs_user_source ON runs(user_id, source);")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_album_downloads_user_status ON album_downloads(user_id, status);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_album_downloads_status ON album_downloads(status);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_run_id ON logs(run_id);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_file_metadata_cache_mtime ON file_metadata_cache(mtime);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);")
-            await db.execute("CREATE INDEX IF NOT EXISTS idx_processed_starred_user ON processed_starred_tracks(user_id);")
             await db.commit()
             
             # Migrate year column to file_metadata_cache
@@ -209,6 +203,31 @@ class Database:
                     await db.commit()
                 except Exception:
                     pass
+            # Legacy schema used track_id alone as PK, so one user's status
+            # could overwrite another user's status for the same Navidrome ID.
+            async with db.execute("PRAGMA table_info(processed_starred_tracks)") as cursor:
+                starred_columns = await cursor.fetchall()
+            pk_columns = [column[1] for column in starred_columns if column[5]]
+            if pk_columns == ["navidrome_track_id"]:
+                await db.execute("""
+                    CREATE TABLE IF NOT EXISTS processed_starred_tracks_new (
+                        navidrome_track_id TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        user_id TEXT NOT NULL DEFAULT '',
+                        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (user_id, navidrome_track_id)
+                    )
+                """)
+                await db.execute("""
+                    INSERT OR REPLACE INTO processed_starred_tracks_new
+                        (navidrome_track_id, artist, title, user_id, processed_at)
+                    SELECT navidrome_track_id, artist, title, COALESCE(user_id, ''), processed_at
+                    FROM processed_starred_tracks
+                """)
+                await db.execute("DROP TABLE processed_starred_tracks")
+                await db.execute("ALTER TABLE processed_starred_tracks_new RENAME TO processed_starred_tracks")
+                await db.commit()
 
             # ── Multi-user tables ───────────────────────────────────────────────────
             await db.execute("""
@@ -235,6 +254,22 @@ class Database:
                 updated_at       TEXT DEFAULT (datetime('now'))
             );
             """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS music_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL CHECK(kind IN ('track', 'album')),
+                artist TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                download_id INTEGER,
+                error TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_music_requests_user_status ON music_requests(user_id, status);")
             # Add user_id to album_downloads for per-user tracking
             try:
                 await db.execute("SELECT user_id FROM album_downloads LIMIT 1")
@@ -253,6 +288,10 @@ class Database:
                     await db.commit()
                 except Exception:
                     pass
+            # These indexes require columns added by the migrations above.
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_runs_user_source ON runs(user_id, source);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_album_downloads_user_status ON album_downloads(user_id, status);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_processed_starred_user ON processed_starred_tracks(user_id);")
             # Migrate pinned_artists to user-specific
             try:
                 await db.execute("SELECT user_id FROM pinned_artists LIMIT 1")
@@ -453,15 +492,6 @@ class Database:
             await db.commit()
             return track_id
 
-    async def add_album_download(self, artist: str, title: str, album: str) -> int:
-        async with self.get_db() as conn:
-            cursor = await conn.execute(
-                "INSERT INTO album_downloads (artist, title, album, status) VALUES (?, ?, ?, 'pending')",
-                (artist, title, album)
-            )
-            await conn.commit()
-            return cursor.lastrowid
-
     async def get_pending_album_downloads(self) -> list:
         async with self.get_db() as conn:
             cursor = await conn.execute("SELECT * FROM album_downloads WHERE status = 'pending' LIMIT 20")
@@ -592,10 +622,14 @@ class Database:
                     self.mem_cache.pop(key, None)
         import json
         async with self.get_db() as db:
-            async with db.execute("SELECT value FROM library_cache WHERE key = ?", (key,)) as cursor:
+            async with db.execute("SELECT value, updated_at FROM library_cache WHERE key = ?", (key,)) as cursor:
                 row = await cursor.fetchone()
                 if row:
                     try:
+                        from datetime import datetime, timezone
+                        updated = datetime.fromisoformat(row["updated_at"].replace(" ", "T")).replace(tzinfo=timezone.utc)
+                        if time.time() - updated.timestamp() >= 3600:
+                            return None
                         val = json.loads(row["value"])
                         async with self.mem_cache_lock:
                             self.mem_cache[key] = {
@@ -652,7 +686,7 @@ class Database:
                     return row is not None
             else:
                 async with db.execute(
-                    "SELECT 1 FROM processed_starred_tracks WHERE navidrome_track_id = ?", (track_id,)
+                    "SELECT 1 FROM processed_starred_tracks WHERE navidrome_track_id = ? AND user_id = ''", (track_id,)
                 ) as cursor:
                     row = await cursor.fetchone()
                     return row is not None
@@ -661,7 +695,7 @@ class Database:
         async with self.get_db() as db:
             await db.execute(
                 "INSERT OR REPLACE INTO processed_starred_tracks (navidrome_track_id, artist, title, user_id) VALUES (?, ?, ?, ?)",
-                (track_id, artist, title, user_id)
+                (track_id, artist, title, user_id or "")
             )
             await db.commit()
 
@@ -829,6 +863,56 @@ class Database:
             )
             await conn.commit()
             return cursor.lastrowid
+
+    async def get_album_download_status(self, download_id: int) -> Optional[str]:
+        async with self.get_db() as conn:
+            cursor = await conn.execute("SELECT status FROM album_downloads WHERE id = ?", (download_id,))
+            row = await cursor.fetchone()
+            return row["status"] if row else None
+
+    async def add_music_request(self, user_id: str, kind: str, artist: str, title: str = "", album: str = "") -> int:
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                "SELECT id FROM music_requests WHERE user_id = ? AND kind = ? AND artist = ? AND title = ? AND album = ? AND status IN ('pending', 'queued') LIMIT 1",
+                (user_id, kind, artist, title, album),
+            )
+            existing = await cursor.fetchone()
+            if existing:
+                return existing["id"]
+            cursor = await conn.execute(
+                "INSERT INTO music_requests (user_id, kind, artist, title, album) VALUES (?, ?, ?, ?, ?)",
+                (user_id, kind, artist, title, album),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def list_music_requests(self, user_id: str, is_admin: bool = False) -> list:
+        async with self.get_db() as conn:
+            if is_admin:
+                cursor = await conn.execute("SELECT * FROM music_requests ORDER BY id DESC LIMIT 200")
+            else:
+                cursor = await conn.execute("SELECT * FROM music_requests WHERE user_id = ? ORDER BY id DESC LIMIT 200", (user_id,))
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def list_queued_music_requests(self) -> list:
+        async with self.get_db() as conn:
+            cursor = await conn.execute("SELECT * FROM music_requests WHERE status = 'queued'")
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_music_request(self, request_id: int) -> Optional[dict]:
+        async with self.get_db() as conn:
+            cursor = await conn.execute("SELECT * FROM music_requests WHERE id = ?", (request_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def transition_music_request(self, request_id: int, old_status: str, new_status: str, *, error: Optional[str] = None, download_id: Optional[int] = None) -> bool:
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                "UPDATE music_requests SET status = ?, error = ?, download_id = COALESCE(?, download_id), updated_at = datetime('now') WHERE id = ? AND status = ?",
+                (new_status, error, download_id, request_id, old_status),
+            )
+            await conn.commit()
+            return cursor.rowcount == 1
 
     async def save_acoustid_result(self, file_path: str, status: str, reason: Optional[str] = None):
         async with self.get_db() as conn:

@@ -64,7 +64,7 @@ async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional
 async def get_release_with_media(release_mbid: str) -> Optional[dict]:
     """Fetch a release with full media+recordings so disc and track positions are accurate."""
     return await _mb_get(f"/release/{release_mbid}", params={
-        "inc": "media+recordings",
+        "inc": "artist-credits+media+recordings",
         "fmt": "json"
     })
 
@@ -72,6 +72,22 @@ async def get_release_with_media(release_mbid: str) -> Optional[dict]:
 
 def _normalize(s: str) -> str:
     return re.sub(r"[^\w]", "", s).lower()
+
+
+def _parse_artist_credit(credits) -> tuple[str, list[str]]:
+    """Keep MusicBrainz's credited display text and its explicit artist entities."""
+    display_parts = []
+    artists = []
+    for credit in credits or []:
+        if isinstance(credit, str):
+            display_parts.append(credit)
+        elif isinstance(credit, dict):
+            name = credit.get("name") or (credit.get("artist") or {}).get("name") or ""
+            if name:
+                display_parts.append(name)
+                artists.append(name)
+            display_parts.append(credit.get("joinphrase") or "")
+    return "".join(display_parts).strip(), artists
 
 
 def _fuzzy_match(a: str, b: str) -> bool:
@@ -263,16 +279,20 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
         full = await get_release_with_media(best_candidate["id"])
         if full:
             media_list = full.get("media", [])
+            album_artist, _ = _parse_artist_credit(full.get("artist-credit"))
             discs = []
             for m in media_list:
                 disc_num = m.get("position", 1)
                 tracks = []
                 for t in m.get("tracks", []):
                     rec = t.get("recording") or {}
+                    track_artist, track_artists = _parse_artist_credit(t.get("artist-credit") or rec.get("artist-credit"))
                     tracks.append({
                         "position": int(t.get("position") or t.get("number") or 0),
                         "title": rec.get("title") or t.get("title"),
-                        "recording_id": rec.get("id")
+                        "recording_id": rec.get("id"),
+                        "artist": track_artist,
+                        "credited_artists": track_artists,
                     })
                 discs.append({
                     "disc_num": disc_num,
@@ -286,6 +306,7 @@ async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
                 "status": full.get("status"),
                 "country": full.get("country"),
                 "date": full.get("date"),
+                "album_artist": album_artist,
                 "disc_total": len(media_list),
                 "discs": discs
             }
@@ -448,13 +469,14 @@ class MusicBrainzClient:
             return None
         recordings = data.get("recordings", [])
         for r in recordings:
-            artists_str = " ".join(
-                a.get("name", "") for a in r.get("artist-credit", [])
-                if isinstance(a, dict)
-            )
-            if _fuzzy_match(r.get("title", ""), title) and _fuzzy_match(artists_str, artist):
+            artists_str, credited = _parse_artist_credit(r.get("artist-credit"))
+            artist_names = [artists_str, *credited]
+            if (_normalize(r.get("title", "")) == _normalize(title)
+                    and _normalize(title)
+                    and _normalize(artist)
+                    and any(_normalize(name) == _normalize(artist) for name in artist_names)):
                 return r
-        return recordings[0] if recordings else None
+        return None
 
     # -----------------------------------------------------------------------
     # Release (album) lookup
@@ -474,9 +496,9 @@ class MusicBrainzClient:
             return None
         releases = data.get("releases", [])
         for r in releases:
-            if _fuzzy_match(r.get("title", ""), album):
+            if _normalize(r.get("title", "")) == _normalize(album) and _normalize(album):
                 return r
-        return releases[0] if releases else None
+        return None
 
     async def get_release_details(self, release_mbid: str) -> Optional[Dict[str, Any]]:
         """Fetch full release details including track list and artist credits."""
@@ -506,6 +528,8 @@ class MusicBrainzClient:
             for t in d.get("tracks", []):
                 flat_tracks.append({
                     "title": t.get("title"),
+                    "artist": t.get("artist"),
+                    "credited_artists": t.get("credited_artists") or [],
                     "track_position": t.get("position"),
                     "disk_number": disc_num,
                     "disc_num": disc_num,
@@ -522,6 +546,7 @@ class MusicBrainzClient:
             "nb_tracks": total_tracks,
             "nb_discs": total_discs,
             "title": winner.get("title", album),
+            "album_artist": winner.get("album_artist") or artist,
         }
 
     # -----------------------------------------------------------------------
@@ -571,7 +596,7 @@ class MusicBrainzClient:
         """
         High-level method: returns a dict with metadata for embed_metadata calls.
         """
-        clean_art = re.split(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring|and|with|vs)\.?\s+|&\s+)', artist, flags=re.IGNORECASE)[0].strip()
+        clean_art = re.split(r'(?i)\s*(?:\(|\[)?\s*\b(?:feat\.?|ft\.?|featuring)\s+', artist)[0].strip()
         clean_tit = re.split(r'[\(\[]\s*(?:feat|ft|featuring)', title, flags=re.IGNORECASE)[0].strip()
         
         # If album is provided, check the official album tracklist first to get exact canonical album/disc/track MBID info
@@ -582,11 +607,12 @@ class MusicBrainzClient:
                     clean_target = _normalize(clean_tit)
                     for t in mb_album["tracks"]:
                         t_title = _normalize(t.get("title", ""))
-                        if clean_target and (clean_target == t_title or clean_target in t_title or t_title in clean_target or _fuzzy_match(t.get("title", ""), clean_tit)):
+                        if clean_target and clean_target == t_title:
                             return {
                                 "title": t.get("title", title),
-                                "artist": artist,
-                                "album_artist": artist,
+                                "artist": t.get("artist") or artist,
+                                "credited_artists": t.get("credited_artists") or [],
+                                "album_artist": mb_album.get("album_artist") or clean_art or artist,
                                 "album": mb_album.get("title", album),
                                 "date": mb_album.get("release_date", ""),
                                 "track_num": t.get("track_position"),
@@ -608,20 +634,9 @@ class MusicBrainzClient:
             return None
 
         credits = recording.get("artist-credit", [])
-        artist_parts = []
-        for credit in credits:
-            if isinstance(credit, dict) and "artist" in credit:
-                artist_parts.append(credit["artist"].get("name", ""))
-                joinphrase = credit.get("joinphrase", "")
-                if joinphrase:
-                    artist_parts.append(joinphrase)
-
-        full_artist = "".join(artist_parts).strip() or artist
-        primary_artist = (
-            credits[0]["artist"]["name"]
-            if credits and isinstance(credits[0], dict)
-            else artist
-        )
+        full_artist, credited_artists = _parse_artist_credit(credits)
+        full_artist = full_artist or artist
+        primary_artist = credited_artists[0] if credited_artists else artist
 
         releases = recording.get("releases", [])
         best_release = None
@@ -648,6 +663,9 @@ class MusicBrainzClient:
                 full_release = await get_release_with_media(release_mbid)
                 if full_release:
                     media_list = full_release.get("media", [])
+                    release_artist, _ = _parse_artist_credit(full_release.get("artist-credit"))
+                    if release_artist:
+                        primary_artist = release_artist
 
             disc_total = len(media_list) if media_list else 1
             for m_idx, m in enumerate(media_list, start=1):
@@ -666,6 +684,7 @@ class MusicBrainzClient:
         return {
             "title": recording.get("title", title),
             "artist": full_artist,
+            "credited_artists": credited_artists,
             "album_artist": primary_artist,
             "album": release_title,
             "date": release_date,

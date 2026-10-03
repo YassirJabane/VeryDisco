@@ -106,6 +106,8 @@ const RunningTasks: React.FC = () => {
         return <AlbumIcon color="secondary" />;
       case 'track':
         return <TrackIcon color="action" />;
+      case 'request':
+        return <PendingIcon color="primary" />;
       default:
         return <PendingIcon />;
     }
@@ -135,6 +137,8 @@ const RunningTasks: React.FC = () => {
             sx={{ fontWeight: 600 }} 
           />
         );
+      case 'partial':
+        return <Chip icon={<ErrorIcon />} label="Partial — tracks missing" variant="outlined" color="warning" size="small" />;
       case 'pending':
         return (
           <Chip 
@@ -172,6 +176,9 @@ const RunningTasks: React.FC = () => {
     }
     if (task.type === 'track') {
       return `Track Download: ${task.metadata?.artist || 'Unknown Artist'} - ${task.metadata?.title || 'Unknown Title'}`;
+    }
+    if (task.type === 'request') {
+      return `Music Request: ${task.metadata?.artist || 'Unknown Artist'} - ${task.metadata?.title || task.metadata?.album || 'Unknown release'}`;
     }
     return `Task: ${task.id}`;
   };

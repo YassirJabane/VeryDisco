@@ -41,7 +41,7 @@ const NamingConvention: React.FC = () => {
     try {
       const paths = results.map(r => r.current_path);
       const res = await apiService.massRenameFiles(paths, dryRun);
-      showToast(`Applied renames! Successful: ${res.successful.length}, Failed: ${res.failed.length}`);
+      showToast(`Applied renames! Successful: ${res.renamed.length}, Failed: ${res.errors.length}`);
       if (!dryRun) {
         setResults(null); // Clear on actual rename
       }

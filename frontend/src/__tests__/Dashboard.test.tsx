@@ -27,9 +27,15 @@ vi.mock('../api', () => ({
         tracks_skipped: 2,
         tracks_failed: 0,
         error_message: null
-      }
+      },
+      latest_runs: { 'weekly-exploration': {
+        id: 1, timestamp: "2026-07-06T03:00:00Z", status: "completed",
+        tracks_found: 10, tracks_downloaded: 8, tracks_skipped: 2, tracks_failed: 0,
+        error_message: null
+      } }
     }),
-    triggerSync: vi.fn(),
+    getNavidromeStats: vi.fn().mockResolvedValue({ songs: 0, albums: 0, artists: 0 }),
+    triggerSyncForSource: vi.fn(),
   }
 }));
 
@@ -40,7 +46,7 @@ describe('Dashboard Component', () => {
     const header = await screen.findByText('Dashboard');
     expect(header).toBeInTheDocument();
 
-    const syncButton = await screen.findByRole('button', { name: /Sync Now/i });
+    const syncButton = await screen.findByRole('button', { name: /Manual Sync/i });
     expect(syncButton).toBeInTheDocument();
     expect(syncButton).not.toBeDisabled();
   });

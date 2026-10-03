@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   Box, Card, CardContent, Typography, TextField, FormControl, 
   InputLabel, Select, MenuItem, Button, Grid, CircularProgress, 
@@ -23,6 +23,19 @@ export const SearchMusic: React.FC = () => {
   const [searchType, setSearchType] = useState<'track' | 'album'>('track');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+  const [queuedKeys, setQueuedKeys] = useState<Set<string>>(new Set());
+  const [requestedKeys, setRequestedKeys] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    apiService.getMusicRequests().then(({ requests }) => {
+      setRequestedKeys(new Set(requests
+        .filter((item: any) => item.status === 'pending' || item.status === 'queued')
+        .map((item: any) => item.kind === 'track'
+          ? `track-${item.artist}-${item.title}`
+          : `album-${item.artist}-${item.album}`)));
+    }).catch(() => { /* Search remains usable if request history is unavailable. */ });
+  }, []);
   const [downloadingKeys, setDownloadingKeys] = useState<Set<string>>(new Set());
   const [albumVersions, setAlbumVersions] = useState<Record<number, any[]>>({});
   const [selectedVersions, setSelectedVersions] = useState<Record<number, any>>({});
@@ -137,6 +150,7 @@ export const SearchMusic: React.FC = () => {
     setSelectedVersions({});
     setVersionsLoading({});
     setSearchLoading(true);
+    setHasSearched(true);
     try {
       const data = await apiService.searchDeezer(searchQuery, searchType);
       const items = data.data || [];
@@ -149,7 +163,7 @@ export const SearchMusic: React.FC = () => {
         try {
           const checks = await apiService.checkAlbumsBatch(batchItems);
           const enriched = items.map((item: any, idx: number) => {
-            const check = checks[idx] || { exists: false, quality_status: 'worse', existing_quality: null };
+            const check = checks[idx] || { exists: null, quality_status: 'unknown', existing_quality: null };
             return {
               ...item,
               exists: check.exists,
@@ -159,7 +173,8 @@ export const SearchMusic: React.FC = () => {
           });
           setSearchResults(enriched);
         } catch {
-          setSearchResults(items.map((item: any) => ({ ...item, exists: false, qualityStatus: 'worse', existingQuality: null })));
+          setSearchResults(items.map((item: any) => ({ ...item, exists: null, qualityStatus: 'unknown', existingQuality: null })));
+          notify('Library availability could not be checked; results are not confirmed missing.', 'warning');
         }
       } else {
         const batchItems = items.map((item: any) => ({
@@ -170,7 +185,7 @@ export const SearchMusic: React.FC = () => {
         try {
           const checks = await apiService.checkAlbumsBatch(batchItems);
           const enriched = items.map((item: any, idx: number) => {
-            const check = checks[idx] || { exists: false, status: 'missing', upgrade_available: false };
+            const check = checks[idx] || { exists: null, status: 'unknown', upgrade_available: false };
             return {
               ...item,
               exists: check.exists,
@@ -180,7 +195,8 @@ export const SearchMusic: React.FC = () => {
           });
           setSearchResults(enriched);
         } catch {
-          setSearchResults(items.map((item: any) => ({ ...item, exists: false, albumStatus: 'missing', upgradeAvailable: false })));
+          setSearchResults(items.map((item: any) => ({ ...item, exists: null, albumStatus: 'unknown', upgradeAvailable: false })));
+          notify('Library availability could not be checked; results are not confirmed missing.', 'warning');
         }
       }
     } catch (err: any) {
@@ -196,13 +212,7 @@ export const SearchMusic: React.FC = () => {
     try {
       await apiService.downloadTrack(artist, title, album, force);
       notify(`Single track search/download queued for "${artist} - ${title}".`, "success");
-      
-      setSearchResults(prev => prev.map(item => {
-        if (item.artist?.name === artist && item.title === title) {
-          return { ...item, exists: true, qualityStatus: 'same' };
-        }
-        return item;
-      }));
+      setQueuedKeys(prev => new Set(prev).add(key));
     } catch (err: any) {
       notify(err.response?.data?.detail || "Failed to queue track download.", "error");
     } finally {
@@ -211,6 +221,19 @@ export const SearchMusic: React.FC = () => {
         next.delete(key);
         return next;
       });
+    }
+  };
+
+  const requestMusic = async (kind: 'track' | 'album', artist: string, title: string, album: string, key: string) => {
+    setDownloadingKeys(prev => new Set(prev).add(key));
+    try {
+      const item = await apiService.createMusicRequest(kind, artist, title, album);
+      setRequestedKeys(prev => new Set(prev).add(key.replace(/^request-/, '')));
+      notify(item.status === 'pending' ? 'Request submitted for approval. Follow it in Music Requests.' : 'Request queued. Follow it in Music Requests.', 'success');
+    } catch (error: any) {
+      notify(error.response?.data?.detail || 'Could not submit request.', 'error');
+    } finally {
+      setDownloadingKeys(prev => { const next = new Set(prev); next.delete(key); return next; });
     }
   };
 
@@ -233,6 +256,7 @@ export const SearchMusic: React.FC = () => {
     try {
       await apiService.downloadAlbum(artist, album, force);
       notify(`Full album download queued for "${artist} - ${album}".`, "success");
+      setQueuedKeys(prev => new Set(prev).add(key));
     } catch (err: any) {
       notify(err.response?.data?.detail || "Failed to queue album download.", "error");
     } finally {
@@ -263,7 +287,7 @@ export const SearchMusic: React.FC = () => {
       <Box>
         <Typography variant="h4" sx={{ fontWeight: 800 }}>Search Music</Typography>
         <Typography variant="body2" color="text.secondary">
-          Find songs and albums on Deezer, check if they exist, and download them
+          Find songs and albums on Deezer. Download starts immediately; Request sends the item for approval and lets you track its outcome in Music Requests.
         </Typography>
       </Box>
 
@@ -318,7 +342,7 @@ export const SearchMusic: React.FC = () => {
             <Box display="flex" justifyContent="center" p={4}><CircularProgress /></Box>
           ) : searchResults.length === 0 ? (
             <Typography color="text.secondary" textAlign="center" py={4}>
-              No search results to display. Type something above and press Search.
+              {hasSearched ? 'No results found. Try a more specific artist, track, or album title.' : 'Type something above and press Search.'}
             </Typography>
           ) : (
             <List sx={{ width: '100%', bgcolor: 'transparent' }}>
@@ -389,6 +413,8 @@ export const SearchMusic: React.FC = () => {
                                   }}
                                 />
                               )
+                            ) : item.exists === null ? (
+                              <Chip label="Availability unknown" size="small" color="warning" variant="outlined" />
                             ) : (
                               <Chip 
                                 label="Not in Library" 
@@ -539,8 +565,14 @@ export const SearchMusic: React.FC = () => {
                             onClick={() => handleDownloadTrack(artistName, titleLabel, trackAlbum, item.exists, item.qualityStatus)}
                             sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}
                           >
-                            Download
+                            {queuedKeys.has(trackKey) ? 'Queued' : 'Download'}
                           </Button>
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            disabled={downloadingKeys.has(`request-${trackKey}`) || requestedKeys.has(trackKey)}
+                            onClick={() => void requestMusic('track', artistName, titleLabel, trackAlbum, `request-${trackKey}`)}
+                          >{requestedKeys.has(trackKey) ? 'Requested' : 'Request'}</Button>
                           <Button
                             variant="outlined"
                             color="success"
@@ -550,7 +582,7 @@ export const SearchMusic: React.FC = () => {
                             onClick={() => handleDownloadAlbum(artistName, trackAlbum, item.albumStatus, item.upgradeAvailable)}
                             sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}
                           >
-                            Album
+                            {queuedKeys.has(albumKey) ? 'Queued' : 'Album'}
                           </Button>
                           <Button
                             variant="outlined"
@@ -578,8 +610,14 @@ export const SearchMusic: React.FC = () => {
                             )}
                             sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}
                           >
-                            Download
+                            {queuedKeys.has(albumKey) ? 'Queued' : 'Download'}
                           </Button>
+                          <Button
+                            variant="outlined"
+                            size="small"
+                            disabled={downloadingKeys.has(`request-${albumKey}`) || requestedKeys.has(albumKey)}
+                            onClick={() => void requestMusic('album', artistName, '', titleLabel, `request-${albumKey}`)}
+                          >{requestedKeys.has(albumKey) ? 'Requested' : 'Request'}</Button>
                           <Button
                             variant="outlined"
                             color="warning"

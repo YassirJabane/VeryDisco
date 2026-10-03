@@ -280,14 +280,27 @@ class ConfigManager:
             self.validation_errors = None
             self.is_configured = True
 
-            # Check for JWT_SECRET env var or generate session key
+            # Keep auto-generated signing keys stable across restarts.
             env_secret = os.environ.get('JWT_SECRET')
             if env_secret:
                 config.auth.secret_key = env_secret
             elif not config.auth.secret_key:
-                new_key = uuid.uuid4().hex + uuid.uuid4().hex
-                config.auth.secret_key = new_key
-                logger.warning("JWT_SECRET should be set as an env var in production. Using generated key for this session.")
+                default_secret_path = (
+                    "/data/.verydisco_jwt_secret" if os.path.abspath(self.config_path) == "/app/config.yml"
+                    else os.path.join(os.path.dirname(os.path.abspath(self.config_path)), ".verydisco_jwt_secret")
+                )
+                secret_path = os.environ.get(
+                    "JWT_SECRET_FILE",
+                    default_secret_path,
+                )
+                if not os.path.exists(secret_path):
+                    fd = os.open(secret_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    with os.fdopen(fd, "w", encoding="utf-8") as secret_file:
+                        secret_file.write(uuid.uuid4().hex + uuid.uuid4().hex)
+                with open(secret_path, "r", encoding="utf-8") as secret_file:
+                    config.auth.secret_key = secret_file.read().strip()
+                if not config.auth.secret_key:
+                    raise ValueError("JWT secret file is empty")
 
             return True, None
 
@@ -303,7 +316,7 @@ class ConfigManager:
             return False, self.validation_errors
 
     def save(self, data: Any) -> Tuple[bool, Optional[str]]:
-        """Saves dict data or raw yaml string back to YAML config and reloads."""
+        """Validate before writing so a bad update cannot destroy a working config."""
         if self._is_dir_mount():
             return False, (
                 "Cannot save: config.yml is mounted as a directory. "
@@ -312,8 +325,8 @@ class ConfigManager:
             )
         try:
             if isinstance(data, dict) and "raw_yaml" in data:
-                with open(self.config_path, "w", encoding="utf-8") as f:
-                    f.write(data["raw_yaml"])
+                candidate = data["raw_yaml"]
+                parsed = yaml.safe_load(candidate) or {}
             else:
                 existing = {}
                 if os.path.exists(self.config_path):
@@ -333,8 +346,12 @@ class ConfigManager:
                 else:
                     existing = data
 
-                with open(self.config_path, "w", encoding="utf-8") as f:
-                    yaml.safe_dump(existing, f, default_flow_style=False, sort_keys=False)
+                parsed = existing
+                candidate = yaml.safe_dump(existing, default_flow_style=False, sort_keys=False)
+
+            AppConfig.model_validate(parsed)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                f.write(candidate)
 
             # Reload
             return self.load()

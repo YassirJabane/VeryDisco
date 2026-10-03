@@ -52,7 +52,7 @@ def _create_tracked_task(coro, task_id: Optional[str] = None, task_type: Optiona
         
     def _on_done(t: asyncio.Task):
         _background_tasks.discard(t)
-        if task_id:
+        if task_id and _active_tasks.get(task_id, {}).get("task") is t:
             _active_tasks.pop(task_id, None)
         if not t.cancelled() and t.exception():
             logger.error(f"Background task failed: {t.exception()}")
@@ -98,6 +98,21 @@ async def lifespan(app: FastAPI):
     await db.initialize()
     app_logger.db_ref = db
 
+    if config_manager.config:
+        from backend.app.sync import recover_playlist_backups
+        cfg = config_manager.config
+        base_music = Path(cfg.paths.music_dir).resolve()
+        base_playlists = Path(cfg.paths.navidrome_playlists_dir).resolve()
+        roots = {base_playlists}
+        for user_row in await db.list_users():
+            candidate = Path(user_row.get("playlist_dir") or base_playlists / user_row["username"]).resolve()
+            if candidate.is_relative_to(base_playlists) or candidate.is_relative_to(base_music):
+                roots.add(candidate)
+        try:
+            await asyncio.to_thread(recover_playlist_backups, list(roots))
+        except Exception as e:
+            logger.error(f"Playlist backup recovery failed: {e}")
+
     # Start scheduler if configuration is valid
     if config_manager.is_configured and config_manager.config:
         scheduler_manager.start(config_manager.config)
@@ -127,6 +142,11 @@ async def lifespan(app: FastAPI):
                         task_type="album",
                         metadata={"download_id": pa['id'], "artist": pa['artist'], "album": pa['album']}
                     )
+            for item in await db.list_queued_music_requests():
+                if item["kind"] == "album" and item["download_id"]:
+                    _create_tracked_task(_watch_queued_album_request(item["id"], item["download_id"]))
+                else:
+                    await db.transition_music_request(item["id"], "queued", "failed", error="Interrupted by server restart; submit again")
         except Exception as e:
             logger.error(f"Error during auto-resume on startup: {e}")
         # --- END AUTO RESUME LOGIC ---
@@ -152,17 +172,42 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="VeryDisco API", lifespan=lifespan)
 
-# Allow CORS for dev & reverse proxy environments with credentials
+# Same-origin by default; deployments with a separate UI origin must opt in.
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r".*",
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 from fastapi.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+@app.middleware("http")
+async def protect_api(request: Request, call_next):
+    """Fail closed for API routes, including handlers missing local auth checks."""
+    from fastapi.responses import JSONResponse
+    from backend.app.auth import get_current_user
+
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return await call_next(request)
+    public = path in {"/api/status", "/api/auth/login", "/api/setup"}
+    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+        origin = request.headers.get("origin")
+        if origin:
+            allowed = {str(request.base_url).rstrip("/")}
+            allowed.update(item.strip().rstrip("/") for item in os.getenv("CORS_ORIGINS", "").split(",") if item.strip())
+            same_host = urllib.parse.urlsplit(origin).netloc.lower() == request.headers.get("host", "").lower()
+            if not same_host and origin.rstrip("/") not in allowed:
+                return JSONResponse({"detail": "Cross-origin request denied."}, status_code=403)
+    if not public and request.method != "OPTIONS":
+        try:
+            await get_current_user(request)
+        except HTTPException as exc:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return await call_next(request)
 
 # API Endpoints
 
@@ -184,6 +229,8 @@ async def login(req: LoginRequest, response: Response):
 
     nd_url = cfg.navidrome.url
     user_info = await validate_navidrome_login(nd_url, req.username, req.password)
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]+", user_info["username"]) or user_info["username"] in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Navidrome username cannot be used as a library folder.")
 
     # Derive per-user music directory: /music/<username>
     music_base = cfg.paths.music_dir.rstrip("/")
@@ -197,6 +244,12 @@ async def login(req: LoginRequest, response: Response):
         is_admin=user_info["is_admin"],
         music_dir=music_dir,
     )
+    async with db.get_db() as conn:
+        await conn.execute(
+            "UPDATE users SET playlist_dir = ? WHERE id = ? AND (playlist_dir IS NULL OR playlist_dir = '')",
+            (str(Path(cfg.paths.navidrome_playlists_dir) / user_info["username"]), user_info["id"]),
+        )
+        await conn.commit()
 
     import hashlib
     import secrets
@@ -292,9 +345,13 @@ async def import_navidrome_users(request: Request):
         raise HTTPException(status_code=503, detail="App not configured.")
 
     # Use Navidrome Subsonic admin API to list users
+    import hashlib
+    import secrets
+    salt = secrets.token_hex(12)
     params = {
         "u": cfg.navidrome.username,
-        "p": cfg.navidrome.password,
+        "t": hashlib.md5((cfg.navidrome.password + salt).encode("utf-8")).hexdigest(),
+        "s": salt,
         "v": "1.16.1",
         "c": "VeryDisco",
         "f": "json",
@@ -322,7 +379,7 @@ async def import_navidrome_users(request: Request):
         imported = []
         for u in users_data:
             uname = u.get("username", "")
-            if not uname:
+            if not uname or not re.fullmatch(r"[A-Za-z0-9_.@-]+", uname) or uname in {".", ".."}:
                 continue
             # username is the stable ID used by login (Subsonic API has no UUID)
             await db.get_or_create_user(
@@ -393,6 +450,27 @@ async def save_my_config(req: UserConfigRequest, request: Request):
     """Save current user's ListenBrainz and library configurations."""
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
+    cfg = config_manager.config
+    if not cfg:
+        raise HTTPException(status_code=503, detail="App not configured.")
+    current = await db.get_user_by_id(user["id"])
+    if not current:
+        raise HTTPException(status_code=401, detail="User no longer exists.")
+    base_music = Path(cfg.paths.music_dir).resolve()
+    base_playlists = Path(cfg.paths.navidrome_playlists_dir).resolve()
+    if req.music_dir and not Path(req.music_dir).resolve().is_relative_to(base_music):
+        raise HTTPException(status_code=403, detail="Music path must be inside the configured library.")
+    if req.playlist_dir and not (Path(req.playlist_dir).resolve().is_relative_to(base_playlists)
+                                 or Path(req.playlist_dir).resolve().is_relative_to(base_music)):
+        raise HTTPException(status_code=403, detail="Playlist path must be inside the configured playlist directory.")
+    if not user["is_admin"]:
+        own_music = Path(current.get("music_dir") or base_music / user["username"]).resolve()
+        own_playlists = Path(current.get("playlist_dir") or base_playlists / user["username"]).resolve()
+        if req.music_dir and not Path(req.music_dir).resolve().is_relative_to(own_music):
+            raise HTTPException(status_code=403, detail="Cannot select another user's music directory.")
+        if req.playlist_dir and not (Path(req.playlist_dir).resolve().is_relative_to(own_playlists)
+                                     or Path(req.playlist_dir).resolve().is_relative_to(own_music)):
+            raise HTTPException(status_code=403, detail="Cannot select another user's playlist directory.")
     
     # 1. Save ListenBrainz config
     await db.save_user_config(
@@ -405,8 +483,8 @@ async def save_my_config(req: UserConfigRequest, request: Request):
     # 2. Update library paths and renaming pattern in users table
     await db.update_user_paths(
         user_id=user["id"],
-        music_dir=req.music_dir,
-        playlist_dir=req.playlist_dir,
+        music_dir=req.music_dir or current.get("music_dir") or str(base_music / user["username"]),
+        playlist_dir=req.playlist_dir or current.get("playlist_dir") or str(base_playlists / user["username"]),
         renaming_pattern=req.renaming_pattern,
     )
 
@@ -433,10 +511,18 @@ async def admin_update_user_paths(user_id: str, req: AdminUserPathsRequest, requ
     target = await db.get_user_by_id(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found.")
+    cfg = config_manager.config
+    if not cfg:
+        raise HTTPException(status_code=503, detail="App not configured.")
+    if req.music_dir and not Path(req.music_dir).resolve().is_relative_to(Path(cfg.paths.music_dir).resolve()):
+        raise HTTPException(status_code=403, detail="Music path must be inside the configured library.")
+    if req.playlist_dir and not (Path(req.playlist_dir).resolve().is_relative_to(Path(cfg.paths.navidrome_playlists_dir).resolve())
+                                 or Path(req.playlist_dir).resolve().is_relative_to(Path(cfg.paths.music_dir).resolve())):
+        raise HTTPException(status_code=403, detail="Playlist path must be inside the configured playlist directory.")
     await db.update_user_paths(
         user_id=user_id,
-        music_dir=req.music_dir,
-        playlist_dir=req.playlist_dir,
+        music_dir=req.music_dir or target.get("music_dir") or str(Path(cfg.paths.music_dir) / target["username"]),
+        playlist_dir=req.playlist_dir or target.get("playlist_dir") or str(Path(cfg.paths.navidrome_playlists_dir) / target["username"]),
     )
     return {"status": "ok", "message": f"Paths updated for user '{target['username']}'."}
 
@@ -469,6 +555,8 @@ async def setup_app(req: OnboardingSetupRequest, response: Response):
     # Check if already configured with a Navidrome URL
     if config_manager.is_configured:
         raise HTTPException(status_code=400, detail="Application is already configured.")
+    if await db.list_users():
+        raise HTTPException(status_code=403, detail="Existing installation: repair config.yml locally instead of rerunning setup.")
 
     from backend.app.auth import validate_navidrome_login, create_access_token, set_auth_cookie
     from datetime import timedelta
@@ -484,6 +572,8 @@ async def setup_app(req: OnboardingSetupRequest, response: Response):
             status_code=400,
             detail="The supplied Navidrome credentials must belong to an Admin user."
         )
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]+", user_info["username"]) or user_info["username"] in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Navidrome username cannot be used as a library folder.")
 
     # 2. Update config.yml contents
     try:
@@ -536,6 +626,12 @@ async def setup_app(req: OnboardingSetupRequest, response: Response):
         is_admin=user_info["is_admin"],
         music_dir=music_dir,
     )
+    async with db.get_db() as conn:
+        await conn.execute(
+            "UPDATE users SET playlist_dir = ? WHERE id = ? AND (playlist_dir IS NULL OR playlist_dir = '')",
+            (str(Path(cfg.paths.navidrome_playlists_dir) / user_info["username"]), user_info["id"]),
+        )
+        await conn.commit()
 
     # 4. Generate access token and authenticate user immediately
     token = create_access_token(
@@ -613,6 +709,10 @@ async def get_status(request: Request = None):
             user_id = user["id"]
         except Exception:
             pass
+
+    if not user_id:
+        return {"is_configured": config_manager.is_configured,
+                "validation_errors": config_manager.validation_errors}
 
     if user_id:
         user_cfg = await db.get_user_config(user_id)
@@ -705,6 +805,8 @@ async def trigger_sync(source: Optional[str] = None, request: Request = None):
 
     if not source:
         raise HTTPException(status_code=400, detail="source parameter is required")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", source):
+        raise HTTPException(status_code=400, detail="Invalid playlist source")
 
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
@@ -726,6 +828,8 @@ async def stop_sync(request: Request):
     user = await get_current_user(request)
     if not sync_module.is_syncing or getattr(sync_module, 'current_sync_task', None) is None:
         raise HTTPException(status_code=400, detail="No sync process is currently running.")
+    if not user["is_admin"] and sync_module.sync_progress.get("user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Cannot stop another user's sync.")
     
     logger.info("Sync cancellation requested via WebUI.")
     sync_module.current_sync_task.cancel()
@@ -738,6 +842,9 @@ async def get_active_tasks(request: Request):
     user = await get_current_user(request)
     tasks_list = []
     for tid, info in _active_tasks.items():
+        owner = info["metadata"].get("user_id")
+        if not user["is_admin"] and owner != user["id"]:
+            continue
         tasks_list.append({
             "id": tid,
             "type": info["type"],
@@ -755,6 +862,8 @@ async def stop_active_task(task_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Task not found or already finished.")
         
     task_info = _active_tasks[task_id]
+    if not user["is_admin"] and task_info["metadata"].get("user_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Cannot stop another user's task.")
     task = task_info["task"]
     task.cancel()
     logger.info(f"Task {task_id} cancellation requested via WebUI.")
@@ -797,6 +906,13 @@ async def delete_album_download(download_id: int, request: Request):
     """Delete an album download entry from the database queue and cancel it if running."""
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
+    async with db.get_db() as conn:
+        cursor = await conn.execute("SELECT user_id FROM album_downloads WHERE id = ?", (download_id,))
+        row = await cursor.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Download not found.")
+    if not user["is_admin"] and row["user_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Cannot delete another user's download.")
     task_key = f"album:{download_id}"
     if task_key in _active_tasks:
         _active_tasks[task_key]["task"].cancel()
@@ -937,7 +1053,7 @@ async def get_acoustid_stats(request: Request = None):
                         count += 1
         return count
 
-    cache_path = get_file_checks_cache_path()
+    cache_path = get_file_checks_cache_path(user_id or "global")
     total_files = 0
     cache_data = {}
     try:
@@ -1549,14 +1665,9 @@ async def download_single_album(req: DownloadAlbumRequest, request: Request = No
         
     cfg = config_manager.config
     
-    user_id = None
-    if request:
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-        except Exception:
-            pass
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
 
     from backend.app.album_sync import download_album_task
     download_id = await db.add_album_download(req.artist, "", req.album, user_id=user_id)
@@ -1574,9 +1685,123 @@ async def download_single_album(req: DownloadAlbumRequest, request: Request = No
         ),
         task_id=f"album:{download_id}",
         task_type="album",
-        metadata={"download_id": download_id, "artist": req.artist, "album": req.album}
+        metadata={"download_id": download_id, "artist": req.artist, "album": req.album, "user_id": user_id}
     )
     return {"status": "success", "message": f"Album download queued for '{req.album}'."}
+
+
+class MusicRequestInput(BaseModel):
+    kind: str
+    artist: str
+    title: str = ""
+    album: str = ""
+
+
+async def _run_music_request(item: dict):
+    """Track the final outcome, not just whether a job was accepted."""
+    request_id = item["id"]
+    try:
+        if item["kind"] == "track":
+            from backend.app.album_sync import download_single_track_task
+            success = await download_single_track_task(
+                item["artist"], item["title"], item["album"],
+                config_manager.config, db=db, user_id=item["user_id"],
+            )
+            status = "completed" if success else "failed"
+        else:
+            from backend.app.album_sync import download_album_task
+            download_id = await db.add_album_download(item["artist"], "", item["album"], user_id=item["user_id"])
+            await db.transition_music_request(request_id, "queued", "queued", download_id=download_id)
+            await download_album_task(
+                download_id, item["artist"], "", item["album"],
+                config_manager.config, db, user_id=item["user_id"],
+            )
+            status = await db.get_album_download_status(download_id) or "failed"
+        await db.transition_music_request(request_id, "queued", status)
+    except asyncio.CancelledError:
+        await db.transition_music_request(request_id, "queued", "failed", error="Interrupted")
+        raise
+    except Exception as error:
+        logger.exception("Music request %s failed", request_id)
+        await db.transition_music_request(request_id, "queued", "failed", error=str(error)[:500])
+
+
+async def _watch_queued_album_request(request_id: int, download_id: int):
+    """Reconnect a persistent request to an album resumed by startup recovery."""
+    for _ in range(8640):  # 24 hours at ten-second intervals
+        status = await db.get_album_download_status(download_id)
+        if status in ("completed", "partial", "failed"):
+            await db.transition_music_request(request_id, "queued", status)
+            return
+        if status is None:
+            break
+        await asyncio.sleep(10)
+    await db.transition_music_request(request_id, "queued", "failed", error="Album task did not complete; inspect downloads")
+
+
+async def _approve_music_request(request_id: int) -> bool:
+    if not config_manager.is_configured or not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured yet.")
+    if not await db.transition_music_request(request_id, "pending", "queued"):
+        return False
+    item = await db.get_music_request(request_id)
+    _create_tracked_task(
+        _run_music_request(item),
+        task_id=f"request:{request_id}",
+        task_type="request",
+        metadata={"user_id": item["user_id"], "artist": item["artist"], "title": item["title"], "album": item["album"]},
+    )
+    return True
+
+
+@app.post("/api/requests")
+async def create_music_request(req: MusicRequestInput, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    kind = req.kind.strip().lower()
+    artist = req.artist.strip()
+    title = req.title.strip()
+    album = req.album.strip()
+    if kind not in ("track", "album") or not artist or (kind == "track" and not title) or (kind == "album" and not album):
+        raise HTTPException(status_code=422, detail="A valid kind, artist and track title or album are required.")
+    if max(len(artist), len(title), len(album)) > 300:
+        raise HTTPException(status_code=422, detail="Request fields are too long.")
+    request_id = await db.add_music_request(user["id"], kind, artist, title if kind == "track" else "", album)
+    if user["is_admin"]:
+        await _approve_music_request(request_id)
+    return await db.get_music_request(request_id)
+
+
+@app.get("/api/requests")
+async def list_music_requests(request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    return {"requests": await db.list_music_requests(user["id"], bool(user["is_admin"]))}
+
+
+@app.post("/api/requests/{request_id}/approve")
+async def approve_music_request(request_id: int, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    if not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    item = await db.get_music_request(request_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Request not found.")
+    if not await _approve_music_request(request_id):
+        raise HTTPException(status_code=409, detail="Request has already been decided.")
+    return await db.get_music_request(request_id)
+
+
+@app.post("/api/requests/{request_id}/decline")
+async def decline_music_request(request_id: int, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    if not user["is_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    if not await db.transition_music_request(request_id, "pending", "declined"):
+        raise HTTPException(status_code=409, detail="Request not pending or not found.")
+    return await db.get_music_request(request_id)
 
 @app.get("/api/download/album/search")
 async def search_album_candidates(artist: str, album: str, request: Request):
@@ -1809,14 +2034,9 @@ async def grab_single_album(req: GrabAlbumRequest, request: Request = None):
         
     cfg = config_manager.config
     
-    user_id = None
-    if request:
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-        except Exception:
-            pass
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
 
     from backend.app.album_sync import download_album_task
     download_id = await db.add_album_download(req.artist, "", req.album, user_id=user_id)
@@ -1907,14 +2127,9 @@ async def grab_single_track(req: GrabTrackRequest, request: Request = None):
         
     cfg = config_manager.config
     
-    user_id = None
-    if request:
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-        except Exception:
-            pass
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
 
     from backend.app.album_sync import grab_single_track_task
     
@@ -1956,14 +2171,9 @@ async def download_missing_tracks(req: DownloadMissingTracksRequest, request: Re
     cfg = config_manager.config
     from backend.app.album_sync import download_single_track_task
     
-    user_id = None
-    if request:
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-        except Exception:
-            pass
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
 
     for track in req.missing_tracks:
         _create_tracked_task(
@@ -2197,17 +2407,9 @@ async def pin_artist(req: PinArtistRequest, request: Request):
 async def purge_pinned_artists_endpoint(request: Request):
     """Purge all pinned artists from database and trigger library scan."""
     try:
-        user_id = None
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-            if user.get("is_admin"):
-                await db.purge_pinned_artists(None)
-            else:
-                await db.purge_pinned_artists(user_id)
-        except Exception:
-            await db.purge_pinned_artists(None)
+        from backend.app.auth import get_current_user
+        user = await get_current_user(request)
+        await db.purge_pinned_artists(None if user.get("is_admin") else user["id"])
 
         logger.info("Purged all pinned artists from database.")
         
@@ -2251,7 +2453,12 @@ async def unpin_artist(id: int, request: Request):
             music_dir = Path(config_manager.config.paths.music_dir)
             if user_row and user_row.get("music_dir"):
                 music_dir = Path(user_row["music_dir"])
-            artist_folder = music_dir / sanitize_filename(artist_name)
+            safe_artist = sanitize_filename(artist_name)
+            if not safe_artist:
+                raise HTTPException(status_code=400, detail="Invalid artist folder name.")
+            artist_folder = (music_dir / safe_artist).resolve()
+            if artist_folder == music_dir.resolve() or not artist_folder.is_relative_to(music_dir.resolve()):
+                raise HTTPException(status_code=403, detail="Artist folder outside your library.")
             
             # Delete artist directory recursively if it exists
             if artist_folder.exists() and artist_folder.is_dir():
@@ -2265,6 +2472,8 @@ async def unpin_artist(id: int, request: Request):
         await trigger_navidrome_scan_debounced()
                 
         return {"status": "success", "message": "Artist deleted and folder removed successfully."}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to delete artist '{id}': {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete artist: {e}")
@@ -3945,7 +4154,7 @@ async def get_album_cover(folder_path: str, request: Request):
         targets = [Path(folder_path).resolve()]
         
     target = targets[0] if targets else Path(folder_path).resolve()
-    if not str(target).startswith(str(music_dir)):
+    if not target.is_relative_to(music_dir):
         logger.error(f"Access denied in get_album_cover: target {target} does not start with music_dir {music_dir} (user: {user_id})")
         raise HTTPException(status_code=403, detail="Access denied")
         
@@ -4005,7 +4214,7 @@ async def get_library_album_tracks(folder_path: str, request: Request):
     if re.match(r'(?i)^(?:disc|cd|disk)\s*\d+$', target.name):
         target = target.parent
 
-    if not str(target).startswith(str(music_dir)):
+    if not target.is_relative_to(music_dir):
         logger.error(f"Access denied in get_library_album_tracks: target {target} does not start with music_dir {music_dir} (user: {user_id})")
         raise HTTPException(status_code=403, detail="Access denied")
         
@@ -4120,7 +4329,7 @@ async def delete_library_album(req: DeleteAlbumRequest, request: Request):
     for fp in folders:
         target = Path(fp)
         resolved_target = target.resolve()
-        if not str(resolved_target).startswith(str(music_dir)):
+        if not resolved_target.is_relative_to(music_dir):
             raise HTTPException(status_code=403, detail="Access denied. Path must be inside the music directory.")
         valid_paths.append(target)
 
@@ -4210,24 +4419,32 @@ def read_basic_tags(file_path: Path) -> dict:
     }
 
 @app.get("/api/maintenance/scan")
-async def scan_maintenance(refresh: bool = False):
+async def scan_maintenance(request: Request, refresh: bool = False):
     if not config_manager.config:
         return []
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    cache_key = f"maintenance_{user['id']}"
     if refresh:
-        await db.delete_cache("maintenance")
+        await db.delete_cache(cache_key)
     else:
-        cached = await db.get_cache("maintenance")
+        cached = await db.get_cache(cache_key)
         if cached is not None:
             return cached
-    issues = await run_maintenance_scan_internal()
-    await db.set_cache("maintenance", issues)
+    issues = await run_maintenance_scan_internal(user["id"])
+    await db.set_cache(cache_key, issues)
     return issues
 
-async def run_maintenance_scan_internal():
+async def run_maintenance_scan_internal(user_id: str):
     if not config_manager.config:
         return []
     music_dir = Path(config_manager.config.paths.music_dir)
     playlists_dir = Path(config_manager.config.paths.navidrome_playlists_dir).resolve()
+    user_row = await db.get_user_by_id(user_id)
+    if user_row and user_row.get("music_dir"):
+        music_dir = Path(user_row["music_dir"])
+    if user_row and user_row.get("playlist_dir"):
+        playlists_dir = Path(user_row["playlist_dir"]).resolve()
     if not music_dir.exists():
         return []
 
@@ -4807,7 +5024,7 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
             playlists_dir = Path(user_row["playlist_dir"]).resolve()
             
     target_path = Path(req.target_path)
-    if not str(target_path.resolve()).startswith(str(music_dir)) and not str(target_path.resolve()).startswith(str(playlists_dir)):
+    if not target_path.resolve().is_relative_to(music_dir) and not target_path.resolve().is_relative_to(playlists_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if req.action != "merge_albums" and not os.path.exists(req.target_path):
@@ -4869,8 +5086,10 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
     elif req.action == "move_orphaned_lyrics":
         if not req.params or "dest_folder" not in req.params:
             raise HTTPException(status_code=400, detail="Missing dest_folder parameter.")
+        dest_folder = Path(req.params["dest_folder"])
+        if not dest_folder.resolve().is_relative_to(music_dir):
+            raise HTTPException(status_code=403, detail="Destination outside your library.")
         try:
-            dest_folder = Path(req.params["dest_folder"])
             dest_folder.mkdir(parents=True, exist_ok=True)
             
             dest_file = dest_folder / target_path.name
@@ -4891,6 +5110,11 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
             raise HTTPException(status_code=400, detail="Missing parameters for moving misfiled tracks.")
         try:
             files_to_move = json.loads(req.params["file_paths"])
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid file_paths parameter.")
+        if not isinstance(files_to_move, list) or any(not Path(path).resolve().is_relative_to(music_dir) for path in files_to_move):
+            raise HTTPException(status_code=403, detail="Source outside your library.")
+        try:
             correct_album = req.params["correct_album"]
             artist = req.params["artist"]
             
@@ -4946,6 +5170,8 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
         if not req.params or "master_path" not in req.params:
             raise HTTPException(status_code=400, detail="Missing master_path parameter.")
         master = Path(req.params["master_path"])
+        if not master.resolve().is_relative_to(music_dir) and not master.resolve().is_relative_to(playlists_dir):
+            raise HTTPException(status_code=403, detail="Master outside your library.")
         if not master.exists():
             raise HTTPException(status_code=404, detail="Master file does not exist.")
         try:
@@ -4962,6 +5188,10 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
     elif req.action == "deduplicate_playlists":
         if not req.params or "dup_paths" not in req.params:
             raise HTTPException(status_code=400, detail="Missing dup_paths parameter.")
+        if not isinstance(req.params["dup_paths"], list) or any(
+            not Path(path).resolve().is_relative_to(playlists_dir) for path in req.params["dup_paths"]
+        ):
+            raise HTTPException(status_code=403, detail="Duplicate path outside your playlists.")
         try:
             master_dir = playlists_dir / "explore"
             master_dir.mkdir(parents=True, exist_ok=True)
@@ -5004,7 +5234,7 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
         src = Path(req.params["source_folder"])
         dst = Path(req.params["dest_folder"])
         
-        if not str(src.resolve()).startswith(str(music_dir)) or not str(dst.resolve()).startswith(str(music_dir)):
+        if not src.resolve().is_relative_to(music_dir) or not dst.resolve().is_relative_to(music_dir):
             raise HTTPException(status_code=403, detail="Access denied. Path must be inside the music directory.")
             
         try:
@@ -5338,7 +5568,7 @@ async def verify_user_access_to_path(user_id: str, path_str: str):
             playlists_dir = Path(user_row["playlist_dir"]).resolve()
             
     resolved = Path(path_str).resolve()
-    if not str(resolved).startswith(str(music_dir)) and not str(resolved).startswith(str(playlists_dir)):
+    if not resolved.is_relative_to(music_dir) and not resolved.is_relative_to(playlists_dir):
         raise HTTPException(status_code=403, detail="Access denied")
 
 @app.post("/api/maintenance/ignore")
@@ -5571,7 +5801,7 @@ async def get_lyrics_file_endpoint(filepath: str, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(filepath)
-    if not str(target_path.resolve()).startswith(str(music_dir)):
+    if not target_path.resolve().is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     lrc_path = target_path.with_suffix(".lrc")
@@ -5625,7 +5855,7 @@ async def save_lyrics_endpoint(req: SaveLyricsRequest, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(req.filepath)
-    if not str(target_path.resolve()).startswith(str(music_dir)):
+    if not target_path.resolve().is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.exists():
@@ -5676,9 +5906,11 @@ async def stage_lyrics_endpoint(req: StageLyricsRequest, request: Request):
 
 # ── Album Art Manager API ───────────────────────────────────────────────────
 
-def get_file_checks_cache_path() -> Path:
+def get_file_checks_cache_path(user_id: str) -> Path:
+    import hashlib
     db_dir = os.path.dirname(db.db_path) if getattr(db, 'db_path', None) else "."
-    return Path(db_dir) / "file_checks_cache.json"
+    identity = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
+    return Path(db_dir) / f"file_checks_cache_{identity}.json"
 
 @app.get("/api/library/missing-art")
 async def get_missing_art_endpoint(request: Request):
@@ -5687,7 +5919,7 @@ async def get_missing_art_endpoint(request: Request):
     if not config_manager.config:
         return []
     
-    cache_path = get_file_checks_cache_path()
+    cache_path = get_file_checks_cache_path(user["id"])
     if cache_path.exists():
         try:
             import json
@@ -5700,12 +5932,13 @@ async def get_missing_art_endpoint(request: Request):
 
 @app.post("/api/library/missing-art/scan")
 async def scan_missing_art_endpoint(request: Request):
-    if not config_manager.config:
-        raise HTTPException(status_code=400, detail="App is not configured.")
-        
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
-    user_id = user["id"]
+    return await scan_missing_art_for_user(user["id"])
+
+async def scan_missing_art_for_user(user_id: str):
+    if not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured.")
     
     user_row = await db.get_user_by_id(user_id)
     music_dir = Path(config_manager.config.paths.music_dir)
@@ -5735,7 +5968,7 @@ async def scan_missing_art_endpoint(request: Request):
                 "format": alb.get("format")
             })
             
-    cache_path = get_file_checks_cache_path()
+    cache_path = get_file_checks_cache_path(user_id)
     data = {}
     if cache_path.exists():
         try:
@@ -5764,28 +5997,15 @@ async def search_art_endpoint(artist: str, album: str, request: Request):
     itunes = ITunesClient()
     deezer = DeezerClient()
     
-    itunes_results = await itunes.search_album_artwork(artist, album)
-    
-    deezer_results = []
-    try:
-        track_meta = await deezer.get_track_metadata(artist, album)
-        if track_meta:
-            alb_meta = track_meta.get("album", {})
-            cover_url = alb_meta.get("cover_xl") or alb_meta.get("cover_big") or alb_meta.get("cover")
-            if cover_url:
-                deezer_results.append({
-                    "artist": artist,
-                    "album": album,
-                    "url": cover_url,
-                    "thumbnail": alb_meta.get("cover_medium") or cover_url,
-                    "resolution": "1000x1000" if "cover_xl" in alb_meta else "Unknown",
-                    "source": "Deezer",
-                    "release_date": ""
-                })
-    except Exception:
-        pass
-            
-    return deezer_results + itunes_results
+    itunes_results, deezer_results = await asyncio.gather(
+        itunes.search_album_artwork(artist, album),
+        deezer.search_album_artwork(artist, album),
+    )
+    normalize = lambda value: re.sub(r'[^\w]', '', value or '').lower()
+    verified_itunes = [item for item in itunes_results
+                       if normalize(item.get("artist")) == normalize(artist)
+                       and normalize(item.get("album")) == normalize(album)]
+    return deezer_results + verified_itunes
 
 class SaveArtRequest(BaseModel):
     folder_path: str
@@ -5807,25 +6027,55 @@ async def save_art_endpoint(req: SaveArtRequest, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(req.folder_path).resolve()
-    if not str(target_path).startswith(str(music_dir)):
+    if not target_path.is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.is_dir():
         raise HTTPException(status_code=404, detail="Directory not found")
         
+    parsed_url = urllib.parse.urlsplit(req.url)
+    host = (parsed_url.hostname or "").lower()
+    if parsed_url.scheme != "https" or not (
+        host == "cdn-images.dzcdn.net"
+        or re.fullmatch(r"is\d+-ssl\.mzstatic\.com", host)
+    ):
+        raise HTTPException(status_code=400, detail="Unsupported artwork URL.")
+
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.get(req.url)
-            resp.raise_for_status()
-            img_data = resp.content
-            
-        cover_jpg = target_path / "cover.jpg"
-        folder_jpg = target_path / "folder.jpg"
-        
-        with open(cover_jpg, "wb") as f:
-            f.write(img_data)
-        with open(folder_jpg, "wb") as f:
-            f.write(img_data)
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+            async with client.stream("GET", req.url) as resp:
+                resp.raise_for_status()
+                if not resp.headers.get("content-type", "").lower().startswith("image/"):
+                    raise HTTPException(status_code=400, detail="Artwork response is not an image.")
+                parts = []
+                size = 0
+                async for part in resp.aiter_bytes():
+                    size += len(part)
+                    if size > 10 * 1024 * 1024:
+                        raise HTTPException(status_code=413, detail="Artwork exceeds 10 MiB.")
+                    parts.append(part)
+                img_data = b"".join(parts)
+
+        if img_data.startswith(b"\xff\xd8\xff"):
+            image_mime, image_extension = "image/jpeg", ".jpg"
+        elif img_data.startswith(b"\x89PNG\r\n\x1a\n"):
+            image_mime, image_extension = "image/png", ".png"
+        else:
+            raise HTTPException(status_code=400, detail="Artwork must be a JPEG or PNG image.")
+
+        import tempfile
+        for name in ("cover", "folder"):
+            destination = target_path / f"{name}{image_extension}"
+            fd, temporary_name = tempfile.mkstemp(prefix=".verydisco-art-", suffix=image_extension, dir=target_path)
+            temporary_path = Path(temporary_name)
+            try:
+                with os.fdopen(fd, "wb") as output:
+                    output.write(img_data)
+                    output.flush()
+                    os.fsync(output.fileno())
+                os.replace(temporary_path, destination)
+            finally:
+                temporary_path.unlink(missing_ok=True)
             
         if req.embed:
             import glob
@@ -5834,6 +6084,7 @@ async def save_art_endpoint(req: SaveArtRequest, request: Request):
                 audio_files.extend(glob.glob(str(target_path / ext)))
                 audio_files.extend(glob.glob(str(target_path / "**" / ext), recursive=True))
                 
+            embed_failures = []
             for filepath in audio_files:
                 f_path = Path(filepath)
                 ext = f_path.suffix.lower().strip(".")
@@ -5846,10 +6097,11 @@ async def save_art_endpoint(req: SaveArtRequest, request: Request):
                             audio.add_tags()
                         except error:
                             pass
+                        audio.tags.delall("APIC")
                         audio.tags.add(
                             APIC(
                                 encoding=3,
-                                mime='image/jpeg',
+                                mime=image_mime,
                                 type=3,
                                 desc=u'Cover',
                                 data=img_data
@@ -5862,7 +6114,7 @@ async def save_art_endpoint(req: SaveArtRequest, request: Request):
                         picture = Picture()
                         picture.data = img_data
                         picture.type = 3
-                        picture.mime = "image/jpeg"
+                        picture.mime = image_mime
                         picture.desc = "Front Cover"
                         audio.clear_pictures()
                         audio.add_picture(picture)
@@ -5870,13 +6122,23 @@ async def save_art_endpoint(req: SaveArtRequest, request: Request):
                     elif ext in ["m4a", "mp4"]:
                         from mutagen.mp4 import MP4, MP4Cover
                         audio = MP4(f_path)
-                        audio.tags["covr"] = [MP4Cover(img_data, imageformat=MP4Cover.FORMAT_JPEG)]
+                        image_format = MP4Cover.FORMAT_PNG if image_mime == "image/png" else MP4Cover.FORMAT_JPEG
+                        audio.tags["covr"] = [MP4Cover(img_data, imageformat=image_format)]
                         audio.save()
                 except Exception as e:
                     logger.warning(f"Failed to embed art in {filepath}: {e}")
+                    embed_failures.append(f_path.name)
+        else:
+            embed_failures = []
                     
         await trigger_navidrome_scan_debounced()
-        return {"status": "success", "message": "Cover art applied successfully."}
+        return {
+            "status": "partial" if embed_failures else "success",
+            "message": "Cover files saved; some audio tags failed." if embed_failures else "Cover art applied successfully.",
+            "embed_failures": embed_failures,
+        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -5906,7 +6168,7 @@ async def get_track_tags_endpoint(filepath: str, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(filepath).resolve()
-    if not str(target_path).startswith(str(music_dir)):
+    if not target_path.is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.exists():
@@ -5941,7 +6203,7 @@ async def edit_track_tags_endpoint(req: EditTagsRequest, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(req.filepath).resolve()
-    if not str(target_path).startswith(str(music_dir)):
+    if not target_path.is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.exists():
@@ -6014,6 +6276,7 @@ async def edit_track_tags_endpoint(req: EditTagsRequest, request: Request):
 
 def format_rename_pattern(pattern: str, meta: dict, ext: str) -> str:
     import re
+    from backend.app.sync import sanitize_filename
     artist = sanitize_filename(meta.get("artist") or "Unknown Artist")
     album = sanitize_filename(meta.get("album") or "Unknown Album")
     title = sanitize_filename(meta.get("title") or "Unknown Title")
@@ -6033,17 +6296,17 @@ def format_rename_pattern(pattern: str, meta: dict, ext: str) -> str:
     except Exception:
         track_num = 0
         
-    formatted = pattern
-    formatted = formatted.replace("{Artist}", artist)
-    formatted = formatted.replace("{Album}", album)
-    formatted = formatted.replace("{Title}", title)
-    formatted = formatted.replace("{Genre}", genre)
-    formatted = formatted.replace("{Year}", year)
-    
-    formatted = formatted.replace("{Track:2}", f"{track_num:02d}")
-    formatted = formatted.replace("{Track}", str(track_num))
-    
-    return formatted.strip("/") + ext
+    values = {
+        "artist": artist, "album": album, "title": title,
+        "genre": genre, "year": year, "track": track_num,
+        "Artist": artist, "Album": album, "Title": title,
+        "Genre": genre, "Year": year, "Track": track_num,
+    }
+    formatted = pattern.replace("{Track:2}", f"{track_num:02d}").format(**values)
+    relative = Path(formatted)
+    if relative.is_absolute() or not formatted or any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("Invalid renaming pattern: output must remain inside the library.")
+    return str(relative) + ext
 
 def _organize_preview_sync(music_dir: Path, pattern: str) -> list:
     preview = []
@@ -6106,6 +6369,8 @@ def _organize_execute_sync(music_dir: Path, pattern: str) -> tuple[int, list]:
                     dst_path = music_dir / new_rel
                     
                     if src_path.resolve() != dst_path.resolve():
+                        if not dst_path.resolve().is_relative_to(music_dir) or dst_path.exists():
+                            raise ValueError(f"Unsafe or occupied destination: {dst_path}")
                         dst_path.parent.mkdir(parents=True, exist_ok=True)
                         shutil.move(str(src_path), str(dst_path))
                         moved_count += 1
@@ -6221,7 +6486,7 @@ async def get_duplicates_endpoint(request: Request):
     if not config_manager.config:
         return []
     
-    cache_path = get_file_checks_cache_path()
+    cache_path = get_file_checks_cache_path(user["id"])
     if cache_path.exists():
         try:
             import json
@@ -6234,12 +6499,13 @@ async def get_duplicates_endpoint(request: Request):
 
 @app.post("/api/library/duplicates/scan")
 async def scan_duplicates_endpoint(request: Request):
-    if not config_manager.config:
-        raise HTTPException(status_code=400, detail="App is not configured.")
-        
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
-    user_id = user["id"]
+    return await scan_duplicates_for_user(user["id"])
+
+async def scan_duplicates_for_user(user_id: str):
+    if not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured.")
     
     user_row = await db.get_user_by_id(user_id)
     music_dir = Path(config_manager.config.paths.music_dir).resolve()
@@ -6251,7 +6517,7 @@ async def scan_duplicates_endpoint(request: Request):
         
     duplicates_groups = await asyncio.to_thread(_get_duplicates_sync, music_dir)
     
-    cache_path = get_file_checks_cache_path()
+    cache_path = get_file_checks_cache_path(user_id)
     data = {}
     if cache_path.exists():
         try:
@@ -6280,7 +6546,7 @@ def _resolve_duplicates_sync(paths_to_delete: list[str], music_dir: Path) -> tup
     errors = []
     for filepath_str in paths_to_delete:
         filepath = Path(filepath_str).resolve()
-        if not str(filepath).startswith(str(music_dir)):
+        if not filepath.resolve().is_relative_to(music_dir):
             errors.append({"path": filepath_str, "error": "Access denied"})
             continue
             
@@ -6443,11 +6709,13 @@ async def stream_track_endpoint(filepath: str, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(filepath).resolve()
-    if not str(target_path).startswith(str(music_dir)):
+    if not target_path.is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
+    if not target_path.is_file() or target_path.suffix.lower() not in {".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wav", ".alac"}:
+        raise HTTPException(status_code=400, detail="Only audio files can be streamed.")
         
     from fastapi.responses import FileResponse
     return FileResponse(target_path)
@@ -6559,6 +6827,11 @@ async def mass_rename_files(req: MassRenameRequest, request: Request):
     user_row = await db.get_user_by_id(user_id)
     if user_row and user_row.get("music_dir"):
         music_dir = Path(user_row["music_dir"])
+    music_dir = music_dir.resolve()
+    if req.paths:
+        for selected in req.paths:
+            if not Path(selected).resolve().is_relative_to(music_dir):
+                raise HTTPException(status_code=403, detail="Path outside your library.")
 
     fn_cfg = cfg.filename
     pattern = ""
@@ -6592,8 +6865,12 @@ async def mass_rename_files(req: MassRenameRequest, request: Request):
                 meta = read_file_metadata_with_cache(f_path, metadata_cache, [])
                 new_rel = format_rename_pattern(pattern, meta, ext)
                 dest = music_dir / new_rel
+                if not dest.resolve().is_relative_to(music_dir):
+                    raise ValueError("Destination outside library")
                 if dest.resolve() == f_path.resolve():
                     continue  # Already correct
+                if dest.exists():
+                    raise FileExistsError(f"Destination already exists: {dest}")
                 renamed.append({
                     "from": str(f_path),
                     "to": str(dest),
@@ -6718,6 +6995,11 @@ async def fix_feat_artists(req: FeatFixRequest, request: Request):
     user_row = await db.get_user_by_id(user_id)
     if user_row and user_row.get("music_dir"):
         music_dir = Path(user_row["music_dir"])
+    music_dir = music_dir.resolve()
+    if req.paths:
+        for selected in req.paths:
+            if not Path(selected).resolve().is_relative_to(music_dir):
+                raise HTTPException(status_code=403, detail="Path outside your library.")
 
     _FEAT_RE = re.compile(
         r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+)(.+?)[\)\]]?\s*$',
@@ -6824,6 +7106,7 @@ async def fix_folder_tags_endpoint(req: FixFolderTagsRequest, request: Request):
 
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
+    await verify_user_access_to_path(user["id"], req.folder_path)
 
     folder = Path(req.folder_path)
     if not folder.exists() or not folder.is_dir():
@@ -6871,6 +7154,11 @@ async def retag_library_musicbrainz(req: RetageRequest, request: Request):
     user_row = await db.get_user_by_id(user_id)
     if user_row and user_row.get("music_dir"):
         music_dir = Path(user_row["music_dir"])
+    music_dir = music_dir.resolve()
+    if req.paths:
+        for selected in req.paths:
+            if not Path(selected).resolve().is_relative_to(music_dir):
+                raise HTTPException(status_code=403, detail="Path outside your library.")
 
     paths = [Path(p) for p in req.paths] if req.paths else None
 
@@ -7071,8 +7359,9 @@ async def serve_frontend(catchall: str):
         
     # Serve static files dynamically (e.g. manifest.webmanifest, sw.js, icon-192.png) if they exist
     clean_path = catchall.lstrip("/")
-    file_path = os.path.join(frontend_dir, clean_path)
-    if clean_path and os.path.isfile(file_path):
+    root = Path(frontend_dir).resolve()
+    file_path = (root / clean_path).resolve()
+    if clean_path and file_path.is_relative_to(root) and file_path.is_file():
         return FileResponse(file_path)
         
     # SPA fallback

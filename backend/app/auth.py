@@ -10,6 +10,8 @@ Strategy:
 """
 
 import uuid
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 
@@ -105,9 +107,11 @@ async def validate_navidrome_login(
             detail="Navidrome URL is not configured. Cannot authenticate.",
         )
 
+    salt = secrets.token_hex(12)
     params = {
         "u": username,
-        "p": password,
+        "t": hashlib.md5((password + salt).encode("utf-8")).hexdigest(),
+        "s": salt,
         "v": "1.16.1",
         "c": "VeryDisco",
         "f": "json",
@@ -178,7 +182,7 @@ async def get_current_user(
     Raises 401 if the cookie is missing, invalid, or expired.
     """
     # Import here to avoid circular imports
-    from backend.app.main import config_manager
+    from backend.app.main import config_manager, db
 
     token: Optional[str] = request.cookies.get(COOKIE_NAME)
     if not token:
@@ -206,10 +210,23 @@ async def get_current_user(
         payload = decode_access_token(token, secret_key)
         user_id: str = payload.get("sub", "")
         username: str = payload.get("username", "")
-        is_admin: bool = payload.get("is_admin", False)
         if not user_id or not username:
             raise JWTError("Missing claims")
-        return {"id": user_id, "username": username, "is_admin": is_admin}
+        current = await db.get_user_by_id(user_id)
+        if not current or current.get("username") != username:
+            raise JWTError("User no longer exists")
+        if not current.get("music_dir") or not current.get("playlist_dir"):
+            raise JWTError("User directories are not initialized; please log in again")
+        from pathlib import Path
+        music_base = Path(cfg.paths.music_dir).resolve()
+        playlist_base = Path(cfg.paths.navidrome_playlists_dir).resolve()
+        own_music = Path(current.get("music_dir") or music_base / username).resolve()
+        own_playlists = Path(current.get("playlist_dir") or playlist_base / username).resolve()
+        if not own_music.is_relative_to(music_base):
+            raise JWTError("Invalid music directory")
+        if not (own_playlists.is_relative_to(playlist_base) or own_playlists.is_relative_to(own_music)):
+            raise JWTError("Invalid playlist directory")
+        return {"id": user_id, "username": username, "is_admin": bool(current.get("is_admin"))}
     except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

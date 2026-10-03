@@ -56,13 +56,14 @@ import FeatFixer from './components/FeatFixer';
 import RetagManager from './components/RetagManager';
 import ArtistAliases from './components/ArtistAliases';
 import MusicBrainzInspector from './components/MusicBrainzInspector';
+import MusicRequests from './components/MusicRequests';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const DRAWER_WIDTH = 260;
 
-type TabId = 'dashboard' | 'explore' | 'search' | 'feedback' | 'listenbrainz' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'retag' | 'aliases' | 'musicbrainz-inspector' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
+type TabId = 'dashboard' | 'explore' | 'search' | 'requests' | 'feedback' | 'listenbrainz' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'retag' | 'aliases' | 'musicbrainz-inspector' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
 
-const VALID_TABS: TabId[] = ['dashboard', 'explore', 'search', 'feedback', 'listenbrainz', 'my-artists', 'server-health', 'acoustid', 'library-manager', 'lyrics', 'album-art', 'duplicates', 'naming', 'feat-fixer', 'retag', 'aliases', 'musicbrainz-inspector', 'tasks', 'config', 'history', 'logs', 'user-settings'];
+const VALID_TABS: TabId[] = ['dashboard', 'explore', 'search', 'requests', 'feedback', 'listenbrainz', 'my-artists', 'server-health', 'acoustid', 'library-manager', 'lyrics', 'album-art', 'duplicates', 'naming', 'feat-fixer', 'retag', 'aliases', 'musicbrainz-inspector', 'tasks', 'config', 'history', 'logs', 'user-settings'];
 
 const fmtTime = (secs: number) => {
   if (!secs || isNaN(secs)) return '0:00';
@@ -171,13 +172,14 @@ const GlobalPlayer: React.FC<{
 
       {/* Controls */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 2 }, flex: 1, justifyContent: 'center', maxWidth: 600 }}>
-        <IconButton onClick={handlePlayPause} color="primary" size="small">
+        <IconButton onClick={handlePlayPause} color="primary" size="small" aria-label={playing ? 'Pause playback' : 'Play track'}>
           {playing ? <PauseIcon /> : <PlayIcon />}
         </IconButton>
         <Typography variant="caption" sx={{ width: 35, textAlign: 'right', display: { xs: 'none', sm: 'block' } }}>
           {fmtTime(currentTime)}
         </Typography>
         <Slider
+          aria-label="Seek playback position"
           size="small"
           value={currentTime}
           max={duration || 100}
@@ -193,6 +195,7 @@ const GlobalPlayer: React.FC<{
       <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 0.5, sm: 2 }, minWidth: { xs: 'auto', sm: 150 }, justifyContent: 'flex-end' }}>
         <VolumeIcon sx={{ color: 'text.secondary', display: { xs: 'none', md: 'block' } }} />
         <Slider
+          aria-label="Volume"
           size="small"
           value={volume}
           max={1}
@@ -200,7 +203,7 @@ const GlobalPlayer: React.FC<{
           onChange={handleVolumeChange}
           sx={{ width: 80, display: { xs: 'none', md: 'block' } }}
         />
-        <IconButton size="small" onClick={onClose}>
+        <IconButton size="small" onClick={onClose} aria-label="Close player">
           <CloseIcon />
         </IconButton>
       </Box>
@@ -317,6 +320,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
     { id: 'dashboard', text: 'Dashboard', icon: <DashboardIcon /> },
     { id: 'explore', text: 'Explore', icon: <PlaylistIcon /> },
     { id: 'search', text: 'Search Music', icon: <SearchIcon /> },
+    { id: 'requests', text: 'Music Requests', icon: <TasksIcon /> },
     { id: 'my-artists', text: 'My Artists', icon: <ArtistsIcon /> },
     { id: 'feedback', text: 'My Feedback', icon: <FavoriteIcon /> },
     { id: 'listenbrainz', text: 'ListenBrainz', icon: <MusicIcon /> },
@@ -329,14 +333,14 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
     { id: 'lyrics', text: 'Lyrics Manager', icon: <MusicIcon /> },
     { id: 'album-art', text: 'Album Art Finder', icon: <AlbumArtIcon /> },
     { id: 'duplicates', text: 'Duplicate Cleaner', icon: <DuplicatesIcon /> },
-    { id: 'divider-2', text: '', icon: null },
     ...(user?.isAdmin ? [
+      { id: 'divider-2', text: '', icon: null },
       { id: 'server-health', text: 'Server Health', icon: <HealthIcon /> },
       { id: 'acoustid', text: 'AcoustID Verification', icon: <FingerprintIcon /> },
       { id: 'aliases', text: 'Artist Aliases', icon: <ArtistsIcon /> },
       { id: 'config', text: 'Configuration', icon: <SettingsIcon /> },
-      { id: 'divider-3', text: '', icon: null },
     ] : []),
+    { id: 'divider-3', text: '', icon: null },
     { id: 'tasks', text: 'Running Tasks', icon: <TasksIcon /> },
     { id: 'history', text: 'Sync History', icon: <HistoryIcon /> },
     { id: 'logs', text: 'Live Logs', icon: <LogsIcon /> },
@@ -372,7 +376,16 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
       <List sx={{ px: 2, py: 2, flex: 1, display: 'flex', flexDirection: 'column', gap: 0.5, overflowY: 'auto' }}>
         {navigationItems.map((item) => {
           if (item.id.startsWith('divider')) {
-            return <Divider key={item.id} sx={{ my: 1, opacity: 0.4 }} />;
+            const section: Record<string, string> = {
+              'divider-1': 'Library tools',
+              'divider-2': 'Administration',
+              'divider-3': 'Activity',
+              'divider-4': 'Account',
+            };
+            return <Box key={item.id} sx={{ mt: 1.5 }}>
+              <Divider sx={{ mb: 1.5, opacity: 0.4 }} />
+              <Typography variant="overline" color="text.secondary" sx={{ pl: 2 }}>{section[item.id]}</Typography>
+            </Box>;
           }
           const isSelected = activeTab === item.id;
           return (
@@ -530,6 +543,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         {activeTab === 'dashboard' && <Dashboard onNavigateToConfig={() => navigateTo('config')} />}
         {activeTab === 'explore' && <Explore />}
         {activeTab === 'search' && <SearchMusic />}
+        {activeTab === 'requests' && <MusicRequests />}
         {activeTab === 'my-artists' && <MyArtists />}
         {activeTab === 'feedback' && <MyFeedback />}
         {activeTab === 'listenbrainz' && <ListenBrainz />}
