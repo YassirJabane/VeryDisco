@@ -218,7 +218,7 @@ class MusicBrainzReleaseProvider:
 
 
 class ArtworkProvider:
-    """Artwork chain: CAA release, CAA release-group, then strict iTunes fallback."""
+    """Artwork chain: exact digital artwork, then canonical and edition CAA fallbacks."""
 
     async def fetch(
         self,
@@ -229,30 +229,45 @@ class ArtworkProvider:
         allow_itunes: bool = True,
     ) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
         client = await get_http_client()
-        urls = [
-            (f"{CAA_BASE}/release/{release_mbid}/front", "cover-art-archive:release"),
-        ]
+        if allow_itunes:
+            artwork = await self._fetch_exact_itunes_artwork(client, album_artist, album)
+            if artwork:
+                return artwork
+
+        urls = []
         if release_group_mbid:
             urls.append((f"{CAA_BASE}/release-group/{release_group_mbid}/front", "cover-art-archive:release-group"))
+        if release_mbid:
+            urls.append((f"{CAA_BASE}/release/{release_mbid}/front", "cover-art-archive:release"))
         for url, source in urls:
             response = await client.get(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
             if response.status_code == 200 and self._image_mime(response.content):
                 return response.content, self._image_mime(response.content), source
-        if allow_itunes:
-            query = urllib.parse.quote(f"{album_artist} {album}")
-            response = await client.get(f"{ITUNES_SEARCH}?term={query}&entity=album&limit=8")
-            if response.status_code == 200:
-                for result in response.json().get("results", []):
-                    if normalize(result.get("collectionName", "")) != normalize(album):
-                        continue
-                    if normalize(result.get("artistName", "")) != normalize(album_artist):
-                        continue
-                    url = (result.get("artworkUrl100") or "").replace("100x100", "1200x1200")
-                    if url:
-                        art = await client.get(url, follow_redirects=True)
-                        if art.status_code == 200 and self._image_mime(art.content):
-                            return art.content, self._image_mime(art.content), "itunes:verified-album"
         return None, None, None
+
+    async def _fetch_exact_itunes_artwork(
+        self,
+        client: Any,
+        album_artist: str,
+        album: str,
+    ) -> Optional[tuple[bytes, str, str]]:
+        query = urllib.parse.quote(f"{album_artist} {album}")
+        response = await client.get(f"{ITUNES_SEARCH}?term={query}&entity=album&limit=8")
+        if response.status_code != 200:
+            return None
+        for result in response.json().get("results", []):
+            if normalize(result.get("collectionName", "")) != normalize(album):
+                continue
+            if normalize(result.get("artistName", "")) != normalize(album_artist):
+                continue
+            url = (result.get("artworkUrl100") or "").replace("100x100", "1200x1200")
+            if not url:
+                continue
+            artwork = await client.get(url, follow_redirects=True)
+            mime = self._image_mime(artwork.content) if artwork.status_code == 200 else None
+            if mime:
+                return artwork.content, mime, "itunes:verified-digital"
+        return None
 
     @staticmethod
     def _image_mime(data: bytes) -> Optional[str]:

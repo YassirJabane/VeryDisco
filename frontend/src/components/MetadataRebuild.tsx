@@ -141,7 +141,7 @@ const MetadataRebuild: React.FC = () => {
           <Stack direction={{ xs: 'column', sm: 'row' }} gap={1}>
             <FormControlLabel control={<Switch checked={verifyAcoustid} onChange={e => setVerifyAcoustid(e.target.checked)} />} label="Verify recordings with AcoustID" />
             <FormControlLabel control={<Switch checked={includeArtwork} onChange={e => setIncludeArtwork(e.target.checked)} />} label="Replace artwork" />
-            <FormControlLabel control={<Switch checked={allowItunes} onChange={e => setAllowItunes(e.target.checked)} disabled={!includeArtwork} />} label="Verified iTunes fallback" />
+            <FormControlLabel control={<Switch checked={allowItunes} onChange={e => setAllowItunes(e.target.checked)} disabled={!includeArtwork} />} label="Prefer verified digital artwork" />
           </Stack>
         </Stack>
         {['scanning', 'queued', 'cancelling'].includes(status.status) && <Box mt={2}>
@@ -170,7 +170,7 @@ const MetadataRebuild: React.FC = () => {
             </AccordionSummary>
             <AccordionDetails>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} mb={2}>
-                {release?.artwork_url && <Box component="img" src={release.artwork_url} alt="Candidate cover" sx={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 2, bgcolor: 'action.hover' }} />}
+                {release?.artwork_url && <Stack spacing={.5}><Box component="img" src={release.artwork_url} alt="MusicBrainz cover preview" sx={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 2, bgcolor: 'action.hover' }} /><Typography variant="caption" color="text.secondary">MusicBrainz preview. Applying with digital artwork enabled prefers an exact digital cover.</Typography></Stack>}
                 <Box flex={1}>
                   <Typography variant="subtitle2" mb={1}>Selected MusicBrainz release</Typography>
                   <Select size="small" fullWidth value={release?.release_mbid || ''} displayEmpty
@@ -199,7 +199,7 @@ const MetadataRebuild: React.FC = () => {
                     <Chip size="small" label={`MBID ${release.release_mbid}`} />
                     <Chip size="small" label={release.date || 'No release date'} />
                     <Chip size="small" label={release.status || 'Unknown status'} />
-                    <Chip size="small" label="Cover Art Archive" color="primary" variant="outlined" />
+                    <Chip size="small" label="Artwork policy enabled" color="primary" variant="outlined" />
                   </Stack>}
                   {plan.variants?.album_artists?.length > 1 && <Alert severity="warning" sx={{ mt: 1.5 }}>
                     Existing Album Artist variants: {plan.variants.album_artists.join(' · ')}. They are evidence only and are never copied into the proposal.

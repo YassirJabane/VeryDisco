@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 from mutagen.id3 import COMM, ID3, TALB, TIT2, TPE1, TPE2, TPOS, TRCK
 
-from backend.app.metadata_pipeline.providers import artist_credit, normalize, MusicBrainzReleaseProvider
+from backend.app.metadata_pipeline.providers import (
+    ArtworkProvider, MusicBrainzReleaseProvider, artist_credit, normalize,
+)
 from backend.app.metadata_pipeline.service import MetadataRebuildService
 from backend.app.metadata_pipeline.tags import read_track, write_track
 
@@ -114,6 +116,38 @@ async def test_musicbrainz_prefers_original_edition_and_release_group_date():
     assert candidates[0]["release_mbid"] == "original"
     assert candidates[0]["date"] == "2007-04-18"
     assert candidates[0]["release_date"] == "2007-04-18"
+
+
+@pytest.mark.asyncio
+async def test_artwork_prefers_exact_digital_cover_before_caa(monkeypatch):
+    class Response:
+        def __init__(self, status_code, content=b"", payload=None):
+            self.status_code = status_code
+            self.content = content
+            self._payload = payload or {}
+
+        def json(self):
+            return self._payload
+
+    class Client:
+        async def get(self, url, **kwargs):
+            if "itunes.apple.com" in url:
+                return Response(200, payload={"results": [{
+                    "collectionName": "Scorpion", "artistName": "Drake",
+                    "artworkUrl100": "https://art.example/100x100.jpg",
+                }]})
+            if "art.example" in url:
+                return Response(200, b"\xff\xd8\xffdigital")
+            raise AssertionError(f"CAA should not be used when an exact digital cover exists: {url}")
+
+    async def client():
+        return Client()
+
+    monkeypatch.setattr("backend.app.metadata_pipeline.providers.get_http_client", client)
+    data, mime, source = await ArtworkProvider().fetch("release", "group", "Drake", "Scorpion")
+    assert data == b"\xff\xd8\xffdigital"
+    assert mime == "image/jpeg"
+    assert source == "itunes:verified-digital"
 
 
 class SlowProvider:

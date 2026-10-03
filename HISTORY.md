@@ -137,3 +137,9 @@
 - Dal piano reale di `Favourite Worst Nightmare` è emerso che la pipeline aveva scelto una release MusicBrainz ufficiale del 2022 e proponeva di sostituire la data locale `2007-04-18`. La causa era doppia: il ranking ignorava la data della singola edizione e la normalizzazione privilegiava `release.date` rispetto a `release-group.first-release-date`.
 - `backend/app/metadata_pipeline/providers.py` ora preferisce, a parità di match testuale, l'edizione più antica; per il tag album usa sempre `first-release-date` del release group, conservando separatamente `release_date` dell'edizione selezionata. `MetadataRebuild.tsx` rende esplicito nella lista il caso `first released 2007 · edition 2022`.
 - Aggiunto test provider per ristampa 2022 contro originale 2007. Da eseguire: test metadata e typecheck/frontend CI; servirà un nuovo scan perché i piani già salvati mantengono il candidato/data calcolati con la vecchia logica.
+
+## 2026-10-03 — Artwork digitale editoriale prima delle scansioni CAA
+
+- Dal piano reale di `Scorpion` rilevato che la preview mostrava una scansione Cover Art Archive della release US da 25 brani: ufficiale ma non necessariamente la copertina digitale editoriale desiderata. Il vecchio ordine usava sempre prima la cover della release selezionata, accettando sticker, crop e scansioni fisiche.
+- `ArtworkProvider` ora preferisce una cover iTunes digitale solo con corrispondenza esatta artista+album; in assenza usa CAA del release group (cover canonica album) e soltanto dopo CAA della singola edizione. UI: lo switch esplicita la preferenza digitale e chiarisce che la preview MusicBrainz non coincide necessariamente con il file artwork che verrà applicato.
+- Aggiunto test che verifica la preferenza per artwork digitale esatto senza interrogare CAA. Da eseguire: suite Metadata Rebuild e typecheck/CI; i piani già creati vanno riapplicati o rieseguiti dopo la beta aggiornata.
