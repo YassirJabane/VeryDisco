@@ -265,6 +265,23 @@ def test_index_inventory_reuses_unchanged_catalog_rows(tmp_path, monkeypatch):
     assert groups[0]["tracks"][0]["release_mbid"] == "release"
 
 
+def test_index_inventory_skips_unreadable_changed_file(tmp_path, monkeypatch):
+    track = tmp_path / "unreadable.mp3"
+    track.write_bytes(b"broken fixture")
+    stat = track.stat()
+    row = {
+        "filepath": str(track), "size": stat.st_size - 1, "mtime_ns": stat.st_mtime_ns,
+        "title": "Unreadable", "artist": "Artist", "artists_json": "[]",
+        "album": "Album", "album_artist": "Artist",
+    }
+    monkeypatch.setattr(
+        "backend.app.metadata_pipeline.service.read_track",
+        lambda path: (_ for _ in ()).throw(OSError("Input/output error")),
+    )
+    service = MetadataRebuildService(tmp_path / "state", provider=FakeProvider(), artwork=NoArtwork())
+    assert service._inventory_from_index(tmp_path, {}, [row]) == []
+
+
 @pytest.mark.asyncio
 async def test_musicbrainz_progressive_loading_and_persistent_cache():
     cache, calls = {}, []

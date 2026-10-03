@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   ThemeProvider, CssBaseline, Box, Drawer, AppBar, Toolbar, 
   List, ListItem, ListItemButton, ListItemIcon, ListItemText, 
-  Typography, IconButton, Divider, Avatar, Tooltip, Chip, Slider
+  Typography, IconButton, Divider, Avatar, Tooltip, Chip, Slider, Collapse, Button
 } from '@mui/material';
 import { 
   Menu as MenuIcon, 
@@ -30,7 +30,8 @@ import {
   Close as CloseIcon,
   Fingerprint as FingerprintIcon,
   Album as AlbumIcon,
-  AutoFixHigh as RebuildIcon
+  AutoFixHigh as RebuildIcon,
+  KeyboardArrowDown as ArrowDownIcon
 } from '@mui/icons-material';
 import getTheme from './theme';
 import Dashboard from './components/Dashboard';
@@ -61,6 +62,7 @@ import MetadataRebuild from './components/MetadataRebuild';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const DRAWER_WIDTH = 260;
+const DRAWER_COLLAPSED_WIDTH = 78;
 
 type TabId = 'dashboard' | 'explore' | 'search' | 'requests' | 'feedback' | 'listenbrainz' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'metadata-rebuild' | 'aliases' | 'musicbrainz-inspector' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
 
@@ -147,8 +149,8 @@ const GlobalPlayer: React.FC<{
         bottom: 0,
         left: 0,
         right: 0,
-        height: 72,
-        bgcolor: 'background.paper',
+        minHeight: 82,
+        bgcolor: 'rgba(21,19,29,0.92)',
         borderTop: '1px solid',
         borderColor: 'divider',
         display: 'flex',
@@ -156,7 +158,8 @@ const GlobalPlayer: React.FC<{
         px: { xs: 1.5, sm: 3 },
         zIndex: 1300,
         justifyContent: 'space-between',
-        boxShadow: '0 -4px 20px rgba(0,0,0,0.1)'
+        boxShadow: '0 -18px 50px rgba(0,0,0,0.28)',
+        backdropFilter: 'blur(24px)',
       }}
     >
       <audio
@@ -166,14 +169,15 @@ const GlobalPlayer: React.FC<{
         onEnded={() => setPlaying(false)}
       />
       {/* Title & Artist */}
-      <Box sx={{ minWidth: { xs: 80, sm: 200 }, maxWidth: { xs: 90, sm: 300 }, display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{ minWidth: { xs: 90, sm: 220 }, maxWidth: { xs: 120, sm: 300 }, display: 'flex', flexDirection: 'column' }}>
+        <Typography variant="caption" color="primary.main" sx={{ fontWeight: 750, letterSpacing: '.08em', textTransform: 'uppercase' }}>Now playing</Typography>
         <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{track.title}</Typography>
         <Typography variant="caption" color="text.secondary" noWrap>{track.artist}</Typography>
       </Box>
 
       {/* Controls */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: { xs: 1, sm: 2 }, flex: 1, justifyContent: 'center', maxWidth: 600 }}>
-        <IconButton onClick={handlePlayPause} color="primary" size="small" aria-label={playing ? 'Pause playback' : 'Play track'}>
+        <IconButton onClick={handlePlayPause} color="primary" size="medium" aria-label={playing ? 'Pause playback' : 'Play track'} sx={{ bgcolor: 'rgba(155,108,255,.14)', '&:hover': { bgcolor: 'rgba(155,108,255,.24)' } }}>
           {playing ? <PauseIcon /> : <PlayIcon />}
         </IconButton>
         <Typography variant="caption" sx={{ width: 35, textAlign: 'right', display: { xs: 'none', sm: 'block' } }}>
@@ -228,6 +232,8 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
   });
 
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [drawerCollapsed, setDrawerCollapsed] = useState(false);
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({ discover: true, library: true, system: true });
   const [currentTrack, setCurrentTrack] = useState<{ filepath: string; title: string; artist: string } | null>(null);
 
   useEffect(() => {
@@ -317,139 +323,107 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
     );
   }
 
+  const navigationGroups = [
+    {
+      id: 'discover', label: 'Discover', icon: <PlaylistIcon />,
+      items: [
+        { id: 'explore', text: 'Explore', icon: <PlaylistIcon /> },
+        { id: 'search', text: 'Search music', icon: <SearchIcon /> },
+        { id: 'requests', text: 'Music requests', icon: <TasksIcon /> },
+        { id: 'my-artists', text: 'My artists', icon: <ArtistsIcon /> },
+        { id: 'feedback', text: 'My feedback', icon: <FavoriteIcon /> },
+        { id: 'listenbrainz', text: 'ListenBrainz', icon: <MusicIcon /> },
+      ],
+    },
+    {
+      id: 'library', label: 'Library', icon: <LibraryIcon />,
+      items: [
+        { id: 'library-manager', text: 'Library manager', icon: <LibraryIcon /> },
+        { id: 'metadata-rebuild', text: 'Metadata rebuild', icon: <RebuildIcon /> },
+        { id: 'album-art', text: 'Artwork', icon: <AlbumArtIcon /> },
+        { id: 'lyrics', text: 'Lyrics', icon: <MusicIcon /> },
+        { id: 'duplicates', text: 'Duplicates', icon: <DuplicatesIcon /> },
+        { id: 'naming', text: 'Naming conventions', icon: <SettingsIcon /> },
+        { id: 'feat-fixer', text: 'Feature artist fixer', icon: <ArtistsIcon /> },
+        { id: 'musicbrainz-inspector', text: 'MusicBrainz inspector', icon: <AlbumIcon /> },
+      ],
+    },
+    {
+      id: 'system', label: 'System', icon: <TasksIcon />,
+      items: [
+        { id: 'tasks', text: 'Running tasks', icon: <TasksIcon /> },
+        { id: 'history', text: 'Sync history', icon: <HistoryIcon /> },
+        { id: 'logs', text: 'Live logs', icon: <LogsIcon /> },
+        ...(user?.isAdmin ? [
+          { id: 'server-health', text: 'Server health', icon: <HealthIcon /> },
+          { id: 'acoustid', text: 'AcoustID verification', icon: <FingerprintIcon /> },
+          { id: 'aliases', text: 'Artist aliases', icon: <ArtistsIcon /> },
+          { id: 'config', text: 'Configuration', icon: <SettingsIcon /> },
+        ] : []),
+      ],
+    },
+  ];
   const navigationItems = [
-    { id: 'dashboard', text: 'Dashboard', icon: <DashboardIcon /> },
-    { id: 'explore', text: 'Explore', icon: <PlaylistIcon /> },
-    { id: 'search', text: 'Search Music', icon: <SearchIcon /> },
-    { id: 'requests', text: 'Music Requests', icon: <TasksIcon /> },
-    { id: 'my-artists', text: 'My Artists', icon: <ArtistsIcon /> },
-    { id: 'feedback', text: 'My Feedback', icon: <FavoriteIcon /> },
-    { id: 'listenbrainz', text: 'ListenBrainz', icon: <MusicIcon /> },
-    { id: 'divider-1', text: '', icon: null },
-    { id: 'library-manager', text: 'Library Manager', icon: <LibraryIcon /> },
-    { id: 'naming', text: 'Naming Conventions', icon: <SettingsIcon /> },
-    { id: 'feat-fixer', text: 'Feature Artist Fixer', icon: <ArtistsIcon /> },
-    { id: 'metadata-rebuild', text: 'Metadata Rebuild', icon: <RebuildIcon /> },
-    { id: 'musicbrainz-inspector', text: 'MusicBrainz Inspector', icon: <AlbumIcon /> },
-    { id: 'lyrics', text: 'Lyrics Manager', icon: <MusicIcon /> },
-    { id: 'album-art', text: 'Album Art Finder', icon: <AlbumArtIcon /> },
-    { id: 'duplicates', text: 'Duplicate Cleaner', icon: <DuplicatesIcon /> },
-    ...(user?.isAdmin ? [
-      { id: 'divider-2', text: '', icon: null },
-      { id: 'server-health', text: 'Server Health', icon: <HealthIcon /> },
-      { id: 'acoustid', text: 'AcoustID Verification', icon: <FingerprintIcon /> },
-      { id: 'aliases', text: 'Artist Aliases', icon: <ArtistsIcon /> },
-      { id: 'config', text: 'Configuration', icon: <SettingsIcon /> },
-    ] : []),
-    { id: 'divider-3', text: '', icon: null },
-    { id: 'tasks', text: 'Running Tasks', icon: <TasksIcon /> },
-    { id: 'history', text: 'Sync History', icon: <HistoryIcon /> },
-    { id: 'logs', text: 'Live Logs', icon: <LogsIcon /> },
-    { id: 'divider-4', text: '', icon: null },
-    { id: 'user-settings', text: 'My Settings', icon: <UserSettingsIcon /> },
+    { id: 'dashboard', text: 'Home', icon: <DashboardIcon /> },
+    ...navigationGroups.flatMap(group => group.items),
+    { id: 'user-settings', text: 'My settings', icon: <UserSettingsIcon /> },
   ];
 
   const drawerContent = (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      {/* Logo */}
-      <Box sx={{ 
-        p: 3, 
-        display: 'flex', 
-        alignItems: 'center', 
-        gap: 1.5,
-        background: mode === 'dark' 
-          ? 'linear-gradient(135deg, #1c1b22 0%, #121118 100%)' 
-          : 'linear-gradient(135deg, #ffffff 0%, #f1f3f9 100%)'
-      }}>
-        <MusicIcon color="primary" sx={{ fontSize: 32 }} />
-        <Box>
-          <Typography variant="h6" sx={{ fontWeight: 800, lineHeight: 1.2 }}>
-            VeryDisco
-          </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, letterSpacing: 0.5 }}>
-            MATERIAL DESIGN
-          </Typography>
+    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <Box sx={{ p: drawerCollapsed ? 2 : 2.5, display: 'flex', alignItems: 'center', gap: 1.25, minHeight: 82 }}>
+        <Box sx={{ width: 42, height: 42, borderRadius: 2.5, display: 'grid', placeItems: 'center', flexShrink: 0, background: 'linear-gradient(135deg, #6d3df5, #b084ff)', boxShadow: '0 10px 26px rgba(109,61,245,0.32)' }}>
+          <MusicIcon sx={{ color: '#fff', fontSize: 24 }} />
         </Box>
+        {!drawerCollapsed && <Box sx={{ minWidth: 0 }}>
+          <Typography variant="h6" sx={{ fontWeight: 850, lineHeight: 1 }}>VeryDisco</Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: '.12em' }}>MUSIC OPS</Typography>
+        </Box>}
       </Box>
       <Divider />
 
-      {/* Navigation */}
-      <List sx={{ px: 2, py: 2, flex: 1, display: 'flex', flexDirection: 'column', gap: 0.5, overflowY: 'auto' }}>
-        {navigationItems.map((item) => {
-          if (item.id.startsWith('divider')) {
-            const section: Record<string, string> = {
-              'divider-1': 'Library tools',
-              'divider-2': 'Administration',
-              'divider-3': 'Activity',
-              'divider-4': 'Account',
-            };
-            return <Box key={item.id} sx={{ mt: 1.5 }}>
-              <Divider sx={{ mb: 1.5, opacity: 0.4 }} />
-              <Typography variant="overline" color="text.secondary" sx={{ pl: 2 }}>{section[item.id]}</Typography>
-            </Box>;
-          }
-          const isSelected = activeTab === item.id;
-          return (
-            <ListItem key={item.id} disablePadding>
-              <ListItemButton
-                component="a"
-                href={`/${item.id}`}
-                selected={isSelected}
-                onClick={(e) => {
-                  if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-                    e.preventDefault();
-                    navigateTo(item.id);
-                    setMobileOpen(false);
-                  }
-                }}
-                sx={{
-                  borderRadius: 3,
-                  py: 1.5,
-                  px: 2,
-                  '&.Mui-selected': {
-                    bgcolor: mode === 'dark' ? 'rgba(179, 136, 255, 0.12)' : 'rgba(98, 0, 234, 0.08)',
-                    color: 'primary.main',
-                    '& .MuiListItemIcon-root': { color: 'primary.main' },
-                    '&:hover': {
-                      bgcolor: mode === 'dark' ? 'rgba(179, 136, 255, 0.18)' : 'rgba(98, 0, 234, 0.12)',
-                    }
-                  },
-                }}
-              >
-                <ListItemIcon sx={{ minWidth: 40, color: isSelected ? 'primary.main' : 'text.secondary' }}>
-                  {item.icon}
-                </ListItemIcon>
-                <ListItemText 
-                  primary={item.text} 
-                  primaryTypographyProps={{ fontWeight: isSelected ? 700 : 500, fontSize: '0.95rem' }} 
-                />
+      <List sx={{ px: drawerCollapsed ? 1 : 1.5, py: 1.5, flex: 1, overflowY: 'auto' }}>
+        <ListItem disablePadding sx={{ mb: 1 }}>
+          <ListItemButton component="a" href="/dashboard" selected={activeTab === 'dashboard'} onClick={(e) => { if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); navigateTo('dashboard'); setMobileOpen(false); } }} sx={{ borderRadius: 2.5, minHeight: 46, justifyContent: drawerCollapsed ? 'center' : 'initial', px: drawerCollapsed ? 1 : 1.5, '&.Mui-selected': { color: 'primary.main', bgcolor: 'rgba(155,108,255,0.13)', '& .MuiListItemIcon-root': { color: 'primary.main' } } }}>
+            <ListItemIcon sx={{ minWidth: drawerCollapsed ? 0 : 38, color: activeTab === 'dashboard' ? 'primary.main' : 'text.secondary' }}><DashboardIcon /></ListItemIcon>
+            {!drawerCollapsed && <ListItemText primary="Home" primaryTypographyProps={{ fontWeight: activeTab === 'dashboard' ? 750 : 550 }} />}
+          </ListItemButton>
+        </ListItem>
+
+        {navigationGroups.map((group) => {
+          const groupActive = group.items.some(item => item.id === activeTab);
+          return <Box key={group.id} sx={{ mb: 1 }}>
+            {!drawerCollapsed && <ListItem disablePadding>
+              <ListItemButton onClick={() => setOpenGroups(current => ({ ...current, [group.id]: !current[group.id] }))} sx={{ borderRadius: 2, minHeight: 34, px: 1.5, color: groupActive ? 'primary.main' : 'text.secondary' }}>
+                <ListItemIcon sx={{ minWidth: 32, color: 'inherit' }}>{group.icon}</ListItemIcon>
+                <ListItemText primary={group.label} primaryTypographyProps={{ variant: 'overline', fontWeight: 800 }} />
+                <ArrowDownIcon sx={{ fontSize: 18, transform: openGroups[group.id] ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 160ms ease' }} />
               </ListItemButton>
-            </ListItem>
-          );
+            </ListItem>}
+            <Collapse in={drawerCollapsed || openGroups[group.id]} timeout="auto" unmountOnExit={!drawerCollapsed}>
+              <List disablePadding>
+                {group.items.map((item) => {
+                  const isSelected = activeTab === item.id;
+                  return <ListItem key={item.id} disablePadding>
+                    <Tooltip title={drawerCollapsed ? item.text : ''} placement="right">
+                      <ListItemButton component="a" href={`/${item.id}`} selected={isSelected} onClick={(e) => { if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) { e.preventDefault(); navigateTo(item.id); setMobileOpen(false); } }} sx={{ borderRadius: 2.5, minHeight: 42, justifyContent: drawerCollapsed ? 'center' : 'initial', px: drawerCollapsed ? 1 : 1.5, ml: drawerCollapsed ? 0 : 1, '&.Mui-selected': { color: 'primary.main', bgcolor: 'rgba(155,108,255,0.13)', '& .MuiListItemIcon-root': { color: 'primary.main' } } }}>
+                        <ListItemIcon sx={{ minWidth: drawerCollapsed ? 0 : 38, color: isSelected ? 'primary.main' : 'text.secondary' }}>{item.icon}</ListItemIcon>
+                        {!drawerCollapsed && <ListItemText primary={item.text} primaryTypographyProps={{ fontWeight: isSelected ? 750 : 550, fontSize: '.9rem' }} />}
+                      </ListItemButton>
+                    </Tooltip>
+                  </ListItem>;
+                })}
+              </List>
+            </Collapse>
+          </Box>;
         })}
       </List>
 
-      {/* User footer */}
       <Divider />
-      <Box sx={{ p: 2, display: 'flex', alignItems: 'center', gap: 1.5, mb: currentTrack ? '72px' : 0 }}>
-        <Avatar sx={{ width: 36, height: 36, bgcolor: 'primary.main', fontSize: '0.9rem', fontWeight: 700 }}>
-          {(user.displayName || user.username).charAt(0).toUpperCase()}
-        </Avatar>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }} noWrap>
-            {user.displayName || user.username}
-          </Typography>
-          {user.isAdmin && (
-            <Typography variant="caption" color="primary.main" sx={{ fontWeight: 600 }}>
-              Admin
-            </Typography>
-          )}
-        </Box>
-        <Tooltip title="Sign out">
-          <IconButton size="small" onClick={() => logout()} color="default">
-            <LogoutIcon fontSize="small" />
-          </IconButton>
-        </Tooltip>
+      <Box sx={{ p: drawerCollapsed ? 1 : 1.5, display: 'flex', alignItems: 'center', gap: 1.25, mb: currentTrack ? '76px' : 0 }}>
+        <Avatar sx={{ width: 36, height: 36, bgcolor: 'primary.main', fontSize: '.9rem', fontWeight: 800, flexShrink: 0 }}>{(user.displayName || user.username).charAt(0).toUpperCase()}</Avatar>
+        {!drawerCollapsed && <Box sx={{ flex: 1, minWidth: 0 }}><Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>{user.displayName || user.username}</Typography><Typography variant="caption" color="text.secondary">{user.isAdmin ? 'Administrator' : 'Listener'}</Typography></Box>}
+        {!drawerCollapsed && <Tooltip title="Sign out"><IconButton size="small" onClick={() => logout()}><LogoutIcon fontSize="small" /></IconButton></Tooltip>}
       </Box>
     </Box>
   );
@@ -460,14 +434,14 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
       <AppBar
         position="fixed"
         sx={{
-          width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
-          ml: { md: `${DRAWER_WIDTH}px` },
-          bgcolor: 'background.paper',
+          width: { md: `calc(100% - ${drawerCollapsed ? DRAWER_COLLAPSED_WIDTH : DRAWER_WIDTH}px)` },
+          ml: { md: `${drawerCollapsed ? DRAWER_COLLAPSED_WIDTH : DRAWER_WIDTH}px` },
+          bgcolor: 'rgba(21,19,29,0.78)',
           color: 'text.primary',
           boxShadow: 'none',
           borderBottom: '1px solid',
           borderColor: 'divider',
-          backdropFilter: 'blur(20px)',
+          backdropFilter: 'blur(24px)',
           backgroundImage: 'none',
         }}
       >
@@ -482,12 +456,18 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
             >
               <MenuIcon />
             </IconButton>
+            <Tooltip title={drawerCollapsed ? 'Expand navigation' : 'Collapse navigation'}>
+              <IconButton color="inherit" onClick={() => setDrawerCollapsed(current => !current)} sx={{ display: { xs: 'none', md: 'inline-flex' }, mr: 1 }} aria-label={drawerCollapsed ? 'Expand navigation' : 'Collapse navigation'}>
+                <MenuIcon sx={{ transform: drawerCollapsed ? 'rotate(180deg)' : 'none', transition: 'transform 180ms ease' }} />
+              </IconButton>
+            </Tooltip>
             <Typography variant="h6" noWrap component="div" sx={{ fontWeight: 700 }}>
               {navigationItems.find(n => n.id === activeTab)?.text}
             </Typography>
           </Box>
 
           <Box display="flex" alignItems="center" gap={1}>
+            <Chip icon={<Box component="span" sx={{ width: 7, height: 7, borderRadius: '50%', bgcolor: 'success.main' }} />} label="Navidrome online" size="small" sx={{ display: { xs: 'none', md: 'flex' }, bgcolor: 'rgba(98,217,154,0.10)', color: 'success.main', border: '1px solid rgba(98,217,154,0.18)' }} />
             <Chip
               avatar={<Avatar sx={{ bgcolor: 'primary.main', width: 24, height: 24, fontSize: '0.75rem', fontWeight: 700 }}>{(user.displayName || user.username).charAt(0).toUpperCase()}</Avatar>}
               label={user.displayName || user.username}
@@ -502,7 +482,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
       </AppBar>
 
       {/* Side Drawers */}
-      <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }} aria-label="Main navigation">
+      <Box component="nav" sx={{ width: { md: drawerCollapsed ? DRAWER_COLLAPSED_WIDTH : DRAWER_WIDTH }, flexShrink: { md: 0 }, transition: 'width 180ms ease' }} aria-label="Main navigation">
         <Drawer
           variant="temporary"
           open={mobileOpen}
@@ -510,7 +490,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
           ModalProps={{ keepMounted: true }}
           sx={{
             display: { xs: 'block', md: 'none' },
-            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH, borderRight: '1px solid', borderColor: 'divider' },
+            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH, borderRight: '1px solid', borderColor: 'divider', background: 'background.paper' },
           }}
         >
           {drawerContent}
@@ -520,7 +500,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
           variant="permanent"
           sx={{
             display: { xs: 'none', md: 'block' },
-            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH, borderRight: '1px solid', borderColor: 'divider' },
+            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: drawerCollapsed ? DRAWER_COLLAPSED_WIDTH : DRAWER_WIDTH, borderRight: '1px solid', borderColor: 'divider', background: 'background.paper', transition: 'width 180ms ease' },
           }}
           open
         >
@@ -533,11 +513,11 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         component="main"
         sx={{
           flexGrow: 1,
-          p: { xs: 1.5, sm: 3, md: 4 },
-          width: { md: `calc(100% - ${DRAWER_WIDTH}px)` },
+          p: { xs: 1.5, sm: 3, md: 4.5 },
+          width: { md: `calc(100% - ${drawerCollapsed ? DRAWER_COLLAPSED_WIDTH : DRAWER_WIDTH}px)` },
           minWidth: 0,
-          mt: '64px',
-          mb: currentTrack ? '80px' : 0,
+          mt: '72px',
+          mb: { xs: currentTrack ? '178px' : '76px', md: currentTrack ? '96px' : 0 },
           bgcolor: 'background.default',
         }}
       >
@@ -564,6 +544,12 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         {activeTab === 'history' && <RunHistory />}
         {activeTab === 'logs' && <LiveLogs />}
         {activeTab === 'user-settings' && <UserSettings />}
+      </Box>
+
+      <Box sx={{ display: { xs: 'flex', md: 'none' }, position: 'fixed', bottom: currentTrack ? '82px' : 0, left: 0, right: 0, zIndex: 1200, p: 1, gap: .5, bgcolor: 'rgba(21,19,29,.92)', borderTop: '1px solid', borderColor: 'divider', backdropFilter: 'blur(24px)' }}>
+        {[['dashboard', 'Home', <DashboardIcon />], ['explore', 'Explore', <PlaylistIcon />], ['library-manager', 'Library', <LibraryIcon />], ['tasks', 'Activity', <TasksIcon />]].map(([id, label, icon]) => <Button key={String(id)} onClick={() => navigateTo(String(id))} sx={{ flex: 1, minWidth: 0, minHeight: 48, px: .5, flexDirection: 'column', gap: .25, color: activeTab === id ? 'primary.main' : 'text.secondary', bgcolor: activeTab === id ? 'rgba(155,108,255,.12)' : 'transparent', '&:hover': { bgcolor: 'rgba(155,108,255,.10)' } }}>
+          {icon}<Typography variant="caption" sx={{ fontWeight: activeTab === id ? 800 : 600, fontSize: '.68rem' }}>{label}</Typography>
+        </Button>)}
       </Box>
 
       {/* Global Audio Player Bar */}

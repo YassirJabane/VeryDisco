@@ -278,7 +278,11 @@ class MetadataRebuildService:
                 for path in sorted(audio):
                     if cancel_event and cancel_event.is_set():
                         raise asyncio.CancelledError
-                    tracks.append(read_track(path))
+                    try:
+                        tracks.append(read_track(path))
+                    except Exception as exc:
+                        logger.warning("Skipping unreadable metadata rebuild file %s: %s", path, exc)
+                        continue
                     files_scanned += 1
                     if progress and files_scanned % 25 == 0:
                         progress(files_scanned, len(folders) + 1)
@@ -326,27 +330,31 @@ class MetadataRebuildService:
             path = Path(row["filepath"])
             if not path.exists() or not path.resolve().is_relative_to(root):
                 continue
-            stat = path.stat()
-            if (int(row.get("size") or -1) != stat.st_size
-                    or int(row.get("mtime_ns") or -1) != stat.st_mtime_ns):
-                track = read_track(path)
-            else:
-                try:
-                    artists = json.loads(row.get("artists_json") or "[]")
-                except Exception:
-                    artists = []
-                track = {
-                    "path": str(path), "title": row.get("title") or path.stem,
-                    "artist": row.get("artist") or "", "artists": artists,
-                    "album": row.get("album") or "", "album_artist": row.get("album_artist") or "",
-                    "album_artist_mbid": "", "date": row.get("year") or "",
-                    "track": row.get("track_num") or 0, "track_total": row.get("total_tracks") or 0,
-                    "disc": row.get("disc_num") or 1, "disc_total": row.get("total_discs") or 1,
-                    "release_mbid": row.get("album_mbid") or "",
-                    "recording_mbid": row.get("track_mbid") or "",
-                    "compilation": bool(row.get("compilation")), "duration": row.get("duration") or 0,
-                    "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
-                }
+            try:
+                stat = path.stat()
+                if (int(row.get("size") or -1) != stat.st_size
+                        or int(row.get("mtime_ns") or -1) != stat.st_mtime_ns):
+                    track = read_track(path)
+                else:
+                    try:
+                        artists = json.loads(row.get("artists_json") or "[]")
+                    except Exception:
+                        artists = []
+                    track = {
+                        "path": str(path), "title": row.get("title") or path.stem,
+                        "artist": row.get("artist") or "", "artists": artists,
+                        "album": row.get("album") or "", "album_artist": row.get("album_artist") or "",
+                        "album_artist_mbid": "", "date": row.get("year") or "",
+                        "track": row.get("track_num") or 0, "track_total": row.get("total_tracks") or 0,
+                        "disc": row.get("disc_num") or 1, "disc_total": row.get("total_discs") or 1,
+                        "release_mbid": row.get("album_mbid") or "",
+                        "recording_mbid": row.get("track_mbid") or "",
+                        "compilation": bool(row.get("compilation")), "duration": row.get("duration") or 0,
+                        "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
+                    }
+            except Exception as exc:
+                logger.warning("Skipping unreadable metadata rebuild file %s: %s", path, exc)
+                continue
             folders.setdefault(path.parent, []).append(track)
             if progress and (index % 100 == 0 or index == len(rows)):
                 progress(index, len(folders))

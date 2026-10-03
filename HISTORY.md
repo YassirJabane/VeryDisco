@@ -119,3 +119,9 @@
 - Analizzato il fallimento della pipeline beta: installazione dipendenze completata e 75 test passati; falliva soltanto `test_automated_file_checks_use_user_scoped_service` perché il suo database finto non esponeva il nuovo metodo `query_library_missing_art_albums`, introdotto con l'indice incrementale.
 - Aggiornato esclusivamente il fixture in `docs/audit/test_snapshot_findings.py`, facendo restituire al mock una lista vuota. Nessuna modifica alla logica di produzione: il database reale implementa già il metodo in `backend/app/database.py`.
 - Da verificare: test mirato e suite CI completa, poi sincronizzare il solo test e `HISTORY.md` nel clone beta, effettuare commit/push e controllare il run GitHub Actions.
+
+## 2026-10-03 — UI beta mancante e tolleranza file non leggibili
+
+- Verificato perché la UI beta mostrava il layout precedente: il clone Git pubblicato differiva semanticamente dal workspace in `frontend/src/{App.tsx,theme.ts,components/Dashboard.tsx}`; nessuno dei tre file era nel commit di indice libreria. Il Dockerfile ricompila correttamente `frontend/`, quindi non era un problema di cache o di Portainer. Le altre differenze frontend erano esclusivamente LF/CRLF e non devono essere pubblicate.
+- `backend/app/metadata_pipeline/service.py`: Metadata Rebuild ora salta e registra i singoli file che sollevano errori I/O/Mutagen sia nell'inventario completo sia nell'inventario da indice, invece di fallire l'intera scansione. `backend/tests/test_metadata_rebuild.py` aggiunge la regressione per un record cambiato ma illeggibile.
+- Dal log reale: i 503 delle playlist sono conseguenza di timeout esterni ListenBrainz; sono distinti dalla UI e dalla scansione metadata. Da verificare: typecheck/build frontend, test metadata completi, sync dei soli file semantici nel clone e deployment dell'immagine beta appena costruita; dopo il deploy forzare un refresh del browser/PWA e ricreare il container.

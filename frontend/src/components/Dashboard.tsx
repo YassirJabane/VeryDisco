@@ -1,26 +1,20 @@
-import React, { useEffect, useState } from 'react';
-import { 
-  Box, Card, CardContent, Typography, Grid, 
-  CircularProgress, Alert, AlertTitle, Chip,
-  useTheme, Avatar, Tabs, Tab, Button, Divider, Stack
-} from '@mui/material';
-import { 
-  Sync as SyncIcon, 
-  CheckCircle as SuccessIcon, 
-  Error as ErrorIcon,
-  LibraryMusic as MusicIcon,
-  Storage as StorageIcon,
-  Album as AlbumIcon,
-  People as ArtistIcon,
-  Info as InfoIcon
-} from '@mui/icons-material';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, AlertTitle, Avatar, Box, Button, Card, CardContent, Chip, CircularProgress, Divider, Grid, LinearProgress, Stack, Typography, useTheme } from '@mui/material';
+import { Album as AlbumIcon, ArrowForward as ArrowForwardIcon, CheckCircle as SuccessIcon, LibraryMusic as MusicIcon, People as ArtistIcon, PlayArrow as PlayIcon, Storage as StorageIcon, Sync as SyncIcon, WarningAmber as WarningIcon } from '@mui/icons-material';
 import { apiService, GetStatusResponse, RunRecord } from '../api';
 
-interface DashboardProps {
-  onNavigateToConfig: () => void;
-}
+interface DashboardProps { onNavigateToConfig: () => void; }
+const playlistLabel = (value: string) => value.replace(/[-_]/g, ' ').replace(/\b\w/g, letter => letter.toUpperCase());
 
-export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
+const StatCard: React.FC<{ label: string; value: number | string; icon: React.ReactNode; tone: string }> = ({ label, value, icon, tone }) => (
+  <Card sx={{ height: '100%', background: 'linear-gradient(145deg, rgba(255,255,255,0.045), rgba(255,255,255,0.012))' }}>
+    <CardContent sx={{ p: { xs: 2, sm: 2.5 } }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" gap={2}><Box><Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>{label}</Typography><Typography variant="h4" sx={{ mt: .5, fontWeight: 850 }}>{typeof value === 'number' ? value.toLocaleString() : value}</Typography></Box><Avatar sx={{ bgcolor: `${tone}1a`, color: tone, width: 42, height: 42 }}>{icon}</Avatar></Stack>
+    </CardContent>
+  </Card>
+);
+
+const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
   const theme = useTheme();
   const [status, setStatus] = useState<GetStatusResponse | null>(null);
   const [navidromeStats, setNavidromeStats] = useState<{ songs: number; albums: number; artists: number } | null>(null);
@@ -29,363 +23,42 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
-  const [activeTab, setActiveTab] = useState<number>(0);
-  const [activePlaylists, setActivePlaylists] = useState<string[]>([]);
-
-  const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 4000);
-  };
-
   const abortControllerRef = React.useRef<AbortController | null>(null);
 
   const fetchStatus = async () => {
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    try {
-      const data = await apiService.getStatus({ signal: controller.signal });
-      setStatus(data);
-      if (data.latest_runs) {
-        setActivePlaylists(Object.keys(data.latest_runs));
-      }
-      setErrorMessage(null);
-    } catch (e: any) {
-      if (e.name === 'CanceledError' || e.code === 'ERR_CANCELED') return;
-      console.error(e);
-      setErrorMessage("Could not fetch status from backend server.");
-    } finally {
-      setLoading(false);
-    }
+    const controller = new AbortController(); abortControllerRef.current = controller;
+    try { setStatus(await apiService.getStatus({ signal: controller.signal })); setErrorMessage(null); }
+    catch (error: any) { if (error?.name !== 'CanceledError' && error?.code !== 'ERR_CANCELED') setErrorMessage('Could not reach the VeryDisco backend.'); }
+    finally { setLoading(false); }
   };
+  const fetchStats = async () => { try { setNavidromeStats(await apiService.getNavidromeStats()); } catch { setNavidromeStats(null); } finally { setStatsLoading(false); } };
+  useEffect(() => { void fetchStatus(); void fetchStats(); const statusTimer = window.setInterval(fetchStatus, 5000); const statsTimer = window.setInterval(fetchStats, 60000); return () => { window.clearInterval(statusTimer); window.clearInterval(statsTimer); abortControllerRef.current?.abort(); }; }, []);
 
-  const fetchNavidromeStats = async () => {
-    try {
-      const stats = await apiService.getNavidromeStats();
-      setNavidromeStats(stats);
-    } catch (e) {
-      console.error("Failed to fetch Navidrome stats", e);
-    } finally {
-      setStatsLoading(false);
-    }
-  };
+  const playlists = useMemo(() => Object.entries(status?.latest_runs || {}) as [string, RunRecord][], [status]);
+  const totals = useMemo(() => playlists.reduce((acc, [, run]) => ({ found: acc.found + (run?.tracks_found || 0), downloaded: acc.downloaded + (run?.tracks_downloaded || 0), failed: acc.failed + (run?.tracks_failed || 0) }), { found: 0, downloaded: 0, failed: 0 }), [playlists]);
+  const isSyncing = Boolean(status?.is_syncing);
+  const triggerSync = async (playlist: string) => { setActionLoading(playlist); try { await apiService.triggerSyncForSource(playlist); setToast({ msg: `${playlistLabel(playlist)} sync started`, type: 'success' }); window.setTimeout(() => void fetchStatus(), 1200); } catch { setToast({ msg: `Unable to start ${playlistLabel(playlist)} sync`, type: 'error' }); } finally { setActionLoading(null); } };
+  if (loading && !status) return <Box sx={{ minHeight: '55vh', display: 'grid', placeItems: 'center' }}><CircularProgress /></Box>;
 
-  useEffect(() => {
-    fetchStatus();
-    fetchNavidromeStats();
-    const statusInterval = setInterval(fetchStatus, 5000);
-    const statsInterval = setInterval(fetchNavidromeStats, 60000);
-    return () => {
-      clearInterval(statusInterval);
-      clearInterval(statsInterval);
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, []);
+  return <Box sx={{ maxWidth: 1480, mx: 'auto' }}>
+    {errorMessage && <Alert severity="error" onClose={() => setErrorMessage(null)} sx={{ mb: 2.5 }}><AlertTitle>Connection issue</AlertTitle>{errorMessage}</Alert>}
+    {!status?.is_configured && <Alert severity="warning" sx={{ mb: 2.5 }} action={<Button color="inherit" onClick={onNavigateToConfig}>Configure</Button>}><AlertTitle>Finish your setup</AlertTitle>VeryDisco needs its provider settings before it can sync your library.</Alert>}
+    {toast && <Alert severity={toast.type} onClose={() => setToast(null)} sx={{ mb: 2.5 }}>{toast.msg}</Alert>}
 
-  if (loading && !status) {
-    return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="50vh">
-        <CircularProgress size={50} />
-      </Box>
-    );
-  }
+    <Card sx={{ mb: 3, overflow: 'hidden', position: 'relative', background: theme.palette.mode === 'dark' ? 'linear-gradient(120deg, #1b1530 0%, #161323 48%, #0d0c12 100%)' : 'linear-gradient(120deg, #f0eaff 0%, #fff 55%, #e7f7f8 100%)' }}>
+      <Box sx={{ position: 'absolute', width: 360, height: 360, right: -130, top: -160, borderRadius: '50%', background: 'radial-gradient(circle, rgba(155,108,255,.35), transparent 66%)', pointerEvents: 'none' }} />
+      <CardContent sx={{ p: { xs: 2.5, sm: 4 } }}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={3}><Box><Stack direction="row" alignItems="center" gap={1} mb={1}><Chip size="small" icon={isSyncing ? <SyncIcon className="spin-icon" /> : <SuccessIcon />} label={isSyncing ? 'Sync in progress' : 'Library ready'} color={isSyncing ? 'primary' : 'success'} variant="outlined" /></Stack><Typography variant="h3" sx={{ fontSize: { xs: '2rem', sm: '3rem' } }}>Your music, in motion.</Typography><Typography color="text.secondary" sx={{ mt: 1, maxWidth: 560 }}>Discover fresh picks, keep metadata clean and make your Navidrome library feel alive.</Typography>{status?.next_run && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 2, fontWeight: 650 }}>Next scheduled sync · {new Date(status.next_run).toLocaleString()}</Typography>}</Box><Stack direction={{ xs: 'row', sm: 'column' }} alignItems={{ sm: 'flex-end' }} gap={1}><Button variant="contained" startIcon={<SyncIcon />} disabled={isSyncing || actionLoading !== null} onClick={() => void triggerSync(playlists[0]?.[0] || 'weekly-exploration')}>Sync now</Button><Button variant="text" endIcon={<ArrowForwardIcon />} onClick={onNavigateToConfig}>Manage setup</Button></Stack></Stack></CardContent>
+    </Card>
 
-  const isConfigured = status?.is_configured ?? false;
-  const isSyncing = status?.is_syncing ?? false;
-  
-  // Last runs
-  const clampedActiveTab = Math.min(activeTab, Math.max(0, activePlaylists.length - 1));
-  const currentTabPlaylist = activePlaylists[clampedActiveTab] || '';
-  
-  const currentTabRun: RunRecord | null | undefined = status?.latest_runs?.[currentTabPlaylist];
+    <Grid container spacing={2} sx={{ mb: 3 }}><Grid item xs={12} sm={4}><StatCard label="Tracks discovered" value={totals.found} icon={<MusicIcon />} tone="#9b6cff" /></Grid><Grid item xs={12} sm={4}><StatCard label="Tracks added" value={totals.downloaded} icon={<SuccessIcon />} tone="#62d99a" /></Grid><Grid item xs={12} sm={4}><StatCard label="Needs attention" value={totals.failed} icon={<WarningIcon />} tone="#f4c95d" /></Grid></Grid>
 
-  const currentTabName = currentTabPlaylist.replace('-', ' ').toUpperCase() || 'PLAYLIST';
+    <Grid container spacing={3}><Grid item xs={12} lg={8}><Card sx={{ height: '100%' }}><CardContent sx={{ p: { xs: 2, sm: 3 } }}><Stack direction="row" justifyContent="space-between" alignItems="center" mb={2.5}><Box><Typography variant="h5">Sync sources</Typography><Typography variant="body2" color="text.secondary">Your latest discovery pipelines</Typography></Box><Chip label={`${playlists.length} active`} size="small" variant="outlined" /></Stack><Stack spacing={1.5}>{playlists.length ? playlists.map(([playlist, run]) => { const progress = run?.tracks_found ? Math.min(100, Math.round(((run.tracks_downloaded || 0) / run.tracks_found) * 100)) : 0; return <Box key={playlist} sx={{ p: 2, borderRadius: 3, bgcolor: 'action.hover', border: '1px solid', borderColor: 'divider' }}><Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" gap={1.5}><Box><Typography fontWeight={800}>{playlistLabel(playlist)}</Typography><Typography variant="caption" color="text.secondary">{run?.timestamp ? `Last run ${new Date(run.timestamp).toLocaleString()}` : 'No run recorded yet'}</Typography></Box><Stack direction="row" alignItems="center" gap={1}><Chip size="small" label={run?.status || 'idle'} color={run?.status === 'completed' ? 'success' : run?.status === 'failed' ? 'error' : 'default'} /><Button size="small" variant="outlined" disabled={isSyncing || actionLoading === playlist} onClick={() => void triggerSync(playlist)} startIcon={actionLoading === playlist ? <CircularProgress size={14} /> : <SyncIcon />}>Manual Sync</Button></Stack></Stack><LinearProgress variant="determinate" value={progress} sx={{ mt: 1.5, height: 6, borderRadius: 5 }} /><Stack direction="row" justifyContent="space-between" mt={.75}><Typography variant="caption" color="text.secondary">{run?.tracks_downloaded || 0} added · {run?.tracks_skipped || 0} skipped</Typography><Typography variant="caption" color="text.secondary">{progress}%</Typography></Stack></Box>; }) : <Box sx={{ p: 4, textAlign: 'center' }}><MusicIcon sx={{ fontSize: 44, color: 'text.disabled' }} /><Typography color="text.secondary" mt={1}>No sync sources have reported a run yet.</Typography></Box>}</Stack></CardContent></Card></Grid>
+      <Grid item xs={12} lg={4}><Card sx={{ height: '100%' }}><CardContent sx={{ p: { xs: 2, sm: 3 } }}><Stack direction="row" alignItems="center" gap={1} mb={2.5}><StorageIcon color="primary" /><Box><Typography variant="h5">Library pulse</Typography><Typography variant="body2" color="text.secondary">Navidrome at a glance</Typography></Box></Stack>{statsLoading ? <Box sx={{ py: 5, display: 'grid', placeItems: 'center' }}><CircularProgress size={28} /></Box> : navidromeStats ? <Stack spacing={1.5}>{[['Tracks', navidromeStats.songs, <MusicIcon />], ['Albums', navidromeStats.albums, <AlbumIcon />], ['Artists', navidromeStats.artists, <ArtistIcon />]].map(([label, value, icon]) => <Stack key={String(label)} direction="row" alignItems="center" justifyContent="space-between" sx={{ p: 1.5, borderRadius: 2.5, bgcolor: 'action.hover' }}><Stack direction="row" alignItems="center" gap={1.25}><Avatar sx={{ width: 34, height: 34, bgcolor: 'rgba(155,108,255,.14)', color: 'primary.main' }}>{icon}</Avatar><Typography color="text.secondary">{label}</Typography></Stack><Typography variant="h6" fontWeight={850}>{Number(value).toLocaleString()}</Typography></Stack>)}</Stack> : <Alert severity="info">Navidrome stats are unavailable. Check the server connection.</Alert>}</CardContent></Card></Grid>
+    </Grid>
 
-  return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      {errorMessage && (
-        <Alert severity="error" onClose={() => setErrorMessage(null)} sx={{ borderRadius: 3 }}>
-          {errorMessage}
-        </Alert>
-      )}
-
-      {!isConfigured && (
-        <Alert 
-          severity="warning" 
-          action={
-            <Button color="inherit" size="small" onClick={onNavigateToConfig}>
-              Configure Now
-            </Button>
-          }
-          sx={{ borderRadius: 3 }}
-        >
-          <AlertTitle sx={{ fontWeight: 700 }}>Configuration Incomplete</AlertTitle>
-          {status?.validation_errors || "Please complete the setup to start syncing music."}
-        </Alert>
-      )}
-
-      {/* Welcome Banner */}
-      {toast && (
-        <Alert severity={toast.type} onClose={() => setToast(null)} sx={{ borderRadius: 2, mb: 2 }}>
-          {toast.msg}
-        </Alert>
-      )}
-
-      {/* Header */}
-      <Box display="flex" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={2}>
-        <Box>
-          <Typography variant="h5" sx={{ fontWeight: 800, background: 'linear-gradient(90deg, #9c27b0, #673ab7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-            Dashboard
-          </Typography>
-          <Typography variant="body2" color="text.secondary">
-            Syncing ListenBrainz music discovery to your local Navidrome library
-          </Typography>
-          {status?.next_run && (
-            <Typography variant="caption" sx={{ display: 'block', mt: 0.5, fontWeight: 700, color: 'text.secondary' }}>
-              Next Scheduled Sync: {new Date(status.next_run).toLocaleString()}
-            </Typography>
-          )}
-        </Box>
-        {isSyncing && (
-          <Chip
-            icon={<SyncIcon className="spin-icon" sx={{ animation: 'spin 2s linear infinite' }} />}
-            label="SYNC ACTIVE"
-            color="primary"
-            sx={{ fontWeight: 700, px: 1, borderRadius: 2 }}
-          />
-        )}
-      </Box>
-
-      {/* Side-by-side playlist status cards */}
-      <Grid container spacing={{ xs: 2, sm: 3 }}>
-        {/* Dynamic Panels based on activePlaylists (up to 2 for grid layout, or all?) */}
-        {/* The user originally had two grid items. Let's map through all active playlists. */}
-        {activePlaylists.map((playlistKey) => {
-          const runInfo = status?.latest_runs?.[playlistKey];
-          return (
-            <Grid item xs={12} md={activePlaylists.length === 1 ? 12 : 6} key={playlistKey}>
-              <Card sx={{ 
-                height: '100%',
-                background: theme.palette.mode === 'dark' 
-                  ? 'linear-gradient(135deg, #1e1b26 0%, #110f17 100%)'
-                  : 'linear-gradient(135deg, #ffffff 0%, #f7f6fa 100%)',
-                border: `1px solid ${theme.palette.divider}`,
-                borderRadius: 4,
-                transition: 'transform 0.2s, box-shadow 0.2s',
-                '&:hover': {
-                  transform: 'translateY(-2px)',
-                  boxShadow: '0 8px 30px rgba(0,0,0,0.12)'
-                }
-              }}>
-                <CardContent sx={{ p: 3 }}>
-                  <Box display="flex" justifyContent="space-between" alignItems="center" mb={2}>
-                    <Typography variant="h6" sx={{ fontWeight: 700 }}>{playlistKey.replace('-', ' ').toUpperCase()}</Typography>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Button
-                        variant="outlined"
-                        size="small"
-                        startIcon={actionLoading === playlistKey ? <CircularProgress size={12} color="inherit" /> : <SyncIcon fontSize="small" />}
-                        disabled={isSyncing || actionLoading === playlistKey}
-                        onClick={async () => {
-                          setActionLoading(playlistKey);
-                          try {
-                            await apiService.triggerSyncForSource(playlistKey);
-                            showToast(`Sync triggered for ${playlistKey.replace('-', ' ')}`);
-                            setTimeout(fetchStatus, 1500); // refresh status
-                          } catch (e) {
-                            showToast(`Failed to trigger sync for ${playlistKey}`, 'error');
-                          } finally {
-                            setActionLoading(null);
-                          }
-                        }}
-                        sx={{ borderRadius: 2, textTransform: 'none', fontWeight: 700, px: 1, py: 0 }}
-                      >
-                        Manual Sync
-                      </Button>
-                      <Chip 
-                        label={runInfo?.status.toUpperCase() || 'NO RUNS'} 
-                        color={runInfo?.status === 'completed' ? 'success' : runInfo?.status === 'failed' ? 'error' : 'default'}
-                        size="small"
-                        sx={{ fontWeight: 700 }}
-                      />
-                    </Stack>
-                  </Box>
-                  <Typography variant="body2" color="text.secondary" mb={3}>
-                    Sync statistics for {playlistKey.replace('-', ' ')}.
-                  </Typography>
-                  <Grid container spacing={2}>
-                    <Grid item xs={4}>
-                      <Typography variant="caption" color="text.secondary">Downloaded</Typography>
-                      <Typography variant="h5" color="success.main" sx={{ fontWeight: 700 }}>
-                        {runInfo?.tracks_downloaded ?? 0}
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={4}>
-                      <Typography variant="caption" color="text.secondary">Skipped</Typography>
-                      <Typography variant="h5" color="secondary.main" sx={{ fontWeight: 700 }}>
-                        {runInfo?.tracks_skipped ?? 0}
-                      </Typography>
-                    </Grid>
-                    <Grid item xs={4}>
-                      <Typography variant="caption" color="text.secondary">Failed</Typography>
-                      <Typography variant="h5" color="error.main" sx={{ fontWeight: 700 }}>
-                        {runInfo?.tracks_failed ?? 0}
-                      </Typography>
-                    </Grid>
-                  </Grid>
-                  {runInfo?.timestamp && (
-                    <Typography variant="caption" color="text.secondary" display="block" mt={3}>
-                      Last run: {new Date(runInfo.timestamp).toLocaleString()}
-                    </Typography>
-                  )}
-                </CardContent>
-              </Card>
-            </Grid>
-          );
-        })}
-      </Grid>
-
-      {/* Tabs with Last Run info */}
-      <Card sx={{ borderRadius: 4, border: `1px solid ${theme.palette.divider}` }}>
-        {activePlaylists.length > 0 && (
-          <Box sx={{ borderBottom: 1, borderColor: 'divider', px: 2, pt: 1 }}>
-            <Tabs 
-              value={clampedActiveTab} 
-              onChange={(_, newValue) => setActiveTab(newValue)}
-            >
-              {activePlaylists.map(pl => (
-                <Tab key={pl} label={pl.replace('-', ' ').toUpperCase()} />
-              ))}
-            </Tabs>
-          </Box>
-        )}
-        <CardContent sx={{ p: { xs: 2, sm: 4 } }}>
-          {currentTabRun ? (
-            <Grid container spacing={{ xs: 2, sm: 3 }} alignItems="center">
-              <Grid item xs={12} md={8}>
-                <Box display="flex" alignItems="center" gap={1.5} mb={1}>
-                  {currentTabRun.status === 'completed' ? (
-                    <SuccessIcon color="success" sx={{ fontSize: 28 }} />
-                  ) : (
-                    <ErrorIcon color="error" sx={{ fontSize: 28 }} />
-                  )}
-                  <Typography variant="h5" sx={{ fontWeight: 700 }}>
-                    {currentTabName} Run #{currentTabRun.id}
-                  </Typography>
-                </Box>
-                <Typography variant="body2" color="text.secondary" mb={3}>
-                  Completed at {new Date(currentTabRun.timestamp).toLocaleString()}
-                </Typography>
-
-                {currentTabRun.error_message && (
-                  <Alert severity="error" sx={{ mt: 1, borderRadius: 2 }}>
-                    {currentTabRun.error_message}
-                  </Alert>
-                )}
-              </Grid>
-
-              <Grid item xs={12} md={4}>
-                <Box sx={{ bgcolor: 'action.hover', p: 3, borderRadius: 3, display: 'flex', flexDirection: 'column', gap: 1 }}>
-                  <Box display="flex" justifyContent="space-between">
-                    <Typography variant="body2" color="text.secondary">Total Tracks:</Typography>
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>{currentTabRun.tracks_found}</Typography>
-                  </Box>
-                  <Divider />
-                  <Box display="flex" justifyContent="space-between">
-                    <Typography variant="body2" color="text.secondary">Downloaded:</Typography>
-                    <Typography variant="body2" color="success.main" sx={{ fontWeight: 700 }}>{currentTabRun.tracks_downloaded}</Typography>
-                  </Box>
-                  <Box display="flex" justifyContent="space-between">
-                    <Typography variant="body2" color="text.secondary">Skipped:</Typography>
-                    <Typography variant="body2" color="secondary.main" sx={{ fontWeight: 700 }}>{currentTabRun.tracks_skipped}</Typography>
-                  </Box>
-                  <Box display="flex" justifyContent="space-between">
-                    <Typography variant="body2" color="text.secondary">Failed:</Typography>
-                    <Typography variant="body2" color="error.main" sx={{ fontWeight: 700 }}>{currentTabRun.tracks_failed}</Typography>
-                  </Box>
-                </Box>
-              </Grid>
-            </Grid>
-          ) : (
-            <Box textAlign="center" py={4} display="flex" flexDirection="column" alignItems="center" gap={1}>
-              <InfoIcon color="action" sx={{ fontSize: 40 }} />
-              <Typography color="text.secondary">No sync runs recorded yet for this playlist.</Typography>
-            </Box>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Navidrome Server Stats Card */}
-      <Card sx={{ 
-        borderRadius: 4, 
-        border: `1px solid ${theme.palette.divider}`,
-        background: theme.palette.mode === 'dark' 
-          ? 'linear-gradient(180deg, #121118 0%, #1a1921 100%)' 
-          : 'linear-gradient(180deg, #fbfbfe 0%, #f4f4f9 100%)'
-      }}>
-        <CardContent sx={{ p: { xs: 2, sm: 4 } }}>
-          <Box display="flex" alignItems="center" gap={1.5} mb={3}>
-            <StorageIcon color="primary" />
-            <Typography variant="h6" sx={{ fontWeight: 800 }}>Navidrome Server Stats</Typography>
-          </Box>
-          {statsLoading ? (
-            <Box display="flex" justifyContent="center" py={3}>
-              <CircularProgress size={30} />
-            </Box>
-          ) : navidromeStats ? (
-            <Grid container spacing={{ xs: 2, sm: 3 }}>
-              <Grid item xs={12} sm={4}>
-                <Box display="flex" alignItems="center" gap={2} sx={{ p: 2, bgcolor: 'action.hover', borderRadius: 3 }}>
-                  <Avatar sx={{ bgcolor: 'rgba(98, 0, 234, 0.1)', color: 'primary.main', width: 56, height: 56 }}>
-                    <MusicIcon sx={{ fontSize: 28 }} />
-                  </Avatar>
-                  <Box>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>Total Songs</Typography>
-                    <Typography variant="h5" sx={{ fontWeight: 800 }}>{navidromeStats.songs.toLocaleString()}</Typography>
-                  </Box>
-                </Box>
-              </Grid>
-              
-              <Grid item xs={12} sm={4}>
-                <Box display="flex" alignItems="center" gap={2} sx={{ p: 2, bgcolor: 'action.hover', borderRadius: 3 }}>
-                  <Avatar sx={{ bgcolor: 'rgba(3, 218, 198, 0.1)', color: 'teal', width: 56, height: 56 }}>
-                    <AlbumIcon sx={{ fontSize: 28 }} />
-                  </Avatar>
-                  <Box>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>Total Albums</Typography>
-                    <Typography variant="h5" sx={{ fontWeight: 800 }}>{navidromeStats.albums.toLocaleString()}</Typography>
-                  </Box>
-                </Box>
-              </Grid>
-
-              <Grid item xs={12} sm={4}>
-                <Box display="flex" alignItems="center" gap={2} sx={{ p: 2, bgcolor: 'action.hover', borderRadius: 3 }}>
-                  <Avatar sx={{ bgcolor: 'rgba(244, 67, 54, 0.1)', color: 'error.main', width: 56, height: 56 }}>
-                    <ArtistIcon sx={{ fontSize: 28 }} />
-                  </Avatar>
-                  <Box>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>Total Artists</Typography>
-                    <Typography variant="h5" sx={{ fontWeight: 800 }}>{navidromeStats.artists.toLocaleString()}</Typography>
-                  </Box>
-                </Box>
-              </Grid>
-            </Grid>
-          ) : (
-            <Typography color="text.secondary">Navidrome credentials are incomplete or server is offline.</Typography>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Embedded CSS for animations */}
-      <style>{`
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-      `}</style>
-    </Box>
-  );
+    <Card sx={{ mt: 3 }}><CardContent sx={{ p: { xs: 2, sm: 3 } }}><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h5">Activity feed</Typography><Typography variant="body2" color="text.secondary">A quick read on the latest library work</Typography></Box><Chip label="Live" size="small" color="secondary" variant="outlined" /></Stack><Divider sx={{ my: 2 }} /><Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}><Box sx={{ flex: 1, display: 'flex', gap: 1.5 }}><Avatar sx={{ bgcolor: 'rgba(98,217,154,.14)', color: 'success.main' }}><SuccessIcon /></Avatar><Box><Typography fontWeight={750}>{totals.downloaded ? `${totals.downloaded} tracks added recently` : 'No new tracks yet'}</Typography><Typography variant="body2" color="text.secondary">Keep your discovery sources running to grow the library.</Typography></Box></Box><Box sx={{ flex: 1, display: 'flex', gap: 1.5 }}><Avatar sx={{ bgcolor: totals.failed ? 'rgba(244,201,93,.14)' : 'rgba(155,108,255,.14)', color: totals.failed ? 'warning.main' : 'primary.main' }}>{totals.failed ? <WarningIcon /> : <PlayIcon />}</Avatar><Box><Typography fontWeight={750}>{totals.failed ? `${totals.failed} tracks need attention` : 'Everything looks clean'}</Typography><Typography variant="body2" color="text.secondary">Review failed downloads from Running Tasks when needed.</Typography></Box></Box></Stack></CardContent></Card>
+    <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } } .spin-icon { animation: spin 1.8s linear infinite; }`}</style>
+  </Box>;
 };
 
 export default Dashboard;
