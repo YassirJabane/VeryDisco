@@ -143,3 +143,9 @@
 - Dal piano reale di `Scorpion` rilevato che la preview mostrava una scansione Cover Art Archive della release US da 25 brani: ufficiale ma non necessariamente la copertina digitale editoriale desiderata. Il vecchio ordine usava sempre prima la cover della release selezionata, accettando sticker, crop e scansioni fisiche.
 - `ArtworkProvider` ora preferisce una cover iTunes digitale solo con corrispondenza esatta artista+album; in assenza usa CAA del release group (cover canonica album) e soltanto dopo CAA della singola edizione. UI: lo switch esplicita la preferenza digitale e chiarisce che la preview MusicBrainz non coincide necessariamente con il file artwork che verrà applicato.
 - Aggiunto test che verifica la preferenza per artwork digitale esatto senza interrogare CAA. Da eseguire: suite Metadata Rebuild e typecheck/CI; i piani già creati vanno riapplicati o rieseguiti dopo la beta aggiornata.
+
+## 2026-10-03 — Audit libreria resiliente agli errori I/O
+
+- Log reale: anche il warmup della cache libreria falliva con `Errno 5`, confermando che il problema storage coinvolge più del Metadata Rebuild. Il filesystem può leggere gli inode (`stat`) ma non alcuni blocchi dati (`sha256sum`), quindi l'origine resta disco/mount e non può essere riparata dall'app.
+- `backend/app/main.py`: elenco album e indice libreria ora registrano il path, ignorano i file con errore I/O/tag non leggibili e continuano con gli altri brani; dimensione e quality dell'album degradano in modo esplicito anziché far abortire il warmup. `docs/audit/test_snapshot_findings.py` copre un album con sample illeggibile.
+- Da verificare: test audit mirato e suite backend, poi beta. Non usare ancora delete/retag/apply sui file sul volume problematico; fare backup e diagnostica SMART/filesystem sul server host.

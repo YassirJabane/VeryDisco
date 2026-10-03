@@ -304,6 +304,24 @@ async def test_automated_file_checks_use_user_scoped_service(isolated_app, tmp_p
     assert (tmp_path / "a.json").exists()
 
 
+def test_album_listing_skips_unreadable_media_files(isolated_app, monkeypatch):
+    music_dir = Path(isolated_app.config_manager.config.paths.music_dir)
+    album_dir = music_dir / "Artist" / "Album"
+    album_dir.mkdir(parents=True)
+    broken = album_dir / "01 Broken.mp3"
+    broken.write_bytes(b"broken")
+    monkeypatch.setattr(
+        isolated_app,
+        "read_file_metadata_with_cache",
+        lambda *args: (_ for _ in ()).throw(OSError("Input/output error")),
+    )
+
+    albums = isolated_app.get_all_album_folders(music_dir, {}, [])
+
+    assert albums[0]["album"] == "Album"
+    assert albums[0]["quality"] == "Unknown"
+
+
 def test_download_locator_rejects_unrelated_recent_audio(tmp_path):
     from backend.app.sync import find_downloaded_file
     unrelated = tmp_path / "Completely Different Song.mp3"

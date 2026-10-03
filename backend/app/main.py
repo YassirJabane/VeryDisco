@@ -3258,8 +3258,16 @@ def get_all_album_folders(music_dir: Path, metadata_cache: dict = None, new_cach
         folder_path_str = json.dumps(data["folders"])
         
         sample_file = audio_files[0]
-        meta = read_file_metadata_with_cache(sample_file, metadata_cache, new_cache_entries)
-        quality_desc = meta["quality_desc"]
+        quality_desc = "Unknown"
+        for sample_file in audio_files:
+            try:
+                meta = read_file_metadata_with_cache(sample_file, metadata_cache, new_cache_entries)
+                quality_desc = meta["quality_desc"]
+                break
+            except OSError as exc:
+                logger.warning("Skipping unreadable library file while listing album %s: %s", sample_file, exc)
+            except Exception as exc:
+                logger.warning("Skipping unreadable library metadata while listing album %s: %s", sample_file, exc)
 
         total_tracks = 0
         track_nums = set()
@@ -3277,11 +3285,18 @@ def get_all_album_folders(music_dir: Path, metadata_cache: dict = None, new_cach
                     disc_tracks[d_num].add(t_num)
                 if t_total > 0:
                     total_tracks = max(total_tracks, t_total)
+            except OSError as exc:
+                logger.warning("Skipping unreadable library file while listing album %s: %s", f_path, exc)
             except Exception:
                 pass
 
         track_count = len(audio_files)
-        total_size = sum(f.stat().st_size for f in audio_files)
+        total_size = 0
+        for f_path in audio_files:
+            try:
+                total_size += f_path.stat().st_size
+            except OSError as exc:
+                logger.warning("Skipping unreadable library file size while listing album %s: %s", f_path, exc)
 
         if len(disc_tracks) > 1:
             total_tracks = sum(max(t_set) for t_set in disc_tracks.values() if t_set)
@@ -3660,7 +3675,14 @@ def _build_library_index_sync(
             mtime = 0.0
 
         # ── Tags ──────────────────────────────────────────────────────────────
-        meta = read_file_metadata_with_cache(f_path, metadata_cache, new_entries)
+        try:
+            meta = read_file_metadata_with_cache(f_path, metadata_cache, new_entries)
+        except OSError as exc:
+            logger.warning("Skipping unreadable library file during index scan %s: %s", f_path, exc)
+            continue
+        except Exception as exc:
+            logger.warning("Skipping unreadable library metadata during index scan %s: %s", f_path, exc)
+            continue
         artist       = meta.get('artist') or ''
         album        = meta.get('album') or ''
         title        = meta.get('title') or f_path.stem
