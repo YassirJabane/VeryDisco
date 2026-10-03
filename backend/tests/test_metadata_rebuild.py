@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,11 @@ class NoArtwork:
 class FailingProvider:
     async def match_release(self, album, album_artist, local_tracks):
         raise RuntimeError("provider temporarily unavailable")
+
+
+class SlowProvider:
+    async def match_release(self, album, album_artist, local_tracks):
+        await asyncio.Event().wait()
 
 
 def test_artist_credit_preserves_join_phrase_and_canonical_entities():
@@ -170,3 +176,32 @@ async def test_provider_failure_is_isolated_to_album_plan(tmp_path):
     assert all(plan["review"] == "unmatched" for plan in plans)
     assert all("provider temporarily unavailable" in plan["provider_error"] for plan in plans)
     assert service.status(7)["provider_errors"] == 2
+
+
+@pytest.mark.asyncio
+async def test_scan_reports_phases_and_can_be_cancelled_without_writing_media(tmp_path):
+    album_dir = tmp_path / "album"
+    album_dir.mkdir()
+    track = album_dir / "track.mp3"
+    _make_tagged_mp3(
+        track, title="track", artist="Artist", album="Album",
+        album_artist="Artist", track=1,
+    )
+    before = track.read_bytes()
+    service = MetadataRebuildService(tmp_path / "state", provider=SlowProvider(), artwork=NoArtwork())
+    task = asyncio.create_task(service.scan(9, tmp_path))
+    for _ in range(100):
+        status = service.status(9)
+        if status.get("phase") == "resolving":
+            break
+        await asyncio.sleep(0.01)
+    assert status["phase"] == "resolving"
+    assert status["files_scanned"] == 1
+    assert status["total"] == 1
+
+    service.request_cancel(9)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert service.status(9)["status"] == "cancelled"
+    assert track.read_bytes() == before

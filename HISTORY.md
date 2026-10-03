@@ -68,3 +68,11 @@
 - Verifiche nel clone: suite backend 40 passati con 5 warning di deprecazione preesistenti; TypeScript `tsc --noEmit` passato usando una junction temporanea alle dipendenze dello snapshot, poi rimossa; `git diff --check` passato (restano soli avvisi LF/CRLF di Git su Windows). Nessuna libreria musicale o servizio esterno coinvolto.
 - Stato: modifiche presenti ma non committate nel clone; nessun push eseguito. Prima del push beta restano consigliati backup e prova controllata su Docker con un album copia, perché i test locali non esercitano MusicBrainz/CAA/AcoustID/Navidrome reali.
 - Verifica finale aggiuntiva: corretto il percorso di stato per gli ID utente numerici restituiti dal database e aggiunta la relativa copertura nel test di isolamento provider; i 4 test specifici passano nuovamente.
+
+## 2026-10-03 — Avanzamento e annullamento scansione metadata
+
+- Analizzato il log reale: mostrava soltanto richieste ripetute della UI a `/api/metadata-rebuild/status` e `/albums`, senza errori container. La scansione restava senza visibilità durante l'inventario e poi può richiedere diversi secondi per album per il rate limit MusicBrainz; due client/schede stavano inoltre duplicando il polling.
+- `backend/app/metadata_pipeline/service.py`: stato avviato prima dell'inventario con fasi `inventory`/`resolving`, contatori file/cartelle/album, log periodici e per-album, errori provider espliciti, cancellazione cooperativa e stato finale `cancelled`. Aggiunto retry atomico limitato per il race Windows tra lettura e sostituzione di `status.json`.
+- `backend/app/metadata_pipeline/router.py`, `frontend/src/{api.ts,components/MetadataRebuild.tsx}`: endpoint e pulsante Stop scan, riconoscimento dei task realmente attivi dopo restart, polling degli album solo quando il numero di piani cambia, contatori visibili durante l'inventario.
+- Test: nuovo caso verifica transizioni, cancellazione e immutabilità del file; 5 test metadata passati, suite backend 41 passati con 5 warning preesistenti, TypeScript `tsc --noEmit` passato. Nessuna scansione reale avviata o interrotta da questa chat.
+- Limite operativo: la scansione già in corso nel container usa ancora la vecchia immagine e non acquisirà questi progressi a caldo; occorre pubblicare/aggiornare `:beta` e ricreare il container. Il riavvio interrompe la scansione corrente, che è read-only fino ad Apply.

@@ -7,14 +7,20 @@ import json
 import os
 import re
 import tempfile
+import threading
+import time
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
+from backend.app.logger import get_logger
 from .providers import AcoustIDRecordingVerifier, ArtworkProvider, MusicBrainzReleaseProvider, normalize
 from .tags import AUDIO_SUFFIXES, read_track, write_track
+
+
+logger = get_logger()
 
 
 def _now() -> str:
@@ -28,7 +34,17 @@ def _atomic_json(path: Path, value: Any) -> None:
     temp = Path(name)
     try:
         temp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temp, path)
+        for attempt in range(20):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                # Windows can briefly deny replacement while the status API is
+                # reading the previous JSON file. Linux/Docker normally does
+                # not need this, but a bounded retry keeps the update atomic.
+                if os.name != "nt" or attempt == 19:
+                    raise
+                time.sleep(0.01)
     finally:
         temp.unlink(missing_ok=True)
 
@@ -52,6 +68,7 @@ class MetadataRebuildService:
         self.artwork = artwork or ArtworkProvider()
         self.verifier = verifier or AcoustIDRecordingVerifier()
         self._locks: dict[str, asyncio.Lock] = {}
+        self._cancel_events: dict[Any, threading.Event] = {}
 
     def _user_dir(self, user_id: str) -> Path:
         return self.state_root / _safe_user(user_id)
@@ -89,6 +106,15 @@ class MetadataRebuildService:
             "started_at": _now(), "message": "Metadata inventory is queued.",
         })
 
+    def request_cancel(self, user_id: Any) -> None:
+        event = self._cancel_events.get(user_id)
+        if event:
+            event.set()
+        status = self.status(user_id)
+        if status.get("status") in {"queued", "scanning"}:
+            status.update({"status": "cancelling", "message": "Stopping metadata scan…"})
+            _atomic_json(self._status_path(user_id), status)
+
     async def scan(
         self,
         user_id: str,
@@ -103,16 +129,53 @@ class MetadataRebuildService:
         async with lock:
             root = music_root.resolve()
             job_id = str(uuid.uuid4())
-            groups = await asyncio.to_thread(self._inventory, root, aliases or {})
+            cancel_event = threading.Event()
+            self._cancel_events[user_id] = cancel_event
             status = {
-                "job_id": job_id, "status": "scanning", "processed": 0, "total": len(groups),
-                "started_at": _now(), "message": "Building release-centric metadata plans.",
+                "job_id": job_id, "status": "scanning", "phase": "inventory",
+                "processed": 0, "total": 0, "files_scanned": 0, "folders_found": 0,
+                "started_at": _now(), "message": "Reading audio tags from the library.",
             }
             _atomic_json(self._status_path(user_id), status)
+            logger.info("Metadata rebuild %s: inventory started for %s", job_id, root)
             plans: list[dict[str, Any]] = []
             try:
+                def inventory_progress(files_scanned: int, folders_found: int) -> None:
+                    status.update({
+                        "files_scanned": files_scanned,
+                        "folders_found": folders_found,
+                        "message": (
+                            f"Inventory: read {files_scanned} audio files in "
+                            f"{folders_found} album folders."
+                        ),
+                    })
+                    _atomic_json(self._status_path(user_id), status)
+                    if files_scanned and files_scanned % 250 == 0:
+                        logger.info(
+                            "Metadata rebuild %s: inventory read %d files in %d folders",
+                            job_id, files_scanned, folders_found,
+                        )
+
+                groups = await asyncio.to_thread(
+                    self._inventory, root, aliases or {}, inventory_progress, cancel_event
+                )
+                status.update({
+                    "phase": "resolving", "processed": 0, "total": len(groups),
+                    "message": f"Inventory complete. Resolving {len(groups)} albums with MusicBrainz.",
+                })
+                _atomic_json(self._status_path(user_id), status)
+                logger.info(
+                    "Metadata rebuild %s: inventory complete (%d files, %d albums)",
+                    job_id, status["files_scanned"], len(groups),
+                )
                 provider_errors = 0
                 for index, group in enumerate(groups, start=1):
+                    if cancel_event.is_set():
+                        raise asyncio.CancelledError
+                    logger.info(
+                        "Metadata rebuild %s: resolving album %d/%d: %s — %s",
+                        job_id, index, len(groups), group["album_artist"], group["album"],
+                    )
                     try:
                         candidates = await self.provider.match_release(
                             group["album"], group["album_artist"], group["tracks"]
@@ -124,6 +187,10 @@ class MetadataRebuildService:
                         provider_errors += 1
                         plan = self._build_plan(root, group, [])
                         plan["provider_error"] = str(exc)
+                        logger.warning(
+                            "Metadata rebuild %s: provider failed for %s — %s: %s",
+                            job_id, group["album_artist"], group["album"], exc,
+                        )
                     if verify_acoustid and plan.get("selected_release"):
                         for change in plan["tracks"]:
                             proposed = change.get("proposed")
@@ -150,20 +217,52 @@ class MetadataRebuildService:
                     ),
                 })
                 _atomic_json(self._status_path(user_id), status)
+                logger.info("Metadata rebuild %s completed: %d album plans", job_id, len(plans))
                 return plans
+            except asyncio.CancelledError:
+                cancel_event.set()
+                status.update({
+                    "status": "cancelled", "finished_at": _now(),
+                    "message": "Metadata scan cancelled. Media files were not modified.",
+                })
+                _atomic_json(self._status_path(user_id), status)
+                logger.warning("Metadata rebuild %s cancelled", job_id)
+                raise
             except Exception as exc:
                 status.update({"status": "failed", "finished_at": _now(), "message": str(exc)})
                 _atomic_json(self._status_path(user_id), status)
+                logger.exception("Metadata rebuild %s failed", job_id)
                 raise
+            finally:
+                self._cancel_events.pop(user_id, None)
 
-    def _inventory(self, root: Path, aliases: dict[str, str]) -> list[dict[str, Any]]:
+    def _inventory(
+        self,
+        root: Path,
+        aliases: dict[str, str],
+        progress: Optional[Callable[[int, int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> list[dict[str, Any]]:
         alias_map = {normalize(key): value for key, value in aliases.items()}
         folders: dict[Path, list[dict[str, Any]]] = {}
+        files_scanned = 0
         for current, dirs, files in os.walk(root):
+            if cancel_event and cancel_event.is_set():
+                raise asyncio.CancelledError
             dirs[:] = [d for d in dirs if not d.startswith(".") and d.casefold() not in {"playlists", "explore"}]
             audio = [Path(current) / name for name in files if Path(name).suffix.lower() in AUDIO_SUFFIXES]
             if audio:
-                folders[Path(current)] = [read_track(path) for path in sorted(audio)]
+                tracks = []
+                for path in sorted(audio):
+                    if cancel_event and cancel_event.is_set():
+                        raise asyncio.CancelledError
+                    tracks.append(read_track(path))
+                    files_scanned += 1
+                    if progress and files_scanned % 25 == 0:
+                        progress(files_scanned, len(folders) + 1)
+                folders[Path(current)] = tracks
+                if progress:
+                    progress(files_scanned, len(folders))
         groups: list[dict[str, Any]] = []
         for folder, tracks in sorted(folders.items(), key=lambda item: str(item[0])):
             albums = [track["album"] for track in tracks if track["album"]]

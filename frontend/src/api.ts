@@ -740,6 +740,11 @@ export const apiService = {
     return resp.data;
   },
 
+  async cancelMetadataRebuildScan(): Promise<any> {
+    const resp = await api.post('/api/metadata-rebuild/cancel');
+    return resp.data;
+  },
+
   async getMetadataRebuildStatus(): Promise<any> {
     const resp = await api.get('/api/metadata-rebuild/status');
     return resp.data;

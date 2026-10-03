@@ -32,7 +32,7 @@ def create_metadata_rebuild_router(
     router = APIRouter(prefix="/api/metadata-rebuild", tags=["metadata-rebuild"])
     state_root = Path(db.db_path).resolve().parent / "metadata-rebuild"
     service = MetadataRebuildService(state_root)
-    tasks: set[asyncio.Task] = set()
+    tasks: dict[Any, asyncio.Task] = {}
 
     async def context(request: Request) -> tuple[dict[str, Any], Path]:
         user = await get_current_user(request)
@@ -48,7 +48,8 @@ def create_metadata_rebuild_router(
     @router.post("/scan")
     async def start_scan(body: ScanRequest, request: Request):
         user, root = await context(request)
-        if service.status(user["id"]).get("status") in {"queued", "scanning", "applying"}:
+        current = tasks.get(user["id"])
+        if current and not current.done():
             raise HTTPException(status_code=409, detail="A metadata rebuild operation is already running.")
         aliases = dict(getattr(config_manager.config.artist_aliases, "aliases", {}) or {})
         api_key = getattr(config_manager.config.acoustid, "api_key", "") or ""
@@ -58,17 +59,28 @@ def create_metadata_rebuild_router(
 
         service.mark_queued(user["id"])
         task = asyncio.create_task(run())
-        tasks.add(task)
+        tasks[user["id"]] = task
         def finished(completed: asyncio.Task) -> None:
-            tasks.discard(completed)
+            if tasks.get(user["id"]) is completed:
+                tasks.pop(user["id"], None)
             # scan() persists a useful failed status; consuming the exception
             # prevents an unhandled-background-task warning in the server log.
             try:
                 completed.result()
-            except Exception:
+            except BaseException:
                 pass
         task.add_done_callback(finished)
         return {"status": "started", "message": "Read-only metadata inventory started."}
+
+    @router.post("/cancel")
+    async def cancel_scan(request: Request):
+        user, _ = await context(request)
+        task = tasks.get(user["id"])
+        if not task or task.done():
+            raise HTTPException(status_code=409, detail="No metadata scan is currently running.")
+        service.request_cancel(user["id"])
+        task.cancel()
+        return {"status": "cancelling", "message": "Metadata scan cancellation requested."}
 
     @router.get("/status")
     async def get_status(request: Request):

@@ -20,25 +20,28 @@ const MetadataRebuild: React.FC = () => {
   const [includeArtwork, setIncludeArtwork] = React.useState(true);
   const [allowItunes, setAllowItunes] = React.useState(true);
   const [manualMbids, setManualMbids] = React.useState<Record<string, string>>({});
+  const lastPlansAt = React.useRef(-1);
   const [message, setMessage] = React.useState<{ type: 'success' | 'error' | 'warning'; text: string } | null>(null);
 
-  const refresh = React.useCallback(async () => {
+  const refresh = React.useCallback(async (forcePlans: boolean = false) => {
     try {
-      const [nextStatus, nextAlbums] = await Promise.all([
-        apiService.getMetadataRebuildStatus(),
-        apiService.getMetadataRebuildAlbums(),
-      ]);
+      const nextStatus = await apiService.getMetadataRebuildStatus();
       setStatus(nextStatus);
-      setAlbums(nextAlbums);
+      const active = ['queued', 'scanning', 'cancelling'].includes(nextStatus.status);
+      const planMarker = Number(nextStatus.processed || 0);
+      if (forcePlans || !active || planMarker !== lastPlansAt.current) {
+        setAlbums(await apiService.getMetadataRebuildAlbums());
+        lastPlansAt.current = planMarker;
+      }
       return nextStatus;
     } catch (error) {
       setMessage({ type: 'error', text: getErrorMessage(error, 'Unable to load metadata rebuild state.') });
     }
   }, []);
 
-  React.useEffect(() => { refresh(); }, [refresh]);
+  React.useEffect(() => { refresh(true); }, [refresh]);
   React.useEffect(() => {
-    if (!['queued', 'scanning', 'applying'].includes(status.status)) return;
+    if (!['queued', 'scanning', 'cancelling', 'applying'].includes(status.status)) return;
     const timer = window.setInterval(refresh, 2500);
     return () => window.clearInterval(timer);
   }, [status.status, refresh]);
@@ -56,11 +59,21 @@ const MetadataRebuild: React.FC = () => {
     }
   };
 
+  const cancelScan = async () => {
+    setBusy(true);
+    try {
+      await apiService.cancelMetadataRebuildScan();
+      setStatus((current: any) => ({ ...current, status: 'cancelling', message: 'Stopping metadata scan…' }));
+    } catch (error) {
+      setMessage({ type: 'error', text: getErrorMessage(error, 'Scan could not be cancelled.') });
+    } finally { setBusy(false); }
+  };
+
   const chooseRelease = async (planId: string, releaseMbid: string) => {
     setBusy(true);
     try {
       await apiService.selectMetadataRelease(planId, releaseMbid);
-      await refresh();
+      await refresh(true);
     } catch (error) {
       setMessage({ type: 'error', text: getErrorMessage(error, 'Release selection failed.') });
     } finally { setBusy(false); }
@@ -72,7 +85,7 @@ const MetadataRebuild: React.FC = () => {
     try {
       const result = await apiService.applyMetadataAlbum(plan.id, includeArtwork, allowItunes);
       setMessage({ type: 'success', text: `Updated ${result.updated_tracks} tracks. Artwork: ${result.artwork_source || 'preserved existing'}.` });
-      await refresh();
+      await refresh(true);
     } catch (error) {
       setMessage({ type: 'error', text: getErrorMessage(error, 'Album update failed; written files were rolled back.') });
     } finally { setBusy(false); }
@@ -84,7 +97,7 @@ const MetadataRebuild: React.FC = () => {
     try {
       const result = await apiService.rollbackMetadataAlbum(plan.id);
       setMessage({ type: 'success', text: `Restored ${result.restored_tracks} tracks.` });
-      await refresh();
+      await refresh(true);
     } catch (error) {
       setMessage({ type: 'error', text: getErrorMessage(error, 'Rollback failed.') });
     } finally { setBusy(false); }
@@ -107,10 +120,10 @@ const MetadataRebuild: React.FC = () => {
             Release-centric reconstruction using MusicBrainz, Cover Art Archive and optional AcoustID verification. Deezer is not used.
           </Typography>
         </Box>
-        <Button variant="contained" startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <ScanIcon />}
-          disabled={busy || ['scanning', 'queued'].includes(status.status)} onClick={startScan}>
-          Scan entire library
-        </Button>
+        {['queued', 'scanning', 'cancelling'].includes(status.status)
+          ? <Button color="warning" variant="outlined" disabled={busy || status.status === 'cancelling'} onClick={cancelScan}>Stop scan</Button>
+          : <Button variant="contained" startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <ScanIcon />}
+              disabled={busy} onClick={startScan}>Scan entire library</Button>}
       </Stack>
 
       {message && <Alert severity={message.type} sx={{ mb: 2 }} onClose={() => setMessage(null)}>{message.text}</Alert>}
@@ -131,9 +144,12 @@ const MetadataRebuild: React.FC = () => {
             <FormControlLabel control={<Switch checked={allowItunes} onChange={e => setAllowItunes(e.target.checked)} disabled={!includeArtwork} />} label="Verified iTunes fallback" />
           </Stack>
         </Stack>
-        {['scanning', 'queued'].includes(status.status) && <Box mt={2}>
+        {['scanning', 'queued', 'cancelling'].includes(status.status) && <Box mt={2}>
           <LinearProgress variant={status.total ? 'determinate' : 'indeterminate'} value={progress} />
           <Typography variant="caption" color="text.secondary">{status.message} {status.total ? `(${status.processed}/${status.total})` : ''}</Typography>
+          {status.phase === 'inventory' && <Typography display="block" variant="caption" color="text.secondary">
+            Files read: {status.files_scanned || 0} · album folders found: {status.folders_found || 0}
+          </Typography>}
         </Box>}
       </Paper>
 
