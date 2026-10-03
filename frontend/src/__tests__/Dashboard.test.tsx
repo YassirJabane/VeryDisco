@@ -43,10 +43,10 @@ describe('Dashboard Component', () => {
   test('renders dashboard headers and sync button', async () => {
     render(<Dashboard onNavigateToConfig={() => {}} />);
     
-    const header = await screen.findByText('Dashboard');
+    const header = await screen.findByRole('heading', { name: 'Your music, in motion.' });
     expect(header).toBeInTheDocument();
 
-    const syncButton = await screen.findByRole('button', { name: /Manual Sync/i });
+    const syncButton = await screen.findByRole('button', { name: /Sync now/i });
     expect(syncButton).toBeInTheDocument();
     expect(syncButton).not.toBeDisabled();
   });
