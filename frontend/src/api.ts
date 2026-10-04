@@ -397,6 +397,11 @@ export const apiService = {
     return resp.data;
   },
 
+  async getAlbumTracks(albumId: number | string): Promise<any> {
+    const resp = await api.get<any>(`/api/deezer/album/${albumId}/tracks`);
+    return resp.data;
+  },
+
   async getPinnedArtists(): Promise<any[]> {
     const resp = await api.get<any[]>('/api/pinned_artists');
     return resp.data;
@@ -425,6 +430,11 @@ export const apiService = {
 
   async getReleaseGroupReleases(releaseGroupMbid: string): Promise<any[]> {
     const resp = await api.get<any[]>(`/api/release-group/${encodeURIComponent(releaseGroupMbid)}/releases`);
+    return resp.data;
+  },
+
+  async getReleaseTracklist(releaseMbid: string): Promise<any> {
+    const resp = await api.get<any>(`/api/release/${encodeURIComponent(releaseMbid)}/tracklist`);
     return resp.data;
   },
 

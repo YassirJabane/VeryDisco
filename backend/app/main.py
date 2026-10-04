@@ -2213,6 +2213,21 @@ async def deezer_artist_albums(artist_id: int):
         logger.error(f"Deezer artist albums lookup failed: {e}")
         raise HTTPException(status_code=502, detail=f"Deezer lookup failed: {e}")
 
+@app.get("/api/deezer/album/{album_id}/tracks")
+async def deezer_album_tracks(album_id: int):
+    """Fetch the public Deezer tracklist for an album preview."""
+    try:
+        from backend.app.clients.deezer import DeezerClient
+        data = await DeezerClient(timeout=10).get_album_tracks(album_id)
+        if data is None:
+            raise HTTPException(status_code=502, detail="Deezer album tracklist unavailable.")
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Deezer album tracklist lookup failed for {album_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Deezer tracklist lookup failed: {e}")
+
 class PinArtistRequest(BaseModel):
     artist_name: str
     mbid: Optional[str] = None
@@ -2526,6 +2541,17 @@ async def get_release_group_releases(release_group_mbid: str):
         raise HTTPException(status_code=400, detail="Invalid release-group MBID.")
     from backend.app.clients.musicbrainz import musicbrainz_client
     return await musicbrainz_client.get_release_group_releases(release_group_mbid)
+
+@app.get("/api/release/{release_mbid}/tracklist")
+async def get_release_tracklist(release_mbid: str):
+    """Return the exact MusicBrainz tracklist for an edition selected in Artists."""
+    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', release_mbid, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Invalid release MBID.")
+    from backend.app.clients.musicbrainz import musicbrainz_client
+    tracklist = await musicbrainz_client.get_album_tracklist("", "", release_mbid=release_mbid)
+    if not tracklist:
+        raise HTTPException(status_code=404, detail="Release tracklist not found.")
+    return tracklist
 
 class LikeRequest(BaseModel):
     artist: str

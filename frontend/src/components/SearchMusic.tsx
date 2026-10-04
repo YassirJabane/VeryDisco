@@ -10,7 +10,9 @@ import {
   LibraryMusic as MusicIcon,
   CloudDownload as DownloadIcon,
   FolderZip as AlbumIcon,
-  CheckCircle as ExistIcon
+  CheckCircle as ExistIcon,
+  ExpandMore as ExpandMoreIcon,
+  ExpandLess as ExpandLessIcon
 } from '@mui/icons-material';
 import { apiService } from '../api';
 import LyricsPreviewDialog from './LyricsPreviewDialog';
@@ -40,6 +42,9 @@ export const SearchMusic: React.FC = () => {
   const [albumVersions, setAlbumVersions] = useState<Record<number, any[]>>({});
   const [selectedVersions, setSelectedVersions] = useState<Record<number, any>>({});
   const [versionsLoading, setVersionsLoading] = useState<Record<number, boolean>>({});
+  const [expandedAlbumId, setExpandedAlbumId] = useState<string | null>(null);
+  const [albumTracks, setAlbumTracks] = useState<Record<string, any[]>>({});
+  const [albumTracksLoading, setAlbumTracksLoading] = useState<Record<string, boolean>>({});
   const [selectedLyricsTrack, setSelectedLyricsTrack] = useState<{ artist: string; title: string; album: string; duration: number } | null>(null);
   const [lyricsOpen, setLyricsOpen] = useState(false);
 
@@ -139,6 +144,28 @@ export const SearchMusic: React.FC = () => {
       console.error("Failed to fetch album versions", err);
     } finally {
       setVersionsLoading(prev => ({ ...prev, [albumId]: false }));
+    }
+  };
+
+  const handleToggleAlbumTracks = async (item: any, selectedVersion: any) => {
+    const albumId = selectedVersion?.id || item.id;
+    const key = String(albumId);
+    if (expandedAlbumId === key) {
+      setExpandedAlbumId(null);
+      return;
+    }
+    setExpandedAlbumId(key);
+    if (albumTracks[key] || albumTracksLoading[key]) return;
+    setAlbumTracksLoading(prev => ({ ...prev, [key]: true }));
+    try {
+      const data = await apiService.getAlbumTracks(albumId);
+      setAlbumTracks(prev => ({ ...prev, [key]: Array.isArray(data?.data) ? data.data : [] }));
+    } catch (err) {
+      console.error('Failed to load album tracklist', err);
+      setAlbumTracks(prev => ({ ...prev, [key]: [] }));
+      notify('The album tracklist could not be loaded.', 'error');
+    } finally {
+      setAlbumTracksLoading(prev => ({ ...prev, [key]: false }));
     }
   };
 
@@ -360,9 +387,13 @@ export const SearchMusic: React.FC = () => {
                 const trackKey = `track-${artistName}-${titleLabel}`;
                 const albumKey = `album-${artistName}-${isTrack ? trackAlbum : titleLabel}`;
 
+                const albumId = String(selectedVersion?.id || item.id);
+                const expanded = !isTrack && expandedAlbumId === albumId;
+                const albumStatus = selectedVersion?.albumStatus || item.albumStatus || 'missing';
+
                 return (
+                  <React.Fragment key={i}>
                   <ListItem
-                    key={i}
                     divider={i < searchResults.length - 1}
                     sx={{ 
                       py: 2,
@@ -596,6 +627,16 @@ export const SearchMusic: React.FC = () => {
                         </>
                       ) : (
                         <Box display="flex" gap={1} flexWrap="wrap">
+                          {albumStatus !== 'full' && (
+                            <IconButton
+                              size="small"
+                              color="primary"
+                              aria-label={expanded ? 'Collapse tracklist' : 'Expand tracklist'}
+                              onClick={() => void handleToggleAlbumTracks(item, selectedVersion)}
+                            >
+                              {albumTracksLoading[albumId] ? <CircularProgress size={18} /> : (expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />)}
+                            </IconButton>
+                          )}
                           <Button
                             variant="contained"
                             color="success"
@@ -631,6 +672,29 @@ export const SearchMusic: React.FC = () => {
                       )}
                     </Box>
                   </ListItem>
+                  {expanded && (
+                    <Box sx={{ px: { xs: 2, sm: 8 }, py: 1.5, bgcolor: 'action.selected', borderBottom: '1px solid', borderColor: 'divider' }}>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1, color: 'text.secondary' }}>
+                        Tracklist
+                      </Typography>
+                      {albumTracksLoading[albumId] ? (
+                        <CircularProgress size={18} />
+                      ) : (albumTracks[albumId] || []).length > 0 ? (
+                        <List disablePadding>
+                          {(albumTracks[albumId] || []).map((track: any, trackIndex: number) => (
+                            <ListItem key={track.id || trackIndex} disableGutters sx={{ py: 0.35 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                                {track.track_position || trackIndex + 1}. {track.title}
+                              </Typography>
+                            </ListItem>
+                          ))}
+                        </List>
+                      ) : (
+                        <Typography variant="body2" color="text.secondary">No tracklist available.</Typography>
+                      )}
+                    </Box>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </List>

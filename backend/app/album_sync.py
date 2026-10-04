@@ -585,6 +585,8 @@ async def _download_album_task_internal(
             stripped_alb = re.sub(r'[^\w\s-]', ' ', stripped_alb)
             stripped_alb = re.sub(r'\s+', ' ', stripped_alb).strip()
 
+            from backend.app.sync import build_album_wildcard_queries
+
             queries = []
             art_lower = clean_art.lower()
             alb_lower = clean_alb.lower()
@@ -629,6 +631,11 @@ async def _download_album_task_internal(
                 if main_art_wildcard != main_art:
                     add_query(f"{main_art_wildcard} - {stripped_alb}", False)
                 add_query(f"{main_art} - {stripped_alb}", False)
+
+                # Try title+artist wildcards early. Keep these
+                # space-separated: a hyphen is exclusion syntax in slskd.
+                for wildcard_query in build_album_wildcard_queries(main_art, raw_alb or stripped_alb or clean_alb):
+                    add_query(wildcard_query, False)
 
                 # 2. Year-based directory patterns (e.g. Artist - Year - Album or Artist - Album (Year))
                 if album_year:

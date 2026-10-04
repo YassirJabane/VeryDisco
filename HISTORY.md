@@ -209,3 +209,23 @@
 - Aggiornate le regressioni in `backend/tests/test_search_queries.py` per `Purple Rain`, gli artisti composti e l’espansione dei singoli termini del titolo.
 - Verifica: `pytest backend/tests/test_search_queries.py -q` (5 passati) e `py_compile` su `backend/app/{sync.py,main.py}` passati; nessuna ricerca slskd reale eseguita.
 - Limite: il wildcarding aumenta la copertura ma può aumentare i risultati intermedi; il filtro locale rigoroso resta obbligatorio e invariato.
+
+## 2026-10-04 — Wildcard titolo anche nella ricerca album
+
+- Corretto il percorso album in `backend/app/album_sync.py`: prima veniva provato `*rince - Purple Rain`, ma mai una wildcard sul titolo. Ora vengono generate anche query come `*urple Rain *rince`, `Purple *ain *rince` e `*urple *ain *rince`, senza trattino per evitare la semantica di esclusione di slskd.
+- Aggiunti `build_album_wildcard_queries()` e la regressione dedicata in `backend/tests/test_search_queries.py`.
+- Verifica: test query e `py_compile` da eseguire dopo questa modifica; il download reale di `Purple Rain` già avviato non viene interrotto né riavviato automaticamente.
+
+## 2026-10-04 — Tracklist espandibile per album mancanti
+
+- `frontend/src/components/SearchMusic.tsx`: gli album Deezer mancanti o parziali hanno ora un controllo expand/collapse che carica e mostra la tracklist; la versione selezionata viene usata come sorgente.
+- `frontend/src/components/MyArtists.tsx`: l’espansione di album, EP e mixtape carica la tracklist della release MusicBrainz selezionata o della prima edizione disponibile, così anche una release non presente in libreria può essere verificata prima del download.
+- Aggiunti `GET /api/deezer/album/{album_id}/tracks` e `GET /api/release/{release_mbid}/tracklist`, con relativi metodi in `frontend/src/api.ts`.
+- Verifica: TypeScript `tsc --noEmit`, `py_compile` su `backend/app/main.py` e `pytest backend/tests/test_search_queries.py -q` (5 passati). Nessuna chiamata live Deezer/MusicBrainz o download reale eseguiti.
+- Limite: la disponibilità della tracklist dipende dalla risposta del provider; in caso di errore viene mostrato uno stato vuoto senza bloccare download e selezione edizione.
+
+## 2026-10-04 — Ricarica tracklist dopo cambio edizione
+
+- `frontend/src/components/MyArtists.tsx`: corretto il cache check delle edizioni vuote, che impediva retry successivi soprattutto per mixtape; il cambio edizione ora invalida la tracklist precedente, mostra il caricamento e richiede la tracklist della release MBID selezionata.
+- Verifica: TypeScript da eseguire dopo questa correzione; nessun download reale o chiamata MusicBrainz live eseguita in locale.
+- Limite: se MusicBrainz restituisce ancora zero release ufficiali, la UI non può mostrare una tracklist verificata finché il provider non torna disponibile.

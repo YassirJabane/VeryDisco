@@ -1,4 +1,9 @@
-from backend.app.sync import build_track_search_queries, wildcard_artist_variants, wildcard_text_variants
+from backend.app.sync import (
+    build_album_wildcard_queries,
+    build_track_search_queries,
+    wildcard_artist_variants,
+    wildcard_text_variants,
+)
 
 
 def test_track_queries_do_not_turn_artist_into_negative_search_term():
@@ -47,3 +52,10 @@ def test_wildcard_title_variants_expand_each_title_word():
         "Purple *ain",
         "*urple *ain",
     ]
+
+
+def test_album_wildcard_queries_cover_blocked_title_and_artist_terms():
+    queries = build_album_wildcard_queries("Prince", "Purple Rain")
+
+    assert "*urple *ain *rince" in queries
+    assert all(" - " not in query for query in queries)

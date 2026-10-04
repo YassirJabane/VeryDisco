@@ -318,14 +318,31 @@ export const MyArtists: React.FC = () => {
     const releaseKey = String(release.id);
     const opening = expandedAlbumId !== release.id;
     setExpandedAlbumId(opening ? release.id : null);
-    if (!opening || editionsByGroup[releaseKey] || release.record_type === 'single') return;
+    if (!opening || release.record_type === 'single') return;
     setEditionLoading(releaseKey);
     try {
-      const editions = await apiService.getReleaseGroupReleases(releaseKey);
-      setEditionsByGroup(prev => ({ ...prev, [releaseKey]: Array.isArray(editions) ? editions : [] }));
+      const cachedEditions = editionsByGroup[releaseKey];
+      const editions = cachedEditions && cachedEditions.length > 0
+        ? cachedEditions
+        : await apiService.getReleaseGroupReleases(releaseKey);
+      const normalizedEditions = Array.isArray(editions) ? editions : [];
+      if (!editionsByGroup[releaseKey]) {
+        setEditionsByGroup(prev => ({ ...prev, [releaseKey]: normalizedEditions }));
+      }
+      const selectedId = selectedEditionByGroup[releaseKey];
+      const edition = normalizedEditions.find(item => String(item.id) === selectedId) || normalizedEditions[0];
+      if (edition?.release_mbid) {
+        const tracklist = await apiService.getReleaseTracklist(edition.release_mbid);
+        setReleases(prev => prev.map(item => item.id === release.id ? {
+          ...item,
+          tracks: tracklist?.tracks || [],
+        } : item));
+      }
     } catch (err) {
-      console.error('Failed to load album editions', err);
-      setEditionsByGroup(prev => ({ ...prev, [releaseKey]: [] }));
+      console.error('Failed to load album editions or tracklist', err);
+      if (!editionsByGroup[releaseKey]) {
+        setEditionsByGroup(prev => ({ ...prev, [releaseKey]: [] }));
+      }
     } finally {
       setEditionLoading(null);
     }
@@ -336,21 +353,32 @@ export const MyArtists: React.FC = () => {
     const edition = (editionsByGroup[releaseKey] || []).find(item => String(item.id) === editionId);
     if (!edition) return;
     setSelectedEditionByGroup(prev => ({ ...prev, [releaseKey]: editionId }));
+    setEditionLoading(releaseKey);
+    setReleases(prev => prev.map(item => item.id === release.id ? { ...item, tracks: [] } : item));
     try {
       const [check] = await apiService.checkAlbumsBatch([{
         artist: detailArtist?.artist_name || '',
         title: edition.title,
         album_id: edition.id,
       }]);
+      let remoteTracks = check?.tracks || [];
+      try {
+        const tracklist = await apiService.getReleaseTracklist(edition.release_mbid || edition.id);
+        remoteTracks = tracklist?.tracks || remoteTracks;
+      } catch (tracklistError) {
+        console.debug('Selected release tracklist unavailable', tracklistError);
+      }
       setReleases(prev => prev.map(item => item.id === release.id ? {
         ...item,
         exists: check?.exists,
         albumStatus: check?.status,
         upgradeAvailable: check?.upgrade_available,
-        tracks: check?.tracks || [],
+        tracks: remoteTracks,
       } : item));
     } catch (err) {
       console.error('Failed to check selected album edition', err);
+    } finally {
+      setEditionLoading(null);
     }
   };
 

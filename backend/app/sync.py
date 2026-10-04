@@ -1294,6 +1294,20 @@ def wildcard_text_variants(text: str) -> list[str]:
     return list(dict.fromkeys(variants))
 
 
+def build_album_wildcard_queries(artist: str, album: str) -> list[str]:
+    """Build title+artist wildcard queries for album-directory searches."""
+    clean_album = re.sub(r"\s+", " ", album or "").strip()
+    artist_variants = wildcard_artist_variants(extract_main_artist(artist))[1:]
+    album_variants = wildcard_text_variants(clean_album)[1:]
+    queries = []
+    for album_variant in album_variants:
+        for artist_variant in artist_variants:
+            query = re.sub(r"\s+", " ", f"{album_variant} {artist_variant}").strip()
+            if query and query not in queries:
+                queries.append(query)
+    return queries
+
+
 def build_track_search_queries(artist: str, title: str, album: str = "") -> list[str]:
     """Build progressive slskd queries without '-' exclusion syntax."""
     def query_part(value: str) -> str:
