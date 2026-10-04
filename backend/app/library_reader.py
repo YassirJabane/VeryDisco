@@ -8,6 +8,27 @@ from typing import Any
 AUDIO_SUFFIXES = {".mp3", ".flac", ".m4a", ".mp4", ".ogg"}
 
 
+def calculate_album_total_tracks(
+    disc_rows: list[dict[str, int]], fallback_total: int = 0
+) -> int:
+    """Calculate an album total without summing album-wide totals per disc.
+
+    The application writes ``total_tracks`` as the total for the selected
+    release.  Some files therefore repeat that album-wide value on every
+    disc; summing it once per disc produces values such as 25/38.  Track
+    positions still remain per-disc, so their observed totals are summed.
+    """
+    observed_total = sum(
+        max(row.get("max_track_num") or 0, row.get("track_count") or 0)
+        for row in disc_rows
+    )
+    declared_total = max(
+        [fallback_total]
+        + [(row.get("max_total_tracks") or 0) for row in disc_rows]
+    )
+    return max(observed_total, declared_total)
+
+
 def _first(value: Any, default: str = "") -> str:
     if isinstance(value, (list, tuple)):
         value = value[0] if value else default

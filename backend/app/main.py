@@ -2083,13 +2083,8 @@ async def search_track_candidates(artist: str, title: str, album: Optional[str] 
         timeout=cfg.timeouts.http_seconds
     )
     
-    from backend.app.sync import extract_main_artist
-    clean_title = re.sub(r'[\(\[].*?[\)\]]', '', title).strip()
-    main_artist = extract_main_artist(artist)
-    
-    query = f"{clean_title} - {main_artist}"
-    query = re.sub(r'[^\w\s-]', ' ', query)
-    query = re.sub(r'\s+', ' ', query).strip()
+    from backend.app.sync import build_track_search_queries
+    query = build_track_search_queries(artist, title, album)[0]
     
     logger.info(f"Manual single track search triggered for: '{query}'")
     audio_quality_dict = cfg.slskd.audio_quality.model_dump() if hasattr(cfg.slskd.audio_quality, "model_dump") else dict(cfg.slskd.audio_quality)
@@ -3272,6 +3267,7 @@ def get_all_album_folders(music_dir: Path, metadata_cache: dict = None, new_cach
         total_tracks = 0
         track_nums = set()
         disc_tracks = {}
+        disc_totals = {}
         for f_path in audio_files:
             try:
                 t_meta = read_file_metadata_with_cache(f_path, metadata_cache, new_cache_entries)
@@ -3283,6 +3279,7 @@ def get_all_album_folders(music_dir: Path, metadata_cache: dict = None, new_cach
                     if d_num not in disc_tracks:
                         disc_tracks[d_num] = set()
                     disc_tracks[d_num].add(t_num)
+                disc_totals[d_num] = max(disc_totals.get(d_num, 0), t_total)
                 if t_total > 0:
                     total_tracks = max(total_tracks, t_total)
             except OSError as exc:
@@ -3298,8 +3295,17 @@ def get_all_album_folders(music_dir: Path, metadata_cache: dict = None, new_cach
             except OSError as exc:
                 logger.warning("Skipping unreadable library file size while listing album %s: %s", f_path, exc)
 
-        if len(disc_tracks) > 1:
-            total_tracks = sum(max(t_set) for t_set in disc_tracks.values() if t_set)
+        disc_rows = [
+            {
+                "track_count": len(track_set),
+                "max_track_num": max(track_set) if track_set else 0,
+                "max_total_tracks": disc_totals.get(disc_num, 0),
+            }
+            for disc_num, track_set in disc_tracks.items()
+        ]
+        if disc_rows:
+            from backend.app.library_reader import calculate_album_total_tracks
+            total_tracks = calculate_album_total_tracks(disc_rows, total_tracks)
         elif total_tracks == 0 and track_nums:
             total_tracks = max(track_nums)
 
@@ -4013,6 +4019,7 @@ async def get_library_albums(request: Request):
             key = (disc_row.get("artist_norm") or "", disc_row.get("album_norm") or "")
             disc_rows_by_album.setdefault(key, []).append(disc_row)
         result = []
+        from backend.app.library_reader import calculate_album_total_tracks
         for a in db_albums:
             sample_fp = a.get("sample_filepath") or ""
             folder_p = str(Path(sample_fp).parent) if sample_fp else ""
@@ -4023,17 +4030,8 @@ async def get_library_albums(request: Request):
             alb_norm = a.get("album_norm", "")
             if art_norm and alb_norm:
                 disc_rows = disc_rows_by_album.get((art_norm, alb_norm), [])
-                if len(disc_rows) > 1:
-                    tot_tracks = sum(
-                        max(r.get("max_total_tracks") or 0, r.get("max_track_num") or 0, r.get("track_count") or 0)
-                        for r in disc_rows
-                    )
-                elif disc_rows:
-                    tot_tracks = max(
-                        tot_tracks,
-                        disc_rows[0].get("max_track_num") or 0,
-                        t_count
-                    )
+                if disc_rows:
+                    tot_tracks = calculate_album_total_tracks(disc_rows, tot_tracks)
 
             total_size = a.get("total_size") or 0
 

@@ -149,3 +149,18 @@
 - Log reale: anche il warmup della cache libreria falliva con `Errno 5`, confermando che il problema storage coinvolge più del Metadata Rebuild. Il filesystem può leggere gli inode (`stat`) ma non alcuni blocchi dati (`sha256sum`), quindi l'origine resta disco/mount e non può essere riparata dall'app.
 - `backend/app/main.py`: elenco album e indice libreria ora registrano il path, ignorano i file con errore I/O/tag non leggibili e continuano con gli altri brani; dimensione e quality dell'album degradano in modo esplicito anziché far abortire il warmup. `docs/audit/test_snapshot_findings.py` copre un album con sample illeggibile.
 - Da verificare: test audit mirato e suite backend, poi beta. Non usare ancora delete/retag/apply sui file sul volume problematico; fare backup e diagnostica SMART/filesystem sul server host.
+
+## 2026-10-04 — Corretto totale tracce gonfiato negli album multi-disco
+
+- Corretto il calcolo del totale album in `backend/app/library_reader.py` e `backend/app/main.py`: non viene più sommato una volta per disco il valore `total_tracks` quando quel valore è il totale dell’intera release ripetuto nei file. Le posizioni osservate restano invece sommate per disco, così il totale non viene sottostimato.
+- Aggiunto `backend/tests/test_library_reader.py` con regressioni per il caso 25 tracce distribuite su due dischi e per il caso di totali realmente per disco.
+- Verifica: `.venv\Scripts\python.exe -m pytest backend/tests/test_library_reader.py -q` (2 passati) e `py_compile` su `backend/app/library_reader.py` e `backend/app/main.py`. Nessuna scansione o simulazione completa eseguita.
+- Assunzione/limite: il progetto scrive `total_tracks` come totale della release selezionata; file esterni che usano sempre e soltanto un totale per disco potrebbero richiedere una regola metadata più esplicita.
+- Aperto: dopo il deploy beta, rifare la scansione indice e verificare in UI album come `Scorpion` e `WE STILL DON’T TRUST YOU`; il fix non modifica i tag già presenti.
+
+## 2026-10-04 — Corrette query slskd per tracce mancanti
+
+- Le query per il download di singole tracce usavano il formato `titolo - artista`. In slskd il trattino può essere interpretato come esclusione del termine successivo: per esempio `good morning - kanye west` poteva restituire zero file mentre `good morning` ne trovava migliaia. Introdotta `build_track_search_queries()` in `backend/app/sync.py`, che usa termini separati senza sintassi negativa.
+- Applicata la funzione al download automatico da playlist, al download singolo con fallback e alla ricerca manuale API. Il filtro rigoroso artista/album sui filename resta invariato.
+- Aggiunti `backend/tests/test_search_queries.py`. Verifica locale: suite mirata con 4 test passati (query e conteggio album) e `py_compile` su `backend/app/{sync.py,album_sync.py,main.py}`; nessun download o test slskd reale eseguito.
+- Assunzione/limite: la diagnosi si basa sulla sintassi osservata nelle query e nel codice; la disponibilità effettiva dei peer deve essere verificata dopo il deploy con una ricerca reale.
