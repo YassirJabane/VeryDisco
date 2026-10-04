@@ -199,6 +199,7 @@ async def test_acoustid_fingerprint_json_and_strict_identity(monkeypatch, tmp_pa
 @pytest.mark.parametrize("expected_artist,recording_artists,expected_valid", [
     ("Drake & 21 Savage", ["Drake", "21 Savage"], True),
     ("Drake & 21 Savage feat. Travis Scott", ["Drake", "21 Savage", "Travis Scott"], True),
+    ("Future & Metro Boomin", ["Future", "Metro Boomin", "J. Cole"], True),
     ("Drake and 21 Savage", ["Drake", "21 Savage"], True),
     ("Artist A with Artist B", ["Artist A", "Artist B"], True),
     ("Florence and the Machine", ["Florence and the Machine"], True),

@@ -164,3 +164,9 @@
 - Applicata la funzione al download automatico da playlist, al download singolo con fallback e alla ricerca manuale API. Il filtro rigoroso artista/album sui filename resta invariato.
 - Aggiunti `backend/tests/test_search_queries.py`. Verifica locale: suite mirata con 4 test passati (query e conteggio album) e `py_compile` su `backend/app/{sync.py,album_sync.py,main.py}`; nessun download o test slskd reale eseguito.
 - Assunzione/limite: la diagnosi si basa sulla sintassi osservata nelle query e nel codice; la disponibilità effettiva dei peer deve essere verificata dopo il deploy con una ricerca reale.
+
+## 2026-10-04 — AcoustID accetta featuring aggiuntivi nei crediti congiunti
+
+- Dal log di `Red Leather` verificato che l’audio trovato era corretto (`Future`, `Metro Boomin`, `J. Cole`), ma il metadato atteso locale conteneva solo `Future & Metro Boomin`; il confronto AcoustID rigettava erroneamente il featuring aggiuntivo dopo due tentativi.
+- `backend/app/clients/acoustid.py` ora accetta un risultato AcoustID che contiene in ordine tutti gli artisti del credito esplicito atteso, anche con ulteriori featuring. Restano rifiutati artisti mancanti, crediti diversi e nomi di band non esplicitamente separati.
+- Aggiunta regressione in `backend/tests/test_media_pipeline.py` per `Future & Metro Boomin` con `J. Cole`. Verifica: `backend/tests/test_media_pipeline.py` 22 passati e `py_compile` su `backend/app/clients/acoustid.py`; presenti solo 2 warning preesistenti su `datetime.utcnow`. Nessun download reale eseguito.

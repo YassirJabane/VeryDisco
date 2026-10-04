@@ -215,6 +215,15 @@ class AcoustIDClient:
         )
         norm_joint_credit = norm(credit_without_joiners)
 
+        def explicit_credit_parts(artist: str) -> list[str]:
+            """Split only explicit joint credits, never ordinary band names."""
+            if not re.search(r"(?i)&|,|\b(?:and|with|x|feat(?:uring)?|ft)\b", artist or ""):
+                return []
+            parts = re.split(r"(?i)\s*(?:&|,|\band\b|\bwith\b|\bx\b|\bfeat(?:uring)?\b|\bft)\.?\s*", artist)
+            return [norm(part) for part in parts if norm(part)]
+
+        expected_credit_parts = explicit_credit_parts(tagged_artist or "")
+
         best_match_desc = ""
         highest_score = 0.0
 
@@ -245,6 +254,21 @@ class AcoustIDClient:
                         if not artist_match and len(rec_artists) > 1 and norm_joint_credit:
                             joined_credit = norm("".join(art.get("name", "") for art in rec_artists))
                             artist_match = joined_credit == norm_joint_credit
+                            if not artist_match and len(expected_credit_parts) > 1:
+                                # AcoustID may include a featured artist that
+                                # is absent from the local expected tag. The
+                                # expected explicit credit must still appear
+                                # in order; unrelated or missing artists fail.
+                                recording_parts = [
+                                    norm(art.get("name", "")) for art in rec_artists
+                                ]
+                                expected_idx = 0
+                                for recording_part in recording_parts:
+                                    if recording_part == expected_credit_parts[expected_idx]:
+                                        expected_idx += 1
+                                        if expected_idx == len(expected_credit_parts):
+                                            artist_match = True
+                                            break
 
                     # Do not accept a similarly named song by an unrelated artist.
                     if artist_match:
