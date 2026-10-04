@@ -246,3 +246,9 @@
 - `frontend/src/components/MyArtists.tsx`: corretto il cache check delle edizioni vuote, che impediva retry successivi soprattutto per mixtape; il cambio edizione ora invalida la tracklist precedente, mostra il caricamento e richiede la tracklist della release MBID selezionata.
 - Verifica: TypeScript da eseguire dopo questa correzione; nessun download reale o chiamata MusicBrainz live eseguita in locale.
 - Limite: se MusicBrainz restituisce ancora zero release ufficiali, la UI non può mostrare una tracklist verificata finché il provider non torna disponibile.
+
+## 2026-10-04 — Correzione badge explicit Spotify
+
+- Corretto il parser dell’embed Spotify: il badge `E` non viene più incluso nel nome dell’artista, quindi `EDrake` torna a essere `Drake` e le ricerche slskd ricevono il nome corretto.
+- Aggiunta regressione in `backend/tests/test_spotify_parser.py` per artisti singoli e collaborazioni explicit.
+- Verifica: test parser Spotify, `py_compile` e suite query backend.

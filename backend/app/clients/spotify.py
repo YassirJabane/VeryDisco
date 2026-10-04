@@ -41,6 +41,10 @@ def _parse_embed_tracks(html: str) -> List[Dict[str, Any]]:
         if tag != "h3":
             continue
         artist = next((value for next_tag, value in parser.headings[index + 1:] if next_tag == "h4"), "")
+        # Spotify renders the explicit-content badge as a leading "E" in the
+        # same heading as the artist (for example, "E Drake"). It is not part
+        # of the artist name and must not leak into search/download metadata.
+        artist = re.sub(r"^E\s+", "", artist).strip()
         if artist:
             tracks.append({"artist": artist, "title": title, "album": "", "duration": None})
     return tracks
