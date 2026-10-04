@@ -26,6 +26,7 @@ _MIN_INTERVAL = 1.05  # seconds between requests
 # In-memory caches with 1-hour TTL
 _album_releases_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _artist_rg_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_release_group_releases_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 
 
 async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional[dict]:
@@ -449,6 +450,39 @@ class MusicBrainzClient:
         _artist_rg_cache[cache_key] = (now, result)
         return result
 
+    async def get_release_group_releases(self, release_group_mbid: str) -> List[Dict[str, Any]]:
+        """Return selectable official editions belonging to a release group."""
+        cache_key = release_group_mbid.lower().strip()
+        now = time.time()
+        if cache_key in _release_group_releases_cache:
+            ts, cached_res = _release_group_releases_cache[cache_key]
+            if now - ts < 3600:
+                return cached_res
+
+        data = await _mb_get(f"/release-group/{release_group_mbid}", params={
+            "inc": "releases",
+            "limit": 100,
+            "fmt": "json",
+        })
+        result = []
+        for release in (data or {}).get("releases", []):
+            if (release.get("status") or "").lower() not in {"", "official"}:
+                continue
+            media = release.get("media") or []
+            result.append({
+                "id": release.get("id"),
+                "release_mbid": release.get("id"),
+                "title": release.get("title") or "Untitled edition",
+                "release_date": release.get("date") or "",
+                "country": release.get("country") or "",
+                "format": ", ".join(sorted({m.get("format", "") for m in media if m.get("format")})),
+                "track_count": sum(int(m.get("track-count") or 0) for m in media),
+                "cover_medium": f"https://coverartarchive.org/release/{release.get('id')}/front-250",
+            })
+        result.sort(key=lambda r: (r.get("release_date") or "9999-99-99", r.get("title") or ""))
+        _release_group_releases_cache[cache_key] = (now, result)
+        return result
+
     # -----------------------------------------------------------------------
     # Recording / track lookup
     # -----------------------------------------------------------------------
@@ -508,13 +542,55 @@ class MusicBrainzClient:
             "fmt": "json"
         })
 
-    async def get_album_tracklist(self, artist: str, album: str) -> Optional[Dict[str, Any]]:
+    async def get_album_tracklist(
+        self, artist: str, album: str, release_mbid: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
-        Query MusicBrainz for candidate releases of (artist, album), score them,
-        and return a normalized dict with tracks list, release_date, release_mbid, etc.
+        Return a normalized release tracklist.
+
+        When a release MBID is supplied it is authoritative: fetch that exact
+        release instead of scoring text-search candidates. This is required for
+        editions and for MusicBrainz release groups such as EPs and mixtapes.
         """
-        res = await inspect_album_releases(artist, album)
-        winner = res.get("winner")
+        if release_mbid:
+            full = await get_release_with_media(release_mbid)
+            if not full:
+                return None
+            album_artist, album_artists = _parse_artist_credit(full.get("artist-credit"))
+            media_list = full.get("media") or []
+            discs = []
+            for media in media_list:
+                tracks = []
+                for track in media.get("tracks") or media.get("track") or []:
+                    recording = track.get("recording") or {}
+                    track_artist, track_artists = _parse_artist_credit(
+                        track.get("artist-credit") or recording.get("artist-credit")
+                    )
+                    tracks.append({
+                        "position": int(track.get("position") or track.get("number") or 0),
+                        "title": recording.get("title") or track.get("title"),
+                        "recording_id": recording.get("id") or track.get("id"),
+                        "artist": track_artist,
+                        "credited_artists": track_artists,
+                    })
+                discs.append({
+                    "disc_num": int(media.get("position") or 1),
+                    "format": media.get("format") or "CD",
+                    "track_count": len(tracks),
+                    "tracks": tracks,
+                })
+            winner = {
+                "id": full.get("id") or release_mbid,
+                "title": full.get("title") or album,
+                "date": full.get("date") or "",
+                "album_artist": album_artist,
+                "album_artists": album_artists,
+                "disc_total": len(media_list) or 1,
+                "discs": discs,
+            }
+        else:
+            res = await inspect_album_releases(artist, album)
+            winner = res.get("winner")
         if not winner:
             return None
 

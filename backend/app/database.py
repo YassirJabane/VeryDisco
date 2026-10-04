@@ -102,7 +102,9 @@ class Database:
                     title TEXT,
                     album TEXT NOT NULL,
                     status TEXT DEFAULT 'pending',
-                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    release_mbid TEXT,
+                    record_type TEXT
                 )
             """)
             await db.execute("""
@@ -322,6 +324,15 @@ class Database:
                     await db.commit()
                 except Exception:
                     pass
+            for column in ("release_mbid", "record_type"):
+                try:
+                    await db.execute(f"SELECT {column} FROM album_downloads LIMIT 1")
+                except Exception:
+                    try:
+                        await db.execute(f"ALTER TABLE album_downloads ADD COLUMN {column} TEXT")
+                        await db.commit()
+                    except Exception:
+                        pass
             # Add user_id to runs for per-user tracking
             try:
                 await db.execute("SELECT user_id FROM runs LIMIT 1")
@@ -949,12 +960,13 @@ class Database:
             await db.commit()
 
     async def add_album_download(
-        self, artist: str, title: str, album: str, user_id: Optional[str] = None
+        self, artist: str, title: str, album: str, user_id: Optional[str] = None,
+        release_mbid: Optional[str] = None, record_type: Optional[str] = None,
     ) -> int:
         async with self.get_db() as conn:
             cursor = await conn.execute(
-                "INSERT INTO album_downloads (artist, title, album, status, user_id) VALUES (?, ?, ?, 'pending', ?)",
-                (artist, title, album, user_id)
+                "INSERT INTO album_downloads (artist, title, album, status, user_id, release_mbid, record_type) VALUES (?, ?, ?, 'pending', ?, ?, ?)",
+                (artist, title, album, user_id, release_mbid, record_type)
             )
             await conn.commit()
             return cursor.lastrowid

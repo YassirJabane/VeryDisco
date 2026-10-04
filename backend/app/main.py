@@ -136,7 +136,8 @@ async def lifespan(app: FastAPI):
                 for pa in pending_albums:
                     _create_tracked_task(
                         download_album_task(
-                            pa['id'], pa['artist'], pa['title'] or "", pa['album'], config_manager.config, db
+                            pa['id'], pa['artist'], pa['title'] or "", pa['album'], config_manager.config, db,
+                            release_mbid=pa.get('release_mbid'), record_type=pa.get('record_type')
                         ),
                         task_id=f"album:{pa['id']}",
                         task_type="album",
@@ -1650,6 +1651,8 @@ class DownloadAlbumRequest(BaseModel):
     artist: str
     album: str
     force: Optional[bool] = False
+    release_mbid: Optional[str] = None
+    record_type: Optional[str] = None
 
 @app.post("/api/download/album")
 async def download_single_album(req: DownloadAlbumRequest, request: Request = None):
@@ -1663,8 +1666,14 @@ async def download_single_album(req: DownloadAlbumRequest, request: Request = No
     user = await get_current_user(request)
     user_id = user["id"]
 
+    if req.record_type and req.record_type.casefold() == "single":
+        raise HTTPException(status_code=400, detail="Single releases must use the single-track download path.")
+
     from backend.app.album_sync import download_album_task
-    download_id = await db.add_album_download(req.artist, "", req.album, user_id=user_id)
+    download_id = await db.add_album_download(
+        req.artist, "", req.album, user_id=user_id,
+        release_mbid=req.release_mbid, record_type=req.record_type,
+    )
     
     _create_tracked_task(
         download_album_task(
@@ -1675,11 +1684,13 @@ async def download_single_album(req: DownloadAlbumRequest, request: Request = No
             config=cfg,
             db=db,
             force=req.force,
-            user_id=user_id
+            user_id=user_id,
+            release_mbid=req.release_mbid,
+            record_type=req.record_type,
         ),
         task_id=f"album:{download_id}",
         task_type="album",
-        metadata={"download_id": download_id, "artist": req.artist, "album": req.album, "user_id": user_id}
+            metadata={"download_id": download_id, "artist": req.artist, "album": req.album, "user_id": user_id, "release_mbid": req.release_mbid}
     )
     return {"status": "success", "message": f"Album download queued for '{req.album}'."}
 
@@ -2500,6 +2511,14 @@ async def get_artist_releases_mb(artist_identifier: str):
 async def get_deezer_artist_releases_legacy(artist_id: str):
     """Legacy alias redirecting to MusicBrainz artist release groups endpoint."""
     return await get_artist_releases_mb(artist_id)
+
+@app.get("/api/release-group/{release_group_mbid}/releases")
+async def get_release_group_releases(release_group_mbid: str):
+    """Return official editions so the artist view can offer version selection."""
+    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', release_group_mbid, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail="Invalid release-group MBID.")
+    from backend.app.clients.musicbrainz import musicbrainz_client
+    return await musicbrainz_client.get_release_group_releases(release_group_mbid)
 
 class LikeRequest(BaseModel):
     artist: str

@@ -440,13 +440,16 @@ async def download_album_task(
     user_id: Optional[str] = None,
     chosen_username: Optional[str] = None,
     chosen_folder: Optional[str] = None,
-    chosen_files: Optional[List[Dict[str, Any]]] = None
+    chosen_files: Optional[List[Dict[str, Any]]] = None,
+    release_mbid: Optional[str] = None,
+    record_type: Optional[str] = None,
 ):
     """Background task wrapper that restricts concurrent runs using a semaphore."""
     async with album_download_semaphore:
         return await _download_album_task_internal(
             download_id, artist, track_title, album, config, db, force,
-            user_id, chosen_username, chosen_folder, chosen_files
+            user_id, chosen_username, chosen_folder, chosen_files,
+            release_mbid, record_type
         )
 
 async def _download_album_task_internal(
@@ -460,10 +463,15 @@ async def _download_album_task_internal(
     user_id: Optional[str] = None,
     chosen_username: Optional[str] = None,
     chosen_folder: Optional[str] = None,
-    chosen_files: Optional[List[Dict[str, Any]]] = None
+    chosen_files: Optional[List[Dict[str, Any]]] = None,
+    release_mbid: Optional[str] = None,
+    record_type: Optional[str] = None,
 ):
     """Background task to search and download a full album via slskd with fallback strategies."""
-    logger.info(f"Starting background album download task for {artist} - {album} (ID: {download_id})")
+    logger.info(
+        f"Starting background {record_type or 'album'} download task for {artist} - {album} "
+        f"(ID: {download_id}, release MBID: {release_mbid or 'automatic'})"
+    )
     
     target_album_artist = None
     target_album_artists: list[str] = []
@@ -523,7 +531,9 @@ async def _download_album_task_internal(
         try:
             from backend.app.clients.musicbrainz import musicbrainz_client
             logger.info(f"Pre-fetching official tracklist for album '{artist} - {album}' from MusicBrainz...")
-            mb_album = await musicbrainz_client.get_album_tracklist(artist, album)
+            mb_album = await musicbrainz_client.get_album_tracklist(
+                artist, album, release_mbid=release_mbid
+            )
             if mb_album:
                 official_album_tracks = mb_album.get("tracks", [])
                 official_album_date = mb_album.get("release_date")
@@ -533,6 +543,17 @@ async def _download_album_task_internal(
                 logger.info(f"Fetched {len(official_album_tracks)} official tracks from MusicBrainz for '{album}' (MBID: {official_mb_release_mbid}).")
         except Exception as e:
             logger.warning(f"Could not pre-fetch official album tracklist from MusicBrainz for '{artist} - {album}': {e}")
+
+        # An edition selected by MBID must never fall back to a broad slskd
+        # search: that can put a different release (for example an EP or
+        # mixtape) into the requested album folder.
+        if release_mbid and not official_album_tracks:
+            logger.error(
+                f"Cannot resolve selected MusicBrainz release {release_mbid} for "
+                f"'{artist} - {album}'; refusing an unscoped album search."
+            )
+            await db.update_album_download_status(download_id, "failed")
+            return
 
         # The selected MusicBrainz release determines the preferred artwork.
         if official_mb_release_mbid:

@@ -334,8 +334,10 @@ export const apiService = {
     return resp.data;
   },
 
-  async downloadAlbum(artist: string, album: string, force: boolean = false): Promise<{ status: string; message: string }> {
-    const resp = await api.post<{ status: string; message: string }>('/api/download/album', { artist, album, force });
+  async downloadAlbum(artist: string, album: string, force: boolean = false, releaseMbid?: string, recordType?: string): Promise<{ status: string; message: string }> {
+    const resp = await api.post<{ status: string; message: string }>('/api/download/album', {
+      artist, album, force, release_mbid: releaseMbid, record_type: recordType,
+    });
     return resp.data;
   },
 
@@ -418,6 +420,11 @@ export const apiService = {
   async getArtistReleases(artistIdOrMbid: string | number, mbid?: string): Promise<any[]> {
     const target = mbid || artistIdOrMbid;
     const resp = await api.get<any[]>(`/api/artist/${target}/releases`);
+    return resp.data;
+  },
+
+  async getReleaseGroupReleases(releaseGroupMbid: string): Promise<any[]> {
+    const resp = await api.get<any[]>(`/api/release-group/${encodeURIComponent(releaseGroupMbid)}/releases`);
     return resp.data;
   },
 

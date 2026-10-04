@@ -4,6 +4,7 @@ import {
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, 
   CircularProgress, Avatar, Tooltip, CardActionArea, Divider, Chip,
   List, ListItem, ListItemAvatar, ListItemText, useTheme, useMediaQuery
+  , Select, MenuItem
 } from '@mui/material';
 import { 
   Person as ArtistIcon, 
@@ -66,8 +67,12 @@ export const MyArtists: React.FC = () => {
   const [releases, setReleases] = useState<any[]>([]);
   const [releasesLoading, setReleasesLoading] = useState<boolean>(false);
   const [hideAlbums, setHideAlbums] = useState<boolean>(false);
+  const [collapsedSmallSections, setCollapsedSmallSections] = useState<{ ep: boolean; single: boolean }>({ ep: false, single: false });
   const [downloadingKeys, setDownloadingKeys] = useState<Set<string>>(new Set());
   const [expandedAlbumId, setExpandedAlbumId] = useState<number | string | null>(null);
+  const [editionsByGroup, setEditionsByGroup] = useState<Record<string, any[]>>({});
+  const [selectedEditionByGroup, setSelectedEditionByGroup] = useState<Record<string, string>>({});
+  const [editionLoading, setEditionLoading] = useState<string | null>(null);
 
   const fetchArtists = async () => {
     setLoading(true);
@@ -201,14 +206,14 @@ export const MyArtists: React.FC = () => {
         const batchItems = initialReleases.map((r: Release) => ({
           artist: artist.artist_name,
           title: r.title,
-          album_id: (r.record_type === 'album' || r.record_type === 'ep') ? r.id : undefined
+          album_id: r.record_type !== 'single' ? r.id : undefined
         }));
         
         const results = await apiService.checkAlbumsBatch(batchItems);
         
         setReleases(prev => prev.map((rel, idx) => {
           const check = results[idx] || { exists: false, status: 'missing' };
-          const isAlbum = rel.record_type === 'album' || rel.record_type === 'ep';
+          const isAlbum = rel.record_type !== 'single';
           if (isAlbum) {
             return {
               ...rel,
@@ -244,11 +249,19 @@ export const MyArtists: React.FC = () => {
     }
   };
 
-  const triggerDownload = async (key: string, isAlbum: boolean, artistName: string, title: string, force: boolean) => {
+  const triggerDownload = async (
+    key: string,
+    isAlbum: boolean,
+    artistName: string,
+    title: string,
+    force: boolean,
+    releaseMbid?: string,
+    recordType?: string,
+  ) => {
     setDownloadingKeys(prev => new Set(prev).add(key));
     try {
       if (isAlbum) {
-        await apiService.downloadAlbum(artistName, title, force);
+        await apiService.downloadAlbum(artistName, title, force, releaseMbid, recordType);
         notify(`Full album download queued for "${artistName} - ${title}".`, 'success');
       } else {
         await apiService.downloadTrack(artistName, title, title, force);
@@ -267,17 +280,22 @@ export const MyArtists: React.FC = () => {
 
   const handleDownloadRelease = async (release: Release) => {
     if (!detailArtist) return;
-    const isAlbum = release.record_type === 'album' || release.record_type === 'ep';
-    const key = `${isAlbum ? 'album' : 'track'}-${detailArtist.artist_name}-${release.title}`;
+    const isAlbum = release.record_type !== 'single';
+    const selectedEdition = isAlbum ? (editionsByGroup[String(release.id)] || []).find(
+      edition => String(edition.id) === selectedEditionByGroup[String(release.id)]
+    ) : null;
+    const releaseTitle = selectedEdition?.title || release.title;
+    const releaseMbid = selectedEdition?.release_mbid || selectedEdition?.id;
+    const key = `${isAlbum ? 'album' : 'track'}-${detailArtist.artist_name}-${releaseTitle}`;
     
     let force = false;
     if (isAlbum) {
       if (release.albumStatus === 'full' && !release.upgradeAvailable) {
         confirm({
           title: 'Album Already Downloaded',
-          message: `You already have "${detailArtist.artist_name} - ${release.title}" fully in the desired quality. Download/overwrite anyway?`,
+          message: `You already have "${detailArtist.artist_name} - ${releaseTitle}" fully in the desired quality. Download/overwrite anyway?`,
           confirmText: 'Download Anyway',
-          onConfirm: () => triggerDownload(key, isAlbum, detailArtist.artist_name, release.title, true)
+          onConfirm: () => triggerDownload(key, isAlbum, detailArtist.artist_name, releaseTitle, true, releaseMbid, release.record_type)
         });
         return;
       }
@@ -285,15 +303,86 @@ export const MyArtists: React.FC = () => {
       if (release.exists && release.qualityStatus !== 'worse') {
         confirm({
           title: 'Track Already Downloaded',
-          message: `You already have "${detailArtist.artist_name} - ${release.title}" in the desired quality. Download/overwrite anyway?`,
+          message: `You already have "${detailArtist.artist_name} - ${releaseTitle}" in the desired quality. Download/overwrite anyway?`,
           confirmText: 'Download Anyway',
-          onConfirm: () => triggerDownload(key, isAlbum, detailArtist.artist_name, release.title, true)
+          onConfirm: () => triggerDownload(key, isAlbum, detailArtist.artist_name, releaseTitle, true, releaseMbid, release.record_type)
         });
         return;
       }
     }
 
-    await triggerDownload(key, isAlbum, detailArtist.artist_name, release.title, force);
+    await triggerDownload(key, isAlbum, detailArtist.artist_name, releaseTitle, force, releaseMbid, release.record_type);
+  };
+
+  const handleToggleAlbum = async (release: Release) => {
+    const releaseKey = String(release.id);
+    const opening = expandedAlbumId !== release.id;
+    setExpandedAlbumId(opening ? release.id : null);
+    if (!opening || editionsByGroup[releaseKey] || release.record_type === 'single') return;
+    setEditionLoading(releaseKey);
+    try {
+      const editions = await apiService.getReleaseGroupReleases(releaseKey);
+      setEditionsByGroup(prev => ({ ...prev, [releaseKey]: Array.isArray(editions) ? editions : [] }));
+    } catch (err) {
+      console.error('Failed to load album editions', err);
+      setEditionsByGroup(prev => ({ ...prev, [releaseKey]: [] }));
+    } finally {
+      setEditionLoading(null);
+    }
+  };
+
+  const handleEditionChange = async (release: Release, editionId: string) => {
+    const releaseKey = String(release.id);
+    const edition = (editionsByGroup[releaseKey] || []).find(item => String(item.id) === editionId);
+    if (!edition) return;
+    setSelectedEditionByGroup(prev => ({ ...prev, [releaseKey]: editionId }));
+    try {
+      const [check] = await apiService.checkAlbumsBatch([{
+        artist: detailArtist?.artist_name || '',
+        title: edition.title,
+        album_id: edition.id,
+      }]);
+      setReleases(prev => prev.map(item => item.id === release.id ? {
+        ...item,
+        exists: check?.exists,
+        albumStatus: check?.status,
+        upgradeAvailable: check?.upgrade_available,
+        tracks: check?.tracks || [],
+      } : item));
+    } catch (err) {
+      console.error('Failed to check selected album edition', err);
+    }
+  };
+
+  const renderEditionSelector = (release: Release) => {
+    if (release.record_type === 'single') return null;
+    const releaseKey = String(release.id);
+    const editions = editionsByGroup[releaseKey] || [];
+    if (!editions.length && editionLoading !== releaseKey) return null;
+    return (
+      <Box sx={{ px: { xs: 2, sm: 8 }, py: 1.25, bgcolor: 'rgba(155,108,255,.07)', borderBottom: '1px solid', borderColor: 'divider' }}>
+        <Typography variant="caption" sx={{ display: 'block', mb: 0.75, color: 'text.secondary', fontWeight: 800, letterSpacing: '.08em' }}>
+          EDITION
+        </Typography>
+        {editionLoading === releaseKey ? <CircularProgress size={18} /> : (
+          <Select
+            size="small"
+            fullWidth
+            value={selectedEditionByGroup[releaseKey] || ''}
+            displayEmpty
+            onChange={(event) => void handleEditionChange(release, String(event.target.value))}
+            sx={{ maxWidth: 620, bgcolor: 'background.paper', borderRadius: 2 }}
+          >
+            <MenuItem value=""><em>Automatic / best matching edition</em></MenuItem>
+            {editions.map(edition => (
+              <MenuItem key={edition.id} value={edition.id}>
+                {edition.title}{edition.release_date ? ` · ${new Date(edition.release_date).getFullYear()}` : ''}{edition.country ? ` · ${edition.country}` : ''}
+              </MenuItem>
+            ))}
+          </Select>
+        )}
+      </Box>
+    );
   };
 
   const sortByDate = (list: Release[]) => {
@@ -305,7 +394,9 @@ export const MyArtists: React.FC = () => {
   };
 
   const albums = sortByDate(releases.filter(r => r && r.record_type === 'album'));
-  const singlesAndEps = sortByDate(releases.filter(r => r && (r.record_type === 'single' || r.record_type === 'ep')));
+  const eps = sortByDate(releases.filter(r => r && r.record_type === 'ep'));
+  const singles = sortByDate(releases.filter(r => r && r.record_type === 'single'));
+  const singlesAndEps = [...eps, ...singles];
   const otherReleases = sortByDate(releases.filter(r => r && ['live', 'compilation', 'mixtape', 'remix', 'demo', 'other', 'interview', 'soundtrack', 'broadcast'].includes(r.record_type)));
 
   const filteredArtists = artists.filter(a => 
@@ -547,7 +638,12 @@ export const MyArtists: React.FC = () => {
                       {!hideAlbums && (
                         <List sx={{ bgcolor: 'action.hover', borderRadius: 3, overflow: 'hidden' }}>
                           {albums.map((release) => {
-                            const dlKey = `album-${detailArtist.artist_name}-${release.title}`;
+                            const releaseKey = String(release.id);
+                            const selectedEdition = (editionsByGroup[releaseKey] || []).find(
+                              edition => String(edition.id) === selectedEditionByGroup[releaseKey]
+                            );
+                            const downloadTitle = selectedEdition?.title || release.title;
+                            const dlKey = `album-${detailArtist.artist_name}-${downloadTitle}`;
                             const isDl = downloadingKeys.has(dlKey);
                             const isExpanded = expandedAlbumId === release.id;
                             return (
@@ -557,13 +653,15 @@ export const MyArtists: React.FC = () => {
                                     display="flex" 
                                     alignItems="center" 
                                     gap={2}
-                                    onClick={() => setExpandedAlbumId(isExpanded ? null : release.id)}
+                                    onClick={() => void handleToggleAlbum(release)}
                                     sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 }, flexGrow: 1 }}
                                   >
                                     <Avatar src={release.cover_medium} variant="rounded" sx={{ width: 50, height: 50 }} />
                                     <ListItemText 
                                       primary={<Typography sx={{ fontWeight: 700 }}>{release.title}</Typography>}
-                                      secondary={release.release_date ? `Released: ${new Date(release.release_date).getFullYear()}` : ''}
+                                      secondary={selectedEdition?.title
+                                        ? `Edition: ${selectedEdition.title}`
+                                        : (release.release_date ? `Released: ${new Date(release.release_date).getFullYear()}` : '')}
                                     />
                                   </Box>
                                   <Box display="flex" alignItems="center" gap={1.5}>
@@ -624,6 +722,31 @@ export const MyArtists: React.FC = () => {
                                     </IconButton>
                                   </Box>
                                 </ListItem>
+
+                                {isExpanded && (
+                                  <Box sx={{ px: { xs: 2, sm: 8 }, py: 1.25, bgcolor: 'rgba(155,108,255,.07)', borderBottom: '1px solid', borderColor: 'divider' }}>
+                                    <Typography variant="caption" sx={{ display: 'block', mb: 0.75, color: 'text.secondary', fontWeight: 800, letterSpacing: '.08em' }}>
+                                      EDITION
+                                    </Typography>
+                                    {editionLoading === releaseKey ? <CircularProgress size={18} /> : (editionsByGroup[releaseKey] || []).length > 0 ? (
+                                      <Select
+                                        size="small"
+                                        fullWidth
+                                        value={selectedEditionByGroup[releaseKey] || ''}
+                                        displayEmpty
+                                        onChange={(event) => void handleEditionChange(release, String(event.target.value))}
+                                        sx={{ maxWidth: 620, bgcolor: 'background.paper', borderRadius: 2 }}
+                                      >
+                                        <MenuItem value=""><em>Automatic / best matching edition</em></MenuItem>
+                                        {(editionsByGroup[releaseKey] || []).map(edition => (
+                                          <MenuItem key={edition.id} value={edition.id}>
+                                            {edition.title}{edition.release_date ? ` · ${new Date(edition.release_date).getFullYear()}` : ''}{edition.country ? ` · ${edition.country}` : ''}
+                                          </MenuItem>
+                                        ))}
+                                      </Select>
+                                    ) : <Typography variant="body2" color="text.secondary">No separate editions found.</Typography>}
+                                  </Box>
+                                )}
 
                                 {/* Collapsible Tracklist (same system as Library Manager) */}
                                 {isExpanded && release.tracks && release.tracks.length > 0 && (
@@ -711,7 +834,7 @@ export const MyArtists: React.FC = () => {
                                                 onClick={async () => {
                                                   setDownloadingKeys(prev => new Set(prev).add(trackDlKey));
                                                   try {
-                                                    await apiService.downloadTrack(detailArtist.artist_name, track.title, release.title, false);
+                                                      await apiService.downloadTrack(detailArtist.artist_name, track.title, downloadTitle, false);
                                                     notify(`Download queued for track "${detailArtist.artist_name} - ${track.title}".`, "success");
                                                   } catch (de: any) {
                                                     notify(de.response?.data?.detail || "Failed to download track.", "error");
@@ -743,16 +866,33 @@ export const MyArtists: React.FC = () => {
 
                   {albums.length > 0 && singlesAndEps.length > 0 && <Divider />}
 
-                  {/* Category: Singles & EPs */}
+                  {/* Categories: EPs and Singles */}
                   {singlesAndEps.length > 0 && (
                     <Box display="flex" flexDirection="column" gap={1.5}>
-                      <Typography variant="h6" sx={{ fontWeight: 800, display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <MusicIcon color="primary" /> Singles & EPs ({singlesAndEps.length})
-                      </Typography>
+                      <Box display="flex" gap={1} flexWrap="wrap">
+                        {[
+                          { type: 'ep' as const, label: 'EPs', count: eps.length },
+                          { type: 'single' as const, label: 'Singles', count: singles.length },
+                        ].filter(section => section.count > 0).map(section => {
+                          const collapsed = collapsedSmallSections[section.type];
+                          return (
+                            <Button
+                              key={section.type}
+                              size="small"
+                              variant={collapsed ? 'outlined' : 'contained'}
+                              startIcon={collapsed ? <ShowIcon /> : <HideIcon />}
+                              onClick={() => setCollapsedSmallSections(prev => ({ ...prev, [section.type]: !collapsed }))}
+                              sx={{ borderRadius: 2, fontWeight: 800 }}
+                            >
+                              <MusicIcon sx={{ mr: 0.5, fontSize: 18 }} /> {section.label} ({section.count})
+                            </Button>
+                          );
+                        })}
+                      </Box>
                       
                       <List sx={{ bgcolor: 'action.hover', borderRadius: 3, overflow: 'hidden' }}>
-                        {singlesAndEps.map((release) => {
-                          const isAlbumType = release.record_type === 'ep';
+                        {singlesAndEps.filter(release => !collapsedSmallSections[release.record_type as 'ep' | 'single']).map((release) => {
+                          const isAlbumType = release.record_type !== 'single';
                           const dlKey = `${isAlbumType ? 'album' : 'track'}-${detailArtist.artist_name}-${release.title}`;
                           const isDl = downloadingKeys.has(dlKey);
                           const isExpanded = expandedAlbumId === release.id;
@@ -763,7 +903,7 @@ export const MyArtists: React.FC = () => {
                                   display="flex" 
                                   alignItems="center" 
                                   gap={2}
-                                  onClick={() => isAlbumType && setExpandedAlbumId(isExpanded ? null : release.id)}
+                                  onClick={() => isAlbumType && void handleToggleAlbum(release)}
                                   sx={{ cursor: isAlbumType ? 'pointer' : 'default', '&:hover': { opacity: isAlbumType ? 0.85 : 1 }, flexGrow: 1 }}
                                 >
                                   <Avatar src={release.cover_medium} variant="rounded" sx={{ width: 50, height: 50 }} />
@@ -861,6 +1001,8 @@ export const MyArtists: React.FC = () => {
                                   </IconButton>
                                 </Box>
                               </ListItem>
+
+                              {isExpanded && renderEditionSelector(release)}
 
                               {/* Collapsible Tracklist for EP */}
                               {isExpanded && isAlbumType && release.tracks && release.tracks.length > 0 && (
@@ -998,7 +1140,7 @@ export const MyArtists: React.FC = () => {
                                   display="flex" 
                                   alignItems="center" 
                                   gap={2}
-                                  onClick={() => setExpandedAlbumId(isExpanded ? null : release.id)}
+                                  onClick={() => void handleToggleAlbum(release)}
                                   sx={{ cursor: 'pointer', '&:hover': { opacity: 0.85 }, flexGrow: 1 }}
                                 >
                                   <Avatar src={release.cover_medium} variant="rounded" sx={{ width: 50, height: 50 }} />
@@ -1065,6 +1207,7 @@ export const MyArtists: React.FC = () => {
                                   </IconButton>
                                 </Box>
                               </ListItem>
+                              {isExpanded && renderEditionSelector(release)}
                             </React.Fragment>
                           );
                         })}

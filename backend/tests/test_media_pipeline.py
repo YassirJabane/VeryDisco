@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from backend.app.clients.acoustid import AcoustIDClient
-from backend.app.clients.musicbrainz import _parse_artist_credit
+from backend.app.clients.musicbrainz import _parse_artist_credit, MusicBrainzClient
+import backend.app.clients.musicbrainz as musicbrainz_module
 from backend.app.sync import find_downloaded_file, safe_copy_file, safe_move_file, extract_main_artist, embed_metadata
 from backend.app.clients.deezer import DeezerClient, _result_matches
 from backend.app.album_sync import match_file_to_official_track, official_position_for_file
@@ -20,6 +21,45 @@ def test_musicbrainz_artist_credits_preserve_joinphrases():
     assert display == "Artist A feat. Artist B"
     assert artists == ["Artist A", "Artist B"]
     assert extract_main_artist("Florence and the Machine") == "Florence and the Machine"
+
+
+def test_musicbrainz_release_mbid_uses_exact_release_tracklist(monkeypatch):
+    async def fake_release(release_mbid):
+        assert release_mbid == "release-mbid"
+        return {
+            "id": release_mbid,
+            "title": "Scary Hours 2",
+            "date": "2021-03-05",
+            "artist-credit": [{"name": "Drake", "joinphrase": ""}],
+            "media": [{
+                "position": 1,
+                "format": "Digital Media",
+                "tracks": [{
+                    "position": 1,
+                    "recording": {"id": "recording-mbid", "title": "What's Next"},
+                    "artist-credit": [{"name": "Drake", "joinphrase": ""}],
+                }],
+            }],
+        }
+
+    monkeypatch.setattr(musicbrainz_module, "get_release_with_media", fake_release)
+    result = asyncio.run(MusicBrainzClient().get_album_tracklist(
+        "Drake", "Scary Hours 2", release_mbid="release-mbid"
+    ))
+
+    assert result["release_mbid"] == "release-mbid"
+    assert result["tracks"] == [{
+        "title": "What's Next",
+        "artist": "Drake",
+        "credited_artists": ["Drake"],
+        "track_position": 1,
+        "disk_number": 1,
+        "disc_num": 1,
+        "id": "recording-mbid",
+        "release_mbid": "release-mbid",
+        "nb_tracks": 1,
+        "nb_discs": 1,
+    }]
 
 
 def test_id3_preserves_display_and_explicit_artist_entities(tmp_path):

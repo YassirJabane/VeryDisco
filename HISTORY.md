@@ -170,3 +170,20 @@
 - Dal log di `Red Leather` verificato che l’audio trovato era corretto (`Future`, `Metro Boomin`, `J. Cole`), ma il metadato atteso locale conteneva solo `Future & Metro Boomin`; il confronto AcoustID rigettava erroneamente il featuring aggiuntivo dopo due tentativi.
 - `backend/app/clients/acoustid.py` ora accetta un risultato AcoustID che contiene in ordine tutti gli artisti del credito esplicito atteso, anche con ulteriori featuring. Restano rifiutati artisti mancanti, crediti diversi e nomi di band non esplicitamente separati.
 - Aggiunta regressione in `backend/tests/test_media_pipeline.py` per `Future & Metro Boomin` con `J. Cole`. Verifica: `backend/tests/test_media_pipeline.py` 22 passati e `py_compile` su `backend/app/clients/acoustid.py`; presenti solo 2 warning preesistenti su `datetime.utcnow`. Nessun download reale eseguito.
+
+## 2026-10-04 — Edizioni album e sezioni EP/singoli nella tab Artisti
+
+- La tab Artisti ora carica, per gli album MusicBrainz, le singole release appartenenti al release group tramite `backend/app/clients/musicbrainz.py`, nuovo endpoint `backend/app/main.py` e `frontend/src/api.ts`. L’utente può selezionare un’edizione specifica (per esempio `For All the Dogs Scary Hours Edition`), che viene usata per controllo libreria e download.
+- `frontend/src/components/MyArtists.tsx`: aggiunta selezione lazy delle edizioni, sezioni EP e Singles collassabili indipendentemente, mantenuta la sezione Albums collassabile e aggiornate le chiavi/download per l’edizione scelta.
+- `frontend/src/theme.ts`: scrollbar globali coerenti con la palette Neon Vinyl, incluse le aree scrollabili della finestra Artisti.
+- Verifica: TypeScript `tsc --noEmit` passato; `py_compile` backend passato. Nessuna chiamata live MusicBrainz o download reale eseguito.
+- Assunzione/limite: le edizioni vengono caricate quando si espande un album, per evitare una richiesta MusicBrainz per ogni release dell’artista. Il deploy beta deve ricreare il container e verificare manualmente `For All the Dogs`.
+
+## 2026-10-04 — Classificazione release Artisti tramite MBID
+
+- Corretto il percorso che dalla tab Artisti trattava EP, mixtape e altri release group come tracce singole o perdeva l’edizione selezionata. Tutte le release diverse da `single` usano ora il download multi-traccia e propagano `record_type` e release MBID dal frontend al task backend.
+- `MusicBrainzClient.get_album_tracklist()` usa direttamente la release indicata dal MBID, inclusi media, dischi e recording ID, senza ranking testuale. Se una release selezionata non è risolvibile, il task viene marcato `failed` e non esegue una ricerca slskd non vincolata che potrebbe scaricare un album diverso.
+- Persistiti `release_mbid` e `record_type` in `album_downloads`, comprese le migrazioni per database esistenti e il resume dopo riavvio. Aggiunto il selettore edizione anche nelle sezioni EP/mixtape/altre release.
+- File: `backend/app/{clients/musicbrainz.py,database.py,album_sync.py,main.py}`, `frontend/src/{api.ts,components/MyArtists.tsx}`, `backend/tests/test_media_pipeline.py`.
+- Verifiche: `pytest backend/tests/test_database.py backend/tests/test_media_pipeline.py -q` (28 passati, 5 warning preesistenti), `py_compile` sui quattro moduli backend e `frontend/node_modules/typescript/bin/tsc --noEmit` passati. Nessun download reale, chiamata live MusicBrainz o scansione completa eseguiti.
+- Assunzione/limite: i download album legacy privi di MBID mantengono il fallback precedente; il percorso della tab Artisti è ora vincolato quando l’utente seleziona un’edizione. Resta da verificare dopo il deploy beta il caso `For All the Dogs Scary Hours Edition` e un mixtape reale.
