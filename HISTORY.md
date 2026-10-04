@@ -264,3 +264,8 @@
 
 - Esteso il parser per rimuovere il badge concatenato `E` anche quando Spotify restituisce `EDrake` o `ENicki Minaj`, oltre alla forma `E Drake`.
 - Aggiunte regressioni per artisti singoli, collaborazioni e entrambe le varianti di markup.
+
+## 2026-10-04 — Card Library aggiornata dalla tracklist ufficiale
+
+- `frontend/src/components/LibraryManager.tsx`: dopo il caricamento della tracklist ufficiale, la card aggiorna `total_tracks` e lo stato usando il numero reale di tracce. Questo corregge il caso `Full (6/6)` visualizzato mentre la tracklist mostrava 9 tracce, di cui 3 mancanti.
+- Verifica: TypeScript `tsc --noEmit` passato; nessun download o scan reale eseguito.

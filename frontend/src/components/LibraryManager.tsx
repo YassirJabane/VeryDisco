@@ -378,6 +378,16 @@ const LibraryManager: React.FC = () => {
         const tracks = await apiService.getLibraryAlbumTracks(folderPath);
         if (isMounted.current) {
           setTracksMap(prev => ({ ...prev, [folderPath]: tracks }));
+          // The initial album summary only has local metadata. Once the
+          // official tracklist is loaded, use it as the source of truth so a
+          // partial album (for example 6 present out of 9) cannot remain 6/6.
+          if (tracks.length > 0) {
+            setAlbums(prev => prev.map(album => album.folder_path === folderPath ? {
+              ...album,
+              total_tracks: tracks.length,
+              status: album.track_count >= tracks.length ? 'fully' : 'partially',
+            } : album));
+          }
         }
       } catch {
         if (isMounted.current) showToast('Failed to load tracks details.', 'error');
