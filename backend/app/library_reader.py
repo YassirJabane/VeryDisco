@@ -1,11 +1,39 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 
 AUDIO_SUFFIXES = {".mp3", ".flac", ".m4a", ".mp4", ".ogg"}
+
+
+def match_official_album_tracks(official_tracks: list[dict[str, Any]],
+                                local_tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Match by title once per file; track numbers alone do not establish identity."""
+    def title_key(title: str) -> str:
+        return re.sub(r"[^\w]", "", (title or "")).casefold()
+
+    available: dict[str, list[dict[str, Any]]] = {}
+    for track in local_tracks:
+        key = title_key(track.get("title", ""))
+        if key:
+            available.setdefault(key, []).append(track)
+
+    result = []
+    for track in official_tracks:
+        candidates = available.get(title_key(track.get("title", "")), [])
+        matched = candidates.pop(0) if candidates else None
+        result.append({
+            "title": track.get("title", ""),
+            "track_num": track.get("track_position", 0),
+            "disc_num": track.get("disk_number", 1),
+            "exists": matched is not None,
+            "verified": True,
+            "filepath": matched.get("filepath") if matched else None,
+        })
+    return result
 
 
 def calculate_album_total_tracks(

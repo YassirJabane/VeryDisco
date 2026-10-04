@@ -1430,12 +1430,9 @@ class BatchCheckItem(BaseModel):
     album_id: Optional[str | int] = None
     expected_tracks: Optional[int] = None
 
-def _album_completion_status(track_count: int, rows: Optional[List[Dict[str, Any]]] = None,
-                             expected_tracks: Optional[int] = None) -> str:
-    """Only mark an album full when a known release total is actually complete."""
+def _album_completion_status(track_count: int, expected_tracks: Optional[int] = None) -> str:
+    """Only an external release total can certify completion; local tags may be 6/6 of 9."""
     expected = expected_tracks or 0
-    if not expected and rows:
-        expected = max((int(row.get("total_tracks") or 0) for row in rows), default=0)
     return "full" if expected > 0 and track_count >= expected else "partial"
 
 @app.post("/api/search/check/batch")
@@ -1502,7 +1499,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 cnt = len(matched_tracks)
                 results.append({
                     "exists": True,
-                    "status": _album_completion_status(cnt, matched_tracks, item.expected_tracks),
+                    "status": _album_completion_status(cnt, item.expected_tracks),
                     "upgrade_available": False,
                     "tracks": matched_tracks
                 })
@@ -1519,7 +1516,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 cnt = len(matched_tracks)
                 results.append({
                     "exists": True,
-                    "status": _album_completion_status(cnt, matched_tracks, item.expected_tracks),
+                    "status": _album_completion_status(cnt, item.expected_tracks),
                     "upgrade_available": False,
                     "tracks": matched_tracks
                 })
@@ -1596,7 +1593,7 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
                 cnt = mbid_res["track_count"]
                 return {
                     "exists": True,
-                    "status": _album_completion_status(cnt, expected_tracks=mbid_res.get("total_tracks")),
+                    "status": _album_completion_status(cnt),
                     "upgrade_available": False,
                     "tracks": []
                 }
@@ -1615,7 +1612,7 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
             cnt = db_res["track_count"]
             return {
                 "exists": True,
-                "status": _album_completion_status(cnt, db_res.get("tracks", [])),
+                "status": _album_completion_status(cnt),
                 "upgrade_available": False,
                 "tracks": db_res.get("tracks", [])
             }
@@ -4109,6 +4106,10 @@ async def get_library_scan_progress(request: Request):
 
 _album_list_lock = asyncio.Lock()
 
+def _local_album_status(track_count: int, declared_total: int) -> str:
+    """Local tags can prove missing tracks, but cannot prove an album complete."""
+    return "partially" if declared_total > track_count else "unverified"
+
 @app.get("/api/library/albums")
 async def get_library_albums(request: Request):
     """List all albums/singles in the current user's music directory from library_index DB."""
@@ -4143,12 +4144,7 @@ async def get_library_albums(request: Request):
 
             total_size = a.get("total_size") or 0
 
-            if tot_tracks > 0 and t_count >= tot_tracks:
-                status = 'fully'
-            elif tot_tracks > 0:
-                status = 'partially'
-            else:
-                status = 'fully'
+            status = _local_album_status(t_count, tot_tracks)
 
             ext_val = (a.get("ext") or "mp3").lstrip(".").upper()
             br_val = a.get("bitrate")
@@ -4173,7 +4169,12 @@ async def get_library_albums(request: Request):
         
     cached = await db.get_cache(f"albums_{user_id}")
     if cached is not None:
-        return cached
+        return [
+            {**album, "status": _local_album_status(
+                album.get("track_count") or 0, album.get("total_tracks") or 0
+            )}
+            for album in cached
+        ]
     return []
 
 
@@ -4334,50 +4335,8 @@ async def get_library_album_tracks(folder_path: str, request: Request):
 
     results = []
     if official_tracks:
-        from backend.app.clients.musicbrainz import _normalize, _fuzzy_match
-        used_local_indices = set()
-        matches = [None] * len(official_tracks)
-
-        # Pass 1: Title matching (exact normalized, substring, or fuzzy)
-        for idx, t in enumerate(official_tracks):
-            d_title = t.get("title", "")
-            d_norm = _normalize(d_title)
-            for l_idx, lt in enumerate(local_tracks):
-                if l_idx in used_local_indices:
-                    continue
-                lt_norm = _normalize(lt.get("title", ""))
-                if d_norm and lt_norm and (d_norm == lt_norm or d_norm in lt_norm or lt_norm in d_norm or _fuzzy_match(d_title, lt.get("title", ""))):
-                    matches[idx] = lt
-                    used_local_indices.add(l_idx)
-                    break
-
-        # Pass 2: Track number + Disc number matching for remaining un-matched
-        for idx, t in enumerate(official_tracks):
-            if matches[idx] is not None:
-                continue
-            d_num = t.get("track_position", 0)
-            disc_num = t.get("disk_number", 1)
-            for l_idx, lt in enumerate(local_tracks):
-                if l_idx in used_local_indices:
-                    continue
-                lt_disc = lt.get("disc_num", 1)
-                if lt.get("track_num") == d_num and lt_disc == disc_num:
-                    matches[idx] = lt
-                    used_local_indices.add(l_idx)
-                    break
-
-        for idx, t in enumerate(official_tracks):
-            d_title = t.get("title", "")
-            d_num = t.get("track_position", 0)
-            disc_num = t.get("disk_number", 1)
-            matched_lt = matches[idx]
-            results.append({
-                "title": d_title,
-                "track_num": d_num,
-                "disc_num": disc_num,
-                "exists": matched_lt is not None,
-                "filepath": matched_lt["filepath"] if matched_lt else None
-            })
+        from backend.app.library_reader import match_official_album_tracks
+        results = match_official_album_tracks(official_tracks, local_tracks)
     else:
         local_tracks.sort(key=lambda x: (x.get("disc_num", 1), x["track_num"]))
         for lt in local_tracks:
@@ -4386,6 +4345,7 @@ async def get_library_album_tracks(folder_path: str, request: Request):
                 "track_num": lt["track_num"],
                 "disc_num": lt.get("disc_num", 1),
                 "exists": True,
+                "verified": False,
                 "filepath": lt["filepath"]
             })
             

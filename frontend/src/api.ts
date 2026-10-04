@@ -209,13 +209,14 @@ export interface AlbumItem {
   folder_path: string;
   has_cover?: boolean;
   total_tracks?: number;
-  status: 'fully' | 'partially';
+  status: 'fully' | 'partially' | 'unverified';
 }
 
 export interface LibraryTrackItem {
   title: string;
   track_num: number;
   exists: boolean;
+  verified?: boolean;
   filepath: string | null;
 }
 

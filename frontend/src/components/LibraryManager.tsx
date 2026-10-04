@@ -40,7 +40,7 @@ function qualityChipColor(q: string): 'default' | 'success' | 'warning' | 'info'
 }
 
 // ── Album Card Component ─────────────────────────────────────────────────────
-const AlbumCard: React.FC<{
+export const AlbumCard: React.FC<{
   album: AlbumItem;
   onDelete: (album: AlbumItem) => void;
   expanded: boolean;
@@ -52,6 +52,16 @@ const AlbumCard: React.FC<{
   onEditLyrics: (track: LibraryTrackItem) => void;
   onPlayPreview: (track: LibraryTrackItem) => void;
 }> = ({ album, onDelete, expanded, onToggle, tracks, tracksLoading, onDownloadMissing, onEditTags, onEditLyrics, onPlayPreview }) => {
+  const officialTracks = tracks?.length && tracks.every(track => track.verified === true) ? tracks : undefined;
+  const presentCount = officialTracks ? officialTracks.filter(track => track.exists).length : album.track_count;
+  const totalCount = officialTracks ? officialTracks.length : album.total_tracks;
+  const status = officialTracks
+    ? (presentCount === officialTracks.length ? 'fully' : 'partially')
+    : album.status === 'fully' ? 'unverified' : album.status;
+  const statusLabel = status === 'fully' ? 'Full' : status === 'partially' ? 'Partial' : 'Unverified';
+  const countLabel = status === 'unverified'
+    ? `${album.track_count} local`
+    : totalCount && totalCount > 0 ? `${presentCount}/${totalCount}` : `${presentCount} local`;
   return (
     <Paper
       elevation={0}
@@ -131,13 +141,9 @@ const AlbumCard: React.FC<{
           </Box>
 
           <Chip
-            label={
-              album.status === 'fully'
-                ? `Full (${album.total_tracks && album.total_tracks > 0 ? `${album.track_count}/${album.total_tracks}` : album.track_count})`
-                : `Partial (${album.total_tracks && album.total_tracks > 0 ? `${album.track_count}/${album.total_tracks}` : album.track_count})`
-            }
+            label={`${statusLabel} (${countLabel})`}
             size="small"
-            color={album.status === 'fully' ? 'success' : 'warning'}
+            color={status === 'fully' ? 'success' : status === 'partially' ? 'warning' : 'default'}
             sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
           />
 
@@ -165,7 +171,7 @@ const AlbumCard: React.FC<{
             <Typography variant="caption" color="text.secondary" fontWeight={700}>
               ALBUM TRACKLIST
             </Typography>
-            {album.status === 'partially' && (
+            {officialTracks && status === 'partially' && (
               <Button
                 variant="outlined"
                 color="primary"
@@ -190,6 +196,11 @@ const AlbumCard: React.FC<{
             <Typography variant="caption" color="text.secondary">No tracks available.</Typography>
           ) : (
             <Stack spacing={1} sx={{ maxWidth: '100%' }}>
+              {!officialTracks && (
+                <Typography variant="caption" color="text.secondary">
+                  Official tracklist unavailable. Completeness cannot be verified from local tags alone.
+                </Typography>
+              )}
               {tracks.map((t, idx) => (
                 <Box
                   key={idx}
@@ -324,6 +335,8 @@ const LibraryManager: React.FC = () => {
               setLoading(true);
               const data = await apiService.getLibraryAlbums();
               setAlbums(data);
+              setTracksMap({});
+              setExpandedPath(null);
               setLoading(false);
               if (prog.status === 'completed') {
                 showToast("Library scan completed successfully.");
@@ -347,6 +360,8 @@ const LibraryManager: React.FC = () => {
       try {
         const data = await apiService.getLibraryAlbums();
         setAlbums(data);
+        setTracksMap({});
+        setExpandedPath(null);
       } catch {
         showToast('Failed to load library albums.', 'error');
       } finally {
@@ -378,16 +393,6 @@ const LibraryManager: React.FC = () => {
         const tracks = await apiService.getLibraryAlbumTracks(folderPath);
         if (isMounted.current) {
           setTracksMap(prev => ({ ...prev, [folderPath]: tracks }));
-          // The initial album summary only has local metadata. Once the
-          // official tracklist is loaded, use it as the source of truth so a
-          // partial album (for example 6 present out of 9) cannot remain 6/6.
-          if (tracks.length > 0) {
-            setAlbums(prev => prev.map(album => album.folder_path === folderPath ? {
-              ...album,
-              total_tracks: tracks.length,
-              status: album.track_count >= tracks.length ? 'fully' : 'partially',
-            } : album));
-          }
         }
       } catch {
         if (isMounted.current) showToast('Failed to load tracks details.', 'error');

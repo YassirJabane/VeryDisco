@@ -269,3 +269,12 @@
 
 - `frontend/src/components/LibraryManager.tsx`: dopo il caricamento della tracklist ufficiale, la card aggiorna `total_tracks` e lo stato usando il numero reale di tracce. Questo corregge il caso `Full (6/6)` visualizzato mentre la tracklist mostrava 9 tracce, di cui 3 mancanti.
 - Verifica: TypeScript `tsc --noEmit` passato; nessun download o scan reale eseguito.
+
+## 2026-10-04 — Completezza album verificata e revisione fix precedenti
+
+- Superati i fix del 2026-10-04 che trattavano `6/6` nei tag locali come prova di album completo o aggiornavano la card soltanto al primo expand. L’endpoint `/api/library/albums` ora restituisce `unverified` quando il totale locale non prova tracce mancanti; `partially` resta valido quando i tag indicano un totale maggiore dei file presenti. Anche la cache legacy viene normalizzata.
+- La card Library deriva sempre lo stato dalla tracklist ufficiale già caricata, contando le tracce effettivamente abbinate: nel caso Purple Rain passa da `Unverified (6 local)` a `Partial (6/9)`. Se MusicBrainz non risponde, mostra il motivo per cui la completezza non è verificabile. Al refresh della libreria viene invalidata la tracklist locale della UI.
+- `backend/app/library_reader.py`: matching titolo normalizzato uno a uno; rimosso il fallback per sola posizione, che poteva far risultare presente una canzone diversa. `backend/app/main.py`: ogni riga della tracklist espone `verified`.
+- Revisionato anche `/api/search/check/batch`: i metadati `total_tracks` locali non autorizzano più lo stato `full` senza un totale esterno; SearchMusic invia `nb_tracks` Deezer quando disponibile.
+- File: `backend/app/{main.py,library_reader.py}`, `frontend/src/{api.ts,components/LibraryManager.tsx,components/SearchMusic.tsx,__tests__/LibraryManager.test.tsx}`, `backend/tests/{test_library_reader.py,test_album_status.py}`.
+- Verifica: 14 test backend mirati, `py_compile` e `tsc --noEmit` passati. Il test UI della card è stato aggiunto, ma Vitest non ha terminato nel Windows locale (esbuild non legge `vite.config.ts` nel sandbox; fuori sandbox rimane fermo all’avvio anche con un worker). Da rieseguire nella beta/Docker. Limite: MusicBrainz può non fornire la tracklist o selezionare un’edizione differente; in quel caso la card resta prudente e il conteggio ufficiale va verificato nell’edizione scelta. Nessun download o scan completo eseguito.

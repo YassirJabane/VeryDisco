@@ -207,7 +207,8 @@ export const SearchMusic: React.FC = () => {
         const batchItems = items.map((item: any) => ({
           artist: item.artist?.name || '',
           title: item.title || '',
-          album_id: item.id
+          album_id: item.id,
+          expected_tracks: item.nb_tracks || undefined
         }));
         try {
           const checks = await apiService.checkAlbumsBatch(batchItems);
