@@ -43,6 +43,27 @@ export const getTheme = (mode: 'light' | 'dark') => {
           '::selection': {
             backgroundColor: mode === 'dark' ? 'rgba(155,108,255,0.35)' : 'rgba(109,61,245,0.18)',
           },
+          '*': {
+            scrollbarWidth: 'thin',
+            scrollbarColor: mode === 'dark' ? 'rgba(155,108,255,.55) transparent' : 'rgba(109,61,245,.38) transparent',
+          },
+          '*::-webkit-scrollbar': {
+            width: 8,
+            height: 8,
+          },
+          '*::-webkit-scrollbar-track': {
+            background: 'transparent',
+          },
+          '*::-webkit-scrollbar-thumb': {
+            background: mode === 'dark' ? 'rgba(155,108,255,.45)' : 'rgba(109,61,245,.32)',
+            borderRadius: 999,
+            border: '2px solid transparent',
+            backgroundClip: 'content-box',
+          },
+          '*::-webkit-scrollbar-thumb:hover': {
+            background: mode === 'dark' ? 'rgba(99,230,226,.7)' : 'rgba(8,127,140,.62)',
+            backgroundClip: 'content-box',
+          },
         },
       },
       MuiCard: {

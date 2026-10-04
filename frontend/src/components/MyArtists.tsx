@@ -67,7 +67,7 @@ export const MyArtists: React.FC = () => {
   const [releases, setReleases] = useState<any[]>([]);
   const [releasesLoading, setReleasesLoading] = useState<boolean>(false);
   const [hideAlbums, setHideAlbums] = useState<boolean>(false);
-  const [collapsedSmallSections, setCollapsedSmallSections] = useState<{ ep: boolean; single: boolean }>({ ep: false, single: false });
+  const [collapsedSmallSections, setCollapsedSmallSections] = useState<{ mixtape: boolean; ep: boolean; single: boolean }>({ mixtape: false, ep: false, single: false });
   const [downloadingKeys, setDownloadingKeys] = useState<Set<string>>(new Set());
   const [expandedAlbumId, setExpandedAlbumId] = useState<number | string | null>(null);
   const [editionsByGroup, setEditionsByGroup] = useState<Record<string, any[]>>({});
@@ -396,8 +396,16 @@ export const MyArtists: React.FC = () => {
   const albums = sortByDate(releases.filter(r => r && r.record_type === 'album'));
   const eps = sortByDate(releases.filter(r => r && r.record_type === 'ep'));
   const singles = sortByDate(releases.filter(r => r && r.record_type === 'single'));
+  const mixtapes = sortByDate(releases.filter(r => r && r.record_type === 'mixtape'));
+  const otherReleases = sortByDate(releases.filter(r => r && ['live', 'compilation', 'remix', 'demo', 'other', 'interview', 'soundtrack', 'broadcast'].includes(r.record_type)));
+  // Kept for the unreachable legacy JSX below; all visible compact categories
+  // now render through compactReleaseSections as independent bubbles.
   const singlesAndEps = [...eps, ...singles];
-  const otherReleases = sortByDate(releases.filter(r => r && ['live', 'compilation', 'mixtape', 'remix', 'demo', 'other', 'interview', 'soundtrack', 'broadcast'].includes(r.record_type)));
+  const compactReleaseSections = [
+    { type: 'mixtape' as const, label: 'Mixtapes', releases: mixtapes },
+    { type: 'ep' as const, label: 'EPs', releases: eps },
+    { type: 'single' as const, label: 'Singles', releases: singles },
+  ].filter(section => section.releases.length > 0);
 
   const filteredArtists = artists.filter(a => 
     (a?.artist_name || '').toLowerCase().includes((filterText || '').toLowerCase())
@@ -864,10 +872,99 @@ export const MyArtists: React.FC = () => {
                     </Box>
                   )}
 
-                  {albums.length > 0 && singlesAndEps.length > 0 && <Divider />}
+                  {albums.length > 0 && compactReleaseSections.length > 0 && <Divider />}
 
-                  {/* Categories: EPs and Singles */}
-                  {singlesAndEps.length > 0 && (
+                  {/* Autonomous categories: Mixtapes, EPs and Singles */}
+                  {compactReleaseSections.length > 0 && (
+                    <Box display="flex" flexDirection="column" gap={1.5}>
+                      {compactReleaseSections.map(section => {
+                        const collapsed = collapsedSmallSections[section.type];
+                        const isCollection = section.type !== 'single';
+                        return (
+                          <Box key={section.type} sx={{ bgcolor: 'action.hover', borderRadius: 3, overflow: 'hidden' }}>
+                            <Box sx={{ px: 2, py: 1, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <Typography variant="subtitle1" sx={{ fontWeight: 800, display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <MusicIcon color="primary" sx={{ fontSize: 19 }} /> {section.label} ({section.releases.length})
+                              </Typography>
+                              <Button
+                                size="small"
+                                variant={collapsed ? 'outlined' : 'contained'}
+                                startIcon={collapsed ? <ShowIcon /> : <HideIcon />}
+                                onClick={() => setCollapsedSmallSections(prev => ({ ...prev, [section.type]: !collapsed }))}
+                                sx={{ borderRadius: 2, fontWeight: 800 }}
+                              >
+                                {collapsed ? 'Show' : 'Hide'}
+                              </Button>
+                            </Box>
+                            {!collapsed && (
+                              <List disablePadding>
+                                {section.releases.map((release) => {
+                                  const isAlbumType = isCollection;
+                                  const dlKey = `${isAlbumType ? 'album' : 'track'}-${detailArtist.artist_name}-${release.title}`;
+                                  const isDl = downloadingKeys.has(dlKey);
+                                  const isExpanded = expandedAlbumId === release.id;
+                                  return (
+                                    <React.Fragment key={release.id}>
+                                      <ListItem divider sx={{ py: 1.5, px: 2, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2 }}>
+                                        <Box
+                                          display="flex"
+                                          alignItems="center"
+                                          gap={2}
+                                          onClick={() => isAlbumType && void handleToggleAlbum(release)}
+                                          sx={{ cursor: isAlbumType ? 'pointer' : 'default', '&:hover': { opacity: isAlbumType ? 0.85 : 1 }, flexGrow: 1 }}
+                                        >
+                                          <Avatar src={release.cover_medium} variant="rounded" sx={{ width: 50, height: 50 }} />
+                                          <ListItemText
+                                            primary={<Typography sx={{ fontWeight: 700 }}>{release.title}</Typography>}
+                                            secondary={`${(release.record_type || section.type).toUpperCase()} ${release.release_date ? `• ${new Date(release.release_date).getFullYear()}` : ''}`}
+                                          />
+                                        </Box>
+                                        <Box display="flex" alignItems="center" gap={1.5}>
+                                          {release.checking ? <CircularProgress size={16} /> : (
+                                            <Chip
+                                              label={isAlbumType
+                                                ? ((release.albumStatus || 'missing') === 'full'
+                                                  ? (release.upgradeAvailable ? 'Fully in Library (Upgrade)' : 'Fully in Library')
+                                                  : (release.albumStatus === 'partial' ? 'Partially in Library' : 'Not in Library'))
+                                                : (release.exists ? 'Already in Library' : 'Not in Library')}
+                                              size="small"
+                                              color={isAlbumType
+                                                ? ((release.albumStatus || 'missing') === 'full' ? 'success' : ((release.albumStatus || 'missing') === 'partial' ? 'info' : 'error'))
+                                                : (release.exists ? 'success' : 'error')}
+                                              variant="outlined"
+                                            />
+                                          )}
+                                          <IconButton color="primary" disabled={isDl || release.checking} onClick={() => handleDownloadRelease(release)}>
+                                            {isDl ? <CircularProgress size={20} color="inherit" /> : <DownloadIcon />}
+                                          </IconButton>
+                                        </Box>
+                                      </ListItem>
+                                      {isExpanded && renderEditionSelector(release)}
+                                      {isExpanded && isAlbumType && release.tracks && release.tracks.length > 0 && (
+                                        <Box sx={{ pl: { xs: 2, sm: 8 }, pr: 2, py: 1.5, bgcolor: 'action.selected', borderBottom: '1px solid', borderColor: 'divider' }}>
+                                          <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1, color: 'text.secondary' }}>Tracklist</Typography>
+                                          <List disablePadding>
+                                            {release.tracks.map((track: any, tidx: number) => (
+                                              <ListItem key={tidx} sx={{ py: 0.5, px: 0 }}>
+                                                <Typography variant="body2" sx={{ fontWeight: 600 }}>{tidx + 1}. {track.title}</Typography>
+                                              </ListItem>
+                                            ))}
+                                          </List>
+                                        </Box>
+                                      )}
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </List>
+                            )}
+                          </Box>
+                        );
+                      })}
+                    </Box>
+                  )}
+
+                  {/* Legacy combined EP/single block removed: each category above is now its own bubble. */}
+                  {false && singles.length > 0 && (
                     <Box display="flex" flexDirection="column" gap={1.5}>
                       <Box display="flex" gap={1} flexWrap="wrap">
                         {[
@@ -893,7 +990,7 @@ export const MyArtists: React.FC = () => {
                       <List sx={{ bgcolor: 'action.hover', borderRadius: 3, overflow: 'hidden' }}>
                         {singlesAndEps.filter(release => !collapsedSmallSections[release.record_type as 'ep' | 'single']).map((release) => {
                           const isAlbumType = release.record_type !== 'single';
-                          const dlKey = `${isAlbumType ? 'album' : 'track'}-${detailArtist.artist_name}-${release.title}`;
+                          const dlKey = `${isAlbumType ? 'album' : 'track'}-${detailArtist?.artist_name || ''}-${release.title}`;
                           const isDl = downloadingKeys.has(dlKey);
                           const isExpanded = expandedAlbumId === release.id;
                           return (
@@ -1010,7 +1107,7 @@ export const MyArtists: React.FC = () => {
                                   <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1, color: 'text.secondary' }}>Tracklist</Typography>
                                   <List disablePadding>
                                     {release.tracks.map((track: any, tidx: number) => {
-                                      const trackDlKey = `track-${detailArtist.artist_name}-${track.title}`;
+                                        const trackDlKey = `track-${detailArtist?.artist_name || ''}-${track.title}`;
                                       const isTrackDl = downloadingKeys.has(trackDlKey);
                                       return (
                                         <ListItem 
@@ -1056,7 +1153,7 @@ export const MyArtists: React.FC = () => {
                                                   sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
                                                   onClick={async () => {
                                                     try {
-                                                      await apiService.likeTrack(detailArtist.artist_name, track.title, release.title, 1);
+                                                      await apiService.likeTrack(detailArtist?.artist_name || '', track.title, release.title, 1);
                                                       notify("Loved on ListenBrainz!", "success");
                                                     } catch (de: any) {
                                                       notify(de.response?.data?.detail || "Failed to submit love feedback.", "error");
@@ -1073,7 +1170,7 @@ export const MyArtists: React.FC = () => {
                                                   sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
                                                   onClick={async () => {
                                                     try {
-                                                      await apiService.likeTrack(detailArtist.artist_name, track.title, release.title, -1);
+                                                      await apiService.likeTrack(detailArtist?.artist_name || '', track.title, release.title, -1);
                                                       notify("Hated on ListenBrainz!", "info");
                                                     } catch (de: any) {
                                                       notify(de.response?.data?.detail || "Failed to submit hate feedback.", "error");
@@ -1090,8 +1187,8 @@ export const MyArtists: React.FC = () => {
                                                 onClick={async () => {
                                                   setDownloadingKeys(prev => new Set(prev).add(trackDlKey));
                                                   try {
-                                                    await apiService.downloadTrack(detailArtist.artist_name, track.title, track.title, false);
-                                                    notify(`Download queued for track "${detailArtist.artist_name} - ${track.title}".`, "success");
+                                                    await apiService.downloadTrack(detailArtist?.artist_name || '', track.title, track.title, false);
+                                                    notify(`Download queued for track "${detailArtist?.artist_name || ''} - ${track.title}".`, "success");
                                                   } catch (de: any) {
                                                     notify(de.response?.data?.detail || "Failed to download track.", "error");
                                                   } finally {

@@ -2095,22 +2095,29 @@ async def search_track_candidates(artist: str, title: str, album: Optional[str] 
     )
     
     from backend.app.sync import build_track_search_queries
-    query = build_track_search_queries(artist, title, album)[0]
-    
-    logger.info(f"Manual single track search triggered for: '{query}'")
+    search_queries = build_track_search_queries(artist, title, album)
     audio_quality_dict = cfg.slskd.audio_quality.model_dump() if hasattr(cfg.slskd.audio_quality, "model_dump") else dict(cfg.slskd.audio_quality)
-    
-    candidates, search_id = await slskd_client.search_candidates(
-        artist=artist,
-        title=title,
-        query=query,
-        audio_quality=audio_quality_dict,
-        album=album,
-        search_timeout=cfg.timeouts.search_seconds,
-        filter_quality=False
-    )
-    
-    if search_id:
+
+    candidates = []
+    search_ids = []
+    for strategy_idx, query in enumerate(search_queries):
+        logger.info(f"Manual single track search strategy {strategy_idx + 1}/{len(search_queries)}: '{query}'")
+        found, search_id = await slskd_client.search_candidates(
+            artist=artist,
+            title=title,
+            query=query,
+            audio_quality=audio_quality_dict,
+            album=album,
+            search_timeout=cfg.timeouts.search_seconds,
+            filter_quality=False
+        )
+        candidates = found
+        if search_id:
+            search_ids.append(search_id)
+        if candidates:
+            break
+
+    for search_id in search_ids:
         try:
             await slskd_client.delete_search(search_id)
         except Exception:

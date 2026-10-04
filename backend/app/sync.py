@@ -1250,8 +1250,52 @@ def wildcard_artist(artist: str) -> str:
     return prefix + "*" + artist[1:]
 
 
+def wildcard_artist_variants(artist: str) -> list[str]:
+    """Return progressively broader artist spellings for Soulseek queries."""
+    clean = re.sub(r"\s+", " ", artist or "").strip()
+    if not clean:
+        return []
+
+    words = clean.split()
+    variants = [clean]
+    if len(clean) >= 3:
+        variants.append(wildcard_artist(clean))
+
+    # Some peers index multi-word artist folders inconsistently. Wildcarding
+    # each word separately catches those folders without making the first
+    # query unnecessarily broad.
+    if len(words) > 1:
+        for index, word in enumerate(words):
+            if len(word) >= 3:
+                wildcard_words = words.copy()
+                wildcard_words[index] = "*" + word[1:]
+                variants.append(" ".join(wildcard_words))
+        if all(len(word) >= 3 for word in words):
+            variants.append(" ".join("*" + word[1:] for word in words))
+
+    return list(dict.fromkeys(variants))
+
+
+def wildcard_text_variants(text: str) -> list[str]:
+    """Expand title words so blocked/exact tokens can still be searched."""
+    clean = re.sub(r"\s+", " ", text or "").strip()
+    if not clean:
+        return []
+
+    words = clean.split()
+    variants = [clean]
+    for index, word in enumerate(words):
+        if len(word) >= 3:
+            wildcard_words = words.copy()
+            wildcard_words[index] = "*" + word[1:]
+            variants.append(" ".join(wildcard_words))
+    if len(words) > 1 and all(len(word) >= 3 for word in words):
+        variants.append(" ".join("*" + word[1:] for word in words))
+    return list(dict.fromkeys(variants))
+
+
 def build_track_search_queries(artist: str, title: str, album: str = "") -> list[str]:
-    """Build slskd queries without '-' exclusion syntax."""
+    """Build progressive slskd queries without '-' exclusion syntax."""
     def query_part(value: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", value or "")).strip()
 
@@ -1267,11 +1311,23 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     }:
         queries.append(query_part(f"{clean_title} {main_artist} {clean_album}"))
 
-    for query in (
+    title_variants = wildcard_text_variants(clean_title)
+    queries_to_add = [
         query_part(f"{clean_title} {main_artist}"),
         query_part(f"{clean_title} {clean_artist}"),
-        query_part(f"{clean_title} {wildcard_artist(main_artist)}"),
-    ):
+        *(query_part(f"{title_variant} {main_artist}") for title_variant in title_variants[1:]),
+        # Search by title alone as a deliberate fallback. slskd may return
+        # many files, but _parse_candidates still applies the strict artist /
+        # album filter; this is more reliable than excluding a valid track
+        # because the artist folder is indexed differently.
+        query_part(clean_title),
+        *(query_part(title_variant) for title_variant in title_variants[1:]),
+    ]
+    queries_to_add.extend(
+        query_part(f"{clean_title} {artist_variant}")
+        for artist_variant in wildcard_artist_variants(main_artist)[1:]
+    )
+    for query in queries_to_add:
         if query and query not in queries:
             queries.append(query)
     return queries

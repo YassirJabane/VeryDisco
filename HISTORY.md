@@ -187,3 +187,25 @@
 - File: `backend/app/{clients/musicbrainz.py,database.py,album_sync.py,main.py}`, `frontend/src/{api.ts,components/MyArtists.tsx}`, `backend/tests/test_media_pipeline.py`.
 - Verifiche: `pytest backend/tests/test_database.py backend/tests/test_media_pipeline.py -q` (28 passati, 5 warning preesistenti), `py_compile` sui quattro moduli backend e `frontend/node_modules/typescript/bin/tsc --noEmit` passati. Nessun download reale, chiamata live MusicBrainz o scansione completa eseguiti.
 - Assunzione/limite: i download album legacy privi di MBID mantengono il fallback precedente; il percorso della tab Artisti è ora vincolato quando l’utente seleziona un’edizione. Resta da verificare dopo il deploy beta il caso `For All the Dogs Scary Hours Edition` e un mixtape reale.
+
+## 2026-10-04 — Bubble autonome per Mixtapes, EPs e Singles
+
+- `frontend/src/components/MyArtists.tsx`: separate le categorie compatte in bubble indipendenti e collassabili, ordinate `Mixtapes`, `EPs`, `Singles`. Gli EP non condividono più il contenitore dei singoli; la selezione di edizione, l’espansione e il download multi-traccia restano disponibili per tutte le release non-singolo.
+- `frontend/src/theme.ts`: confermato e mantenuto lo stile scrollbar Neon Vinyl per scrollbar native e aree scrollabili, con varianti dark/light e stato hover coerente col tema.
+- Verifica: `frontend/node_modules/typescript/bin/tsc --noEmit` passato. Nessun download reale o test MusicBrainz live eseguito.
+- Assunzione/limite: le release classificate da MusicBrainz come `other`/live/compilation/remix restano nella bubble separata `Other Releases`; i mixtape sono ora nella bubble dedicata sopra agli EP.
+
+## 2026-10-04 — Fallback wildcard per titoli con artisti molto popolari
+
+- `backend/app/sync.py`: estesa la costruzione delle query slskd con wildcard progressive per artisti composti e con un fallback titolo-only. Il titolo-only è intenzionale: i risultati continuano a passare dal filtro rigoroso artista/album, ma la ricerca non viene esclusa quando l’artista è molto popolare o indicizzato in cartelle non uniformi. Questo copre casi come `Prince — Purple Rain`.
+- `backend/app/main.py`: la ricerca manuale delle tracce prova le query progressive fino al primo insieme di candidati e pulisce tutti gli ID di ricerca creati.
+- `backend/tests/test_search_queries.py`: aggiunte regressioni per `Purple Rain`, le wildcard di `Kanye West` e l’assenza della sintassi negativa col trattino.
+- Verifica: `pytest backend/tests/test_search_queries.py -q` (4 passati) e `py_compile` su `backend/app/{sync.py,main.py}` passati. Nessuna ricerca slskd reale eseguita.
+- Assunzione/limite: il titolo-only può produrre più risultati lato slskd, ma non allenta il filtro locale di artista, album, qualità e keyword; la verifica peer reale resta da fare dopo il deploy beta.
+
+## 2026-10-04 — Wildcard anche sui termini del titolo
+
+- Estesa la strategia di ricerca in `backend/app/sync.py`: oltre alle wildcard sull’artista, vengono provate varianti del titolo come `*urple Rain`, `Purple *ain` e `*urple *ain`. Questo copre i casi in cui slskd tratta il titolo esatto come termine bloccato o non indicizzato correttamente.
+- Aggiornate le regressioni in `backend/tests/test_search_queries.py` per `Purple Rain`, gli artisti composti e l’espansione dei singoli termini del titolo.
+- Verifica: `pytest backend/tests/test_search_queries.py -q` (5 passati) e `py_compile` su `backend/app/{sync.py,main.py}` passati; nessuna ricerca slskd reale eseguita.
+- Limite: il wildcarding aumenta la copertura ma può aumentare i risultati intermedi; il filtro locale rigoroso resta obbligatorio e invariato.
