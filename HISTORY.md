@@ -259,3 +259,8 @@
 - Il backend confronta ora le tracce presenti con `total_tracks` dei tag/DB oppure con `expected_tracks` fornito dall’edizione MusicBrainz; se il totale è ignoto lo stato resta `partial`.
 - Aggiornati `backend/app/database.py`, `backend/app/main.py`, `frontend/src/{api.ts,components/MyArtists.tsx}` e aggiunta regressione `backend/tests/test_album_status.py`.
 - Verifica: 11 test backend passati, `py_compile` e TypeScript `tsc --noEmit` passati.
+
+## 2026-10-04 — Badge explicit Spotify senza spazio
+
+- Esteso il parser per rimuovere il badge concatenato `E` anche quando Spotify restituisce `EDrake` o `ENicki Minaj`, oltre alla forma `E Drake`.
+- Aggiunte regressioni per artisti singoli, collaborazioni e entrambe le varianti di markup.
