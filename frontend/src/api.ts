@@ -331,7 +331,7 @@ export const apiService = {
     return resp.data;
   },
 
-  async checkAlbumsBatch(items: Array<{ artist: string; title: string; album_id?: number | string }>): Promise<any[]> {
+  async checkAlbumsBatch(items: Array<{ artist: string; title: string; album_id?: number | string; expected_tracks?: number }>): Promise<any[]> {
     const resp = await api.post<any[]>('/api/search/check/batch', items);
     return resp.data;
   },

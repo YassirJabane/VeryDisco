@@ -1428,6 +1428,15 @@ class BatchCheckItem(BaseModel):
     artist: str
     title: str
     album_id: Optional[str | int] = None
+    expected_tracks: Optional[int] = None
+
+def _album_completion_status(track_count: int, rows: Optional[List[Dict[str, Any]]] = None,
+                             expected_tracks: Optional[int] = None) -> str:
+    """Only mark an album full when a known release total is actually complete."""
+    expected = expected_tracks or 0
+    if not expected and rows:
+        expected = max((int(row.get("total_tracks") or 0) for row in rows), default=0)
+    return "full" if expected > 0 and track_count >= expected else "partial"
 
 @app.post("/api/search/check/batch")
 async def batch_check_existence(items: List[BatchCheckItem], request: Request):
@@ -1493,7 +1502,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 cnt = len(matched_tracks)
                 results.append({
                     "exists": True,
-                    "status": "full" if cnt >= 4 else "partial",
+                    "status": _album_completion_status(cnt, matched_tracks, item.expected_tracks),
                     "upgrade_available": False,
                     "tracks": matched_tracks
                 })
@@ -1510,7 +1519,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 cnt = len(matched_tracks)
                 results.append({
                     "exists": True,
-                    "status": "full" if cnt >= 4 else "partial",
+                    "status": _album_completion_status(cnt, matched_tracks, item.expected_tracks),
                     "upgrade_available": False,
                     "tracks": matched_tracks
                 })
@@ -1587,7 +1596,7 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
                 cnt = mbid_res["track_count"]
                 return {
                     "exists": True,
-                    "status": "full" if cnt >= 4 else "partial",
+                    "status": _album_completion_status(cnt, expected_tracks=mbid_res.get("total_tracks")),
                     "upgrade_available": False,
                     "tracks": []
                 }
@@ -1606,7 +1615,7 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
             cnt = db_res["track_count"]
             return {
                 "exists": True,
-                "status": "full" if cnt >= 4 else "partial",
+                "status": _album_completion_status(cnt, db_res.get("tracks", [])),
                 "upgrade_available": False,
                 "tracks": db_res.get("tracks", [])
             }
@@ -1623,7 +1632,7 @@ async def check_existence(artist: str, title: str, request: Request, album_id: O
         if local_track_count > 0:
             return {
                 "exists": True,
-                "status": "full" if local_track_count >= 4 else "partial",
+                "status": _album_completion_status(local_track_count),
                 "upgrade_available": False,
                 "tracks": []
             }

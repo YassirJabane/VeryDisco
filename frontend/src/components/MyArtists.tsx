@@ -38,6 +38,7 @@ interface Release {
   cover_medium: string;
   release_date: string;
   record_type: string;
+  track_count?: number;
   tracks?: any[];
   // Enriched properties
   exists?: boolean;
@@ -206,7 +207,8 @@ export const MyArtists: React.FC = () => {
         const batchItems = initialReleases.map((r: Release) => ({
           artist: artist.artist_name,
           title: r.title,
-          album_id: r.record_type !== 'single' ? r.id : undefined
+          album_id: r.record_type !== 'single' ? r.id : undefined,
+          expected_tracks: r.track_count || undefined
         }));
         
         const results = await apiService.checkAlbumsBatch(batchItems);
@@ -360,6 +362,7 @@ export const MyArtists: React.FC = () => {
         artist: detailArtist?.artist_name || '',
         title: edition.title,
         album_id: edition.id,
+        expected_tracks: edition.track_count || undefined,
       }]);
       let remoteTracks = check?.tracks || [];
       try {

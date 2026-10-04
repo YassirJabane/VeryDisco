@@ -1334,13 +1334,13 @@ class Database:
         """Return track count for a given album MBID."""
         async with self.get_db() as db:
             async with db.execute(
-                "SELECT COUNT(*) as cnt FROM library_index WHERE user_id = ? AND album_mbid = ?",
+                "SELECT COUNT(*) as cnt, MAX(total_tracks) as total_tracks FROM library_index WHERE user_id = ? AND album_mbid = ?",
                 (user_id, album_mbid)
             ) as cursor:
                 row = await cursor.fetchone()
                 if not row or row["cnt"] == 0:
                     return None
-                return {"track_count": row["cnt"]}
+                return {"track_count": row["cnt"], "total_tracks": row["total_tracks"] or 0}
 
     async def query_library_issues(self, user_id: str) -> List[Dict[str, Any]]:
         """Return all rows that have at least one issue flag set."""

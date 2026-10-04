@@ -252,3 +252,10 @@
 - Corretto il parser dell’embed Spotify: il badge `E` non viene più incluso nel nome dell’artista, quindi `EDrake` torna a essere `Drake` e le ricerche slskd ricevono il nome corretto.
 - Aggiunta regressione in `backend/tests/test_spotify_parser.py` per artisti singoli e collaborazioni explicit.
 - Verifica: test parser Spotify, `py_compile` e suite query backend.
+
+## 2026-10-04 — Stato album completo solo con track total verificato
+
+- Corretto il controllo album in `/api/search/check` e `/api/search/check/batch`: rimossa la soglia arbitraria `>= 4`, che segnava `Purple Rain` come full con 6 tracce presenti su 9.
+- Il backend confronta ora le tracce presenti con `total_tracks` dei tag/DB oppure con `expected_tracks` fornito dall’edizione MusicBrainz; se il totale è ignoto lo stato resta `partial`.
+- Aggiornati `backend/app/database.py`, `backend/app/main.py`, `frontend/src/{api.ts,components/MyArtists.tsx}` e aggiunta regressione `backend/tests/test_album_status.py`.
+- Verifica: 11 test backend passati, `py_compile` e TypeScript `tsc --noEmit` passati.
