@@ -234,6 +234,13 @@
 - Assunzioni/limiti: l’import richiede `spotify.client_id` e `spotify.client_secret` nel config YAML, una playlist pubblica e un’app Spotify Developer; non è stata introdotta autenticazione utente Spotify per playlist private.
 - Aperto: configurare le credenziali Spotify nella beta e verificare un’import reale end-to-end con Navidrome.
 
+## 2026-10-04 — Import Spotify senza credenziali API
+
+- Il resolver Spotify prova ora prima l’embed pubblico `open.spotify.com/embed/playlist/...` e ricava le tracce server-rendered senza `client_id` o `client_secret`.
+- Le credenziali API restano solo come fallback opzionale se l’embed non espone tracce; non sono più necessarie per l’uso normale con playlist pubbliche.
+- Verifica: parser locale su playlist sintetica, `py_compile` backend e 6 test query passati. La chiamata live dal container Windows non è stata eseguita perché il sandbox non consente la connessione diretta a Spotify; l’embed pubblico è stato verificato tramite accesso web.
+- Limite: il parsing dell’embed non è un contratto API ufficiale e può richiedere manutenzione se Spotify cambia il markup; playlist private/login-only non sono supportate.
+
 ## 2026-10-04 — Ricarica tracklist dopo cambio edizione
 
 - `frontend/src/components/MyArtists.tsx`: corretto il cache check delle edizioni vuote, che impediva retry successivi soprattutto per mixtape; il cambio edizione ora invalida la tracklist precedente, mostra il caricamento e richiede la tracklist della release MBID selezionata.
