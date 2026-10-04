@@ -224,6 +224,16 @@
 - Verifica: TypeScript `tsc --noEmit`, `py_compile` su `backend/app/main.py` e `pytest backend/tests/test_search_queries.py -q` (5 passati). Nessuna chiamata live Deezer/MusicBrainz o download reale eseguiti.
 - Limite: la disponibilità della tracklist dipende dalla risposta del provider; in caso di errore viene mostrato uno stato vuoto senza bloccare download e selezione edizione.
 
+## 2026-10-04 — Importazione playlist Spotify
+
+- Aggiunto il client Spotify Web API con autenticazione client-credentials e validazione dei link playlist.
+- Aggiunti gli endpoint `/api/spotify/playlist/preview` e `/api/spotify/playlist/import`, più la tab UI `Playlist importing` con anteprima tracce e avvio del download.
+- Riutilizzato `run_sync` per indice libreria, skip dei brani già presenti, staging, M3U e scansione Navidrome. Le tracce nuove dell’import usano il tag album `Playlist Tracks` e non vengono collocate negli album originali.
+- File: `backend/app/clients/spotify.py`, `backend/app/config.py`, `backend/app/main.py`, `backend/app/sync.py`, `frontend/src/{App.tsx,api.ts,components/PlaylistImport.tsx}`.
+- Verifica: `\.venv\Scripts\python.exe -m py_compile ...` e `\.venv\Scripts\python.exe -m pytest backend/tests/test_search_queries.py -q` (6 passati); TypeScript `tsc --noEmit` passato. Nessuna chiamata live Spotify o download reale eseguito.
+- Assunzioni/limiti: l’import richiede `spotify.client_id` e `spotify.client_secret` nel config YAML, una playlist pubblica e un’app Spotify Developer; non è stata introdotta autenticazione utente Spotify per playlist private.
+- Aperto: configurare le credenziali Spotify nella beta e verificare un’import reale end-to-end con Navidrome.
+
 ## 2026-10-04 — Ricarica tracklist dopo cambio edizione
 
 - `frontend/src/components/MyArtists.tsx`: corretto il cache check delle edizioni vuote, che impediva retry successivi soprattutto per mixtape; il cambio edizione ora invalida la tracklist precedente, mostra il caricamento e richiede la tracklist della release MBID selezionata.

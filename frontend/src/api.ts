@@ -260,6 +260,14 @@ export interface MaintenanceIssue {
 }
 
 export const apiService = {
+  async previewSpotifyPlaylist(url: string): Promise<any> {
+    const resp = await api.post('/api/spotify/playlist/preview', { url });
+    return resp.data;
+  },
+  async importSpotifyPlaylist(url: string): Promise<any> {
+    const resp = await api.post('/api/spotify/playlist/import', { url });
+    return resp.data;
+  },
   async getConfig(): Promise<GetConfigResponse> {
     const resp = await api.get<GetConfigResponse>('/api/config');
     return resp.data;

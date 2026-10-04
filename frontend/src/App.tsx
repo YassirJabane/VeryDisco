@@ -59,14 +59,15 @@ import ArtistAliases from './components/ArtistAliases';
 import MusicBrainzInspector from './components/MusicBrainzInspector';
 import MusicRequests from './components/MusicRequests';
 import MetadataRebuild from './components/MetadataRebuild';
+import PlaylistImport from './components/PlaylistImport';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const DRAWER_WIDTH = 260;
 const DRAWER_COLLAPSED_WIDTH = 78;
 
-type TabId = 'dashboard' | 'explore' | 'search' | 'requests' | 'feedback' | 'listenbrainz' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'metadata-rebuild' | 'aliases' | 'musicbrainz-inspector' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
+type TabId = 'dashboard' | 'explore' | 'search' | 'requests' | 'feedback' | 'listenbrainz' | 'playlist-import' | 'my-artists' | 'server-health' | 'acoustid' | 'library-manager' | 'lyrics' | 'album-art' | 'duplicates' | 'naming' | 'feat-fixer' | 'metadata-rebuild' | 'aliases' | 'musicbrainz-inspector' | 'tasks' | 'config' | 'history' | 'logs' | 'user-settings';
 
-const VALID_TABS: TabId[] = ['dashboard', 'explore', 'search', 'requests', 'feedback', 'listenbrainz', 'my-artists', 'server-health', 'acoustid', 'library-manager', 'lyrics', 'album-art', 'duplicates', 'naming', 'feat-fixer', 'metadata-rebuild', 'aliases', 'musicbrainz-inspector', 'tasks', 'config', 'history', 'logs', 'user-settings'];
+const VALID_TABS: TabId[] = ['dashboard', 'explore', 'search', 'requests', 'feedback', 'listenbrainz', 'playlist-import', 'my-artists', 'server-health', 'acoustid', 'library-manager', 'lyrics', 'album-art', 'duplicates', 'naming', 'feat-fixer', 'metadata-rebuild', 'aliases', 'musicbrainz-inspector', 'tasks', 'config', 'history', 'logs', 'user-settings'];
 
 const fmtTime = (secs: number) => {
   if (!secs || isNaN(secs)) return '0:00';
@@ -333,6 +334,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         { id: 'my-artists', text: 'My artists', icon: <ArtistsIcon /> },
         { id: 'feedback', text: 'My feedback', icon: <FavoriteIcon /> },
         { id: 'listenbrainz', text: 'ListenBrainz', icon: <MusicIcon /> },
+        { id: 'playlist-import', text: 'Playlist importing', icon: <PlaylistIcon /> },
       ],
     },
     {
@@ -528,6 +530,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         {activeTab === 'my-artists' && <MyArtists />}
         {activeTab === 'feedback' && <MyFeedback />}
         {activeTab === 'listenbrainz' && <ListenBrainz />}
+        {activeTab === 'playlist-import' && <PlaylistImport />}
         {activeTab === 'server-health' && user?.isAdmin && <ServerHealth />}
         {activeTab === 'acoustid' && <AcoustIDManager />}
         {activeTab === 'library-manager' && <LibraryManager />}

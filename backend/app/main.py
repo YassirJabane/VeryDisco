@@ -20,6 +20,7 @@ from backend.app.scheduler import SchedulerManager
 from backend.app.sync import run_sync
 import backend.app.sync as sync_module
 import backend.app.logger as app_logger
+from backend.app.clients.spotify import SpotifyClient
 
 # Locate the configuration path
 CONFIG_PATH = os.getenv("CONFIG_PATH", "config.yml")
@@ -821,6 +822,52 @@ async def trigger_sync(source: Optional[str] = None, request: Request = None):
         metadata={"source": source, "user_id": user_id}
     )
     return {"status": "success", "message": "Synchronization triggered successfully"}
+
+class SpotifyPlaylistRequest(BaseModel):
+    url: str
+
+def _spotify_source_name(name: str, playlist_id: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip().lower()).strip("-")[:60]
+    return f"spotify-{slug or playlist_id}"
+
+async def _spotify_playlist(request: Request, body: SpotifyPlaylistRequest) -> tuple[dict, dict]:
+    if not config_manager.is_configured or not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured yet.")
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    client = SpotifyClient(config_manager.config.spotify.client_id,
+                           config_manager.config.spotify.client_secret,
+                           config_manager.config.timeouts.http_seconds)
+    try:
+        playlist = await client.get_playlist(body.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Spotify playlist request failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Spotify non ha restituito la playlist. Verifica link e credenziali API.")
+    except Exception as exc:
+        logger.error("Spotify playlist import failed: %r", exc)
+        raise HTTPException(status_code=502, detail="Impossibile recuperare la playlist da Spotify.")
+    playlist_id = client.playlist_id(body.url)
+    return user, {"id": playlist_id, "name": playlist.get("name") or "Spotify playlist", "description": playlist.get("description") or "", "tracks": playlist.get("tracks", [])}
+
+@app.post("/api/spotify/playlist/preview")
+async def preview_spotify_playlist(body: SpotifyPlaylistRequest, request: Request):
+    _, playlist = await _spotify_playlist(request, body)
+    return {"id": playlist["id"], "name": playlist["name"], "description": playlist["description"], "tracks": playlist["tracks"], "track_count": len(playlist["tracks"])}
+
+@app.post("/api/spotify/playlist/import")
+async def import_spotify_playlist(body: SpotifyPlaylistRequest, request: Request):
+    user, playlist = await _spotify_playlist(request, body)
+    source = _spotify_source_name(playlist["name"], playlist["id"])
+    if sync_module.is_syncing:
+        raise HTTPException(status_code=400, detail="Sync process already in progress")
+    _create_tracked_task(
+        run_sync(db, config_manager.config, source, user_id=user["id"],
+                 tracks_override=playlist["tracks"], album_override="Playlist Tracks"),
+        task_id=f"sync:{source}", task_type="spotify-import",
+        metadata={"source": source, "playlist_name": playlist["name"], "user_id": user["id"]})
+    return {"status": "success", "source": source, "name": playlist["name"], "track_count": len(playlist["tracks"])}
 
 @app.post("/api/sync/stop")
 async def stop_sync(request: Request):

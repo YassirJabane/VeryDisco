@@ -1080,7 +1080,8 @@ async def relocate_and_tag_download(
     downloads_dir: str,
     music_dir: str,
     dest_dir: Optional[str] = None,
-    album: Optional[str] = None
+    album: Optional[str] = None,
+    album_override: Optional[str] = None
 ) -> Tuple[str, Optional[str], Optional[str]]:
     """
     Relocate a downloaded file and embed metadata, cover art, and lyrics.
@@ -1114,7 +1115,7 @@ async def relocate_and_tag_download(
     dz_title = meta_result.get("title") or title_clean
     dz_artist = meta_result.get("artist") or artist_clean
     dz_album_artist = meta_result.get("album_artist") or artist_clean
-    dz_album = meta_result.get("album") or album or f"{title_clean} - Single"
+    dz_album = album_override or meta_result.get("album") or album or f"{title_clean} - Single"
     track_num = meta_result.get("track_num")
     track_total = meta_result.get("track_total")
     disc_num = meta_result.get("disc_num", 1)
@@ -1675,7 +1676,9 @@ def promote_playlist_staging(staging_path: Path, output_path: Path) -> Optional[
     return backup if backup.exists() else None
 
 
-async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[str] = None, user_id: Optional[str] = None):
+async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[str] = None, user_id: Optional[str] = None,
+                   tracks_override: Optional[List[Dict[str, Any]]] = None,
+                   album_override: Optional[str] = None):
     """Executes the complete synchronization run."""
     global is_syncing, current_run_id, sync_progress, current_sync_task
     if _sync_lock.locked():
@@ -1797,8 +1800,11 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           new_search_ids = []
 
           # 1. Resolve MBID and fetch playlist tracks
-          mbid = await lb_client.resolve_playlist_mbid()
-          tracks = await lb_client.get_playlist_tracks(mbid)
+          if tracks_override is not None:
+              tracks = tracks_override
+          else:
+              mbid = await lb_client.resolve_playlist_mbid()
+              tracks = await lb_client.get_playlist_tracks(mbid)
 
           sync_progress["tracks_found"] = len(tracks)
           await db.update_run(run_id, "running", len(tracks), 0, 0, 0)
@@ -2088,7 +2094,8 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
                           title=title,
                           downloads_dir=config.slskd.downloads_dir,
                           music_dir=music_dir,
-                          dest_dir=str(explore_dir)
+                          dest_dir=str(explore_dir),
+                          album_override=album_override
                       )
                   except Exception as err:
                       logger.error(f"Post-processing failed for '{artist} - {title}': {err}")

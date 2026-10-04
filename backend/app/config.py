@@ -62,6 +62,10 @@ class NavidromeConfig(BaseModel):
     username: str = Field("", description="Username for Subsonic authentication")
     password: str = Field("", description="Password/Token for Subsonic authentication")
 
+class SpotifyConfig(BaseModel):
+    client_id: str = Field("", description="Spotify application client ID")
+    client_secret: str = Field("", description="Spotify application client secret")
+
 class SlskdConfig(BaseModel):
     base_url: str = Field(..., description="Base URL of the slskd instance")
     api_key: str = Field("", description="API key/token for slskd")
@@ -129,6 +133,7 @@ class AppConfig(BaseModel):
     listenbrainz: ListenBrainzConfig
     slskd: SlskdConfig
     navidrome: NavidromeConfig = Field(default_factory=NavidromeConfig)
+    spotify: SpotifyConfig = Field(default_factory=SpotifyConfig)
     acoustid: AcoustIDConfig = Field(default_factory=AcoustIDConfig)
     lyrics: LyricsConfig = Field(default_factory=LyricsConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
@@ -173,6 +178,11 @@ navidrome:
   url: ""                                  # Optional: Subsonic URL of your Navidrome server (e.g. http://navidrome:4533)
   username: ""                             # Optional: Username for Subsonic client
   password: ""                             # Optional: Password for Subsonic client
+
+# Spotify playlist importing (create an app at developer.spotify.com)
+spotify:
+  client_id: ""                            # Required for playlist importing
+  client_secret: ""                        # Required for playlist importing
 
 # Lyrics lookup configuration
 lyrics:
