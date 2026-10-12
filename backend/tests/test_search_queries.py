@@ -158,3 +158,45 @@ def test_match_track_titles_matches_library_naming_and_live_or_con_variants():
         "Vasco Rossi",
     )
 
+
+def test_acoustid_accepts_secondary_result_matching_expected_artist_and_title(monkeypatch, tmp_path):
+    import asyncio
+    from backend.app.clients.acoustid import AcoustIDClient
+
+    client = AcoustIDClient()
+    monkeypatch.setattr(client, "get_api_key", lambda: "test-key")
+    monkeypatch.setattr(client, "read_musicbrainz_recording_id", lambda p: None)
+
+    async def fake_fp(path):
+        return {"fingerprint": "abc", "duration": 286}
+
+    async def fake_lookup(fp, dur, meta="recordings artists releasegroups"):
+        return {
+            "status": "ok",
+            "results": [
+                {
+                    "score": 0.72,
+                    "recordings": [
+                        {"id": "mbid-1", "title": "Va bene, va bene così", "artists": [{"name": "Vasco Rossi"}]}
+                    ],
+                },
+                {
+                    "score": 0.52,
+                    "recordings": [
+                        {"id": "mbid-2", "title": "Sally", "artists": [{"name": "Vasco Rossi"}]}
+                    ],
+                },
+            ],
+        }
+
+    monkeypatch.setattr(client, "generate_fingerprint", fake_fp)
+    monkeypatch.setattr(client, "lookup_fingerprint", fake_lookup)
+
+    fake_file = tmp_path / "Sally.mp3"
+    fake_file.write_bytes(b"fake")
+    is_valid, reason = asyncio.run(
+        client.verify_track_against_metadata(fake_file, "Vasco Rossi", "Sally (Remastered 2017)")
+    )
+    assert is_valid is True
+    assert "Sally" in reason
+

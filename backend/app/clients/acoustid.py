@@ -260,9 +260,7 @@ class AcoustIDClient:
         highest_score = 0.0
 
         for result in results:
-            score = result.get("score", 0.0)
-            if score < 0.6:
-                continue
+            score = float(result.get("score") or 0.01)
 
             for rec in result.get("recordings", []):
                 rec_title = norm(rec.get("title", ""))
@@ -346,7 +344,13 @@ class AcoustIDClient:
         matches_str = " | ".join(top_matches) if top_matches else "No metadata available"
         return False, f"AcoustID matched this audio to: {matches_str} (Expected: '{tagged_artist} - {tagged_title}')"
 
-    async def verify_track(self, file_path: Path, expected_mbid: str) -> bool:
+    async def verify_track(
+        self,
+        file_path: Path,
+        expected_mbid: str,
+        expected_artist: Optional[str] = None,
+        expected_title: Optional[str] = None,
+    ) -> bool:
         """
         Returns True if the track matches the expected MBID, or if AcoustID matches the track metadata.
         Returns False ONLY if AcoustID successfully checked and fingerprint belongs to a different track.
@@ -370,7 +374,9 @@ class AcoustIDClient:
             return True
 
         # Fallback: check metadata matching (handles album vs single vs remaster MBIDs)
-        is_valid, reason = await self.verify_track_against_metadata(file_path)
+        is_valid, reason = await self.verify_track_against_metadata(
+            file_path, expected_artist=expected_artist, expected_title=expected_title
+        )
         if is_valid or "No match found" in reason or "not configured" in reason:
             logger.info(f"AcoustID metadata verification passed for {file_path}: {reason}")
             return True

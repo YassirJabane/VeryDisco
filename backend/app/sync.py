@@ -2289,7 +2289,9 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
                               from backend.app.clients.acoustid import acoustid_client
                               expected_mbid = await lb_client.resolve_recording_mbid(artist, title)
                               if expected_mbid:
-                                  is_valid = await acoustid_client.verify_track(downloaded_file, expected_mbid)
+                                  is_valid = await acoustid_client.verify_track(
+                                      downloaded_file, expected_mbid, expected_artist=artist, expected_title=title
+                                  )
                                   if not is_valid:
                                       logger.warning(f"AcoustID verification failed for '{artist} - {title}'. Discarding.")
                                       final_state = "acoustid_mismatch"
