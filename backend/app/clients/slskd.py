@@ -97,21 +97,19 @@ class SlskdClient:
         """Filters and prioritizes search result file candidates based on quality and matching criteria."""
         candidates = []
  
-        # Clean trailing feature/remaster annotations (explo-like normalization)
-        FEAT_TAIL_RE = re.compile(r'(?i)\s*[\(\[\{]\s*(feat\.?|featuring|ft\.?|with)\s[^\)\]\}]*[\)\]\}]\s*$')
-        REMASTER_TAIL_RE = re.compile(r'(?i)\s*[-–—]\s*\d{4}\s*remaster(ed)?\s*$')
+        from backend.app.sync import clean_search_title
 
         # Helper to normalize strings for comparison
         def normalize(s: str) -> str:
             return re.sub(r'[^\w]', '', s).lower()
 
         def normalize_title(s: str) -> str:
-            s = FEAT_TAIL_RE.sub('', s)
-            s = REMASTER_TAIL_RE.sub('', s)
-            return normalize(s)
-            
+            name_no_ext = os.path.splitext(s)[0] if any(s.lower().endswith(ext) for ext in (".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus", ".aac", ".alac")) else s
+            return normalize(clean_search_title(name_no_ext))
+
         norm_artist = normalize(artist)
         norm_title = normalize_title(title)
+        raw_norm_title = normalize(title)
         norm_album = normalize(album) if album else ""
         artist_words = [normalize(w) for w in artist.split() if len(w) > 2]
         
@@ -219,7 +217,7 @@ class SlskdClient:
                 is_keyword_skipped = False
                 for kw in keywords:
                     # If keyword is in the track's true title or artist, we allow it in the filename
-                    if kw in norm_title or kw in norm_artist:
+                    if kw in norm_title or kw in raw_norm_title or kw in norm_artist:
                         continue
                     # If keyword is in the filename but NOT in the track title/artist, skip it
                     if kw in filename.lower():

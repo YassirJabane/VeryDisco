@@ -82,3 +82,57 @@ def test_album_wildcard_queries_strip_hyphens_and_start_with_full_wildcard():
     assert "BULLY DELUXE *anye West" in queries
     assert all("-" not in query for query in queries)
 
+
+def test_track_queries_strip_italian_con_collaborations_and_comma_artists():
+    queries = build_track_search_queries(
+        "Vasco Rossi, Marracash",
+        "La Pioggia Alla Domenica (con Marracash)",
+    )
+
+    assert queries[0] == "La *ioggia *lla *omenica *asco *ossi"
+    assert "La Pioggia Alla Domenica Vasco Rossi" in queries
+    assert "La Pioggia Alla Domenica" in queries
+    assert all("Marracash" not in q and "*arracash" not in q for q in queries)
+    assert len(queries) <= 9
+
+
+def test_track_queries_and_slskd_candidates_accept_normal_version_for_live_suffix():
+    from backend.app.clients.slskd import SlskdClient
+
+    queries = build_track_search_queries("Vasco Rossi", "Marea - Vasco Live 20|26")
+
+    assert queries[0] == "*area *asco *ossi"
+    assert "Marea Vasco Rossi" in queries
+    assert "Marea" in queries
+    assert all("Live" not in q and "*ive" not in q for q in queries)
+
+    client = SlskdClient("http://localhost:5030", "key")
+    responses = [
+        {
+            "username": "ge1965",
+            "hasFreeUploadSlot": True,
+            "queueLength": 0,
+            "speed": 100000,
+            "files": [
+                {"filename": r"@@habcx\MUSICA\Vasco Rossi\10. Vasco Rossi - Marea.mp3", "size": 9000000, "bitrate": 320},
+                {"filename": r"@@habcx\MUSICA\Vasco Rossi\Marea (Live).mp3", "size": 9000000, "bitrate": 320},
+            ],
+        }
+    ]
+    candidates = client._parse_candidates(
+        responses,
+        artist="Vasco Rossi",
+        title="Marea - Vasco Live 20|26",
+        audio_quality={"preset": "all"},
+    )
+    assert len(candidates) == 2
+
+
+def test_clean_track_title_preserves_title_track_matching_album_name():
+    from backend.app.album_sync import clean_track_title
+
+    assert clean_track_title("09 Bully feat. Cee Lo Green.mp3", "Kanye West", "BULLY - DELUXE") == "Bully"
+    assert clean_track_title("Ye - BULLY - DELUXE - 09 - BULLY (feat. CeeLo Green).mp3", "Kanye West", "BULLY - DELUXE") == "BULLY"
+
+
+

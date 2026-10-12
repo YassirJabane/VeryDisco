@@ -136,14 +136,22 @@ def add_playlist_search_ids(playlist_source: str, search_ids: List[str]):
     data[playlist_source].extend(search_ids)
     save_playlist_searches(data)
 
-# Regex for matching trailing features like (feat. ...), [ft. ...], etc.
-FEAT_TAIL_RE = re.compile(r'(?i)\s*[\(\[\{]\s*(feat\.?|featuring|ft\.?|with)\s[^\)\]\}]*[\)\]\}]\s*$')
-REMASTER_TAIL_RE = re.compile(r'(?i)\s*[-–—]\s*\d{4}\s*remaster(ed)?\s*$')
+# Regex for matching trailing features like (feat. ...), [ft. ...], (con ...), or unbracketed feat. ...
+FEAT_TAIL_RE = re.compile(
+    r'(?i)\s*(?:[\(\[\{]\s*(?:feat\.?|featuring|ft\.?|with|con|prod\.?)\b[^\)\]\}]*[\)\]\}]|(?:[-–—]\s*)?\b(?:feat\.?|featuring|ft\.?)\s+.+|[-–—]\s*(?:with|con)\s+.+)\s*$'
+)
+REMASTER_TAIL_RE = re.compile(
+    r'(?i)\s*(?:[-–—]\s*(?:.*\b(?:remaster(?:ed)?|live|version|radio\s+edit|edit|mono|stereo)\b.*|\d{4}\s*remaster(?:ed)?)|[\(\[\{][^\)\]\}]*\b(?:remaster(?:ed)?|live|version|radio\s+edit)\b[^\)\]\}]*[\)\]\}])$'
+)
 
 def clean_search_title(title: str) -> str:
-    title = FEAT_TAIL_RE.sub('', title)
-    title = REMASTER_TAIL_RE.sub('', title)
-    return title.strip()
+    if not title:
+        return ""
+    cleaned = title
+    for _ in range(2):
+        cleaned = FEAT_TAIL_RE.sub('', cleaned).strip()
+        cleaned = REMASTER_TAIL_RE.sub('', cleaned).strip()
+    return cleaned or title.strip()
 
 
 def get_file_audio_info(file_path: Any) -> Tuple[str, int, int, int]:
@@ -954,7 +962,7 @@ def extract_main_artist(artist_name: str) -> str:
     """
     Extracts the primary main artist from a joint or featured artist string.
     Handles 'ASAP Rocky and Tim Burton', 'A$AP Rocky x Tim Burton', 'A$AP Rocky & Tim Burton',
-    'A$AP Rocky feat. Tim Burton', etc.
+    'A$AP Rocky feat. Tim Burton', 'Vasco Rossi, Marracash', etc.
     """
     if not artist_name:
         return ""
@@ -965,6 +973,12 @@ def extract_main_artist(artist_name: str) -> str:
     # Split on feature/joint separators
     parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring)\b', art)
     main = parts[0].strip() if parts else art
+    # Handle Spotify/AcoustID comma-separated multi-artist credits (e.g. 'Vasco Rossi, Marracash')
+    # while preserving single artists like 'Tyler, The Creator' or 'Earth, Wind & Fire'.
+    if "," in main and not re.search(r'(?i),\s*the\s+creator\b', main) and "&" not in main:
+        comma_parts = [p.strip() for p in main.split(",") if p.strip()]
+        if comma_parts:
+            main = comma_parts[0]
     return main or art
 
 def get_artist_aliases(artist_name: str) -> list[str]:
@@ -976,7 +990,7 @@ def get_artist_aliases(artist_name: str) -> list[str]:
 
     # 1. Convert $ to s / S so A$AP becomes ASAP
     normalized_art = re.sub(r'\$', 's', artist_name, flags=re.IGNORECASE)
-    parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring)\b', normalized_art)
+    parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring)\b|,|&', normalized_art)
     for p in parts:
         clean_p = re.sub(r'[^\w]', '', p).lower().strip()
         if clean_p:
@@ -986,8 +1000,12 @@ def get_artist_aliases(artist_name: str) -> list[str]:
             for w in words:
                 aliases.add(w)
 
+    full_clean = re.sub(r'[^\w]', '', normalized_art).lower().strip()
+    if full_clean:
+        aliases.add(full_clean)
+
     # 2. Also keep raw parts without $ conversion (e.g. A$AP -> aap)
-    raw_parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring)\b', artist_name)
+    raw_parts = re.split(r'(?i)\b(?:feat\.?|ft\.?|featuring)\b|,|&', artist_name)
     for rp in raw_parts:
         clean_rp = re.sub(r'[^\w]', '', rp).lower().strip()
         if clean_rp:
@@ -1460,19 +1478,19 @@ def wildcard_artist_variants(artist: str) -> list[str]:
 
 def wildcard_text_variants(text: str) -> list[str]:
     """Expand title words so blocked/exact tokens can still be searched."""
-    clean = re.sub(r"\s+", " ", text or "").strip()
+    clean = re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", text or "")).strip()
     if not clean:
         return []
 
     words = clean.split()
     variants = [clean]
     for index, word in enumerate(words):
-        if len(word) >= 3:
+        if len(word) >= 3 and word[0].isalpha():
             wildcard_words = words.copy()
             wildcard_words[index] = "*" + word[1:]
             variants.append(" ".join(wildcard_words))
-    if len(words) > 1 and any(len(word) >= 3 for word in words):
-        variants.append(" ".join("*" + word[1:] if len(word) >= 3 else word for word in words))
+    if len(words) > 1 and any(len(word) >= 3 and word[0].isalpha() for word in words):
+        variants.append(" ".join("*" + word[1:] if len(word) >= 3 and word[0].isalpha() else word for word in words))
     return list(dict.fromkeys(variants))
 
 
@@ -1538,6 +1556,7 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     )
 
     full_wild_title = title_variants[-1] if len(title_variants) > 1 else (title_variants[0] if title_variants else clean_title)
+    first_wild_title = title_variants[1] if len(title_variants) > 1 else full_wild_title
     full_wild_main = artist_variants[-1] if artist_variants else main_artist
     full_wild_lead = lead_variants[-1] if lead_variants else lead_artist
 
@@ -1571,23 +1590,22 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     # 4. Clean title + clean artist
     if lead_artist and lead_artist not in (main_artist, clean_artist):
         queries_to_add.append(query_part(f"{clean_title} {lead_artist}"))
-    queries_to_add.extend([
-        query_part(f"{clean_title} {main_artist}"),
-        query_part(f"{clean_title} {clean_artist}"),
-    ])
+    queries_to_add.append(query_part(f"{clean_title} {main_artist}"))
+    if "," not in clean_artist and clean_artist != main_artist:
+        queries_to_add.append(query_part(f"{clean_title} {clean_artist}"))
     if " and the " in clean_artist.lower():
         queries_to_add.append(query_part(f"{clean_title} {re.sub(r'(?i)\s+and\s+the\s+', ' ', clean_artist)}"))
 
-    # 5. Title wildcard variants + clean artist, followed by title-only fallback
-    queries_to_add.extend([
-        *(query_part(f"{title_variant} {main_artist}") for title_variant in title_variants[1:]),
-        # Search by title alone as a deliberate fallback. slskd may return
-        # many files, but _parse_candidates still applies the strict artist /
-        # album filter; this is more reliable than excluding a valid track
-        # because the artist folder is indexed differently.
-        query_part(clean_title),
-        *(query_part(title_variant) for title_variant in title_variants[1:]),
-    ])
+    # 5. Concise title wildcard + clean artist, followed immediately by title-only fallbacks
+    if first_wild_title and first_wild_title != clean_title:
+        queries_to_add.append(query_part(f"{first_wild_title} {main_artist}"))
+    if full_wild_title and full_wild_title not in (clean_title, first_wild_title):
+        queries_to_add.append(query_part(f"{full_wild_title} {main_artist}"))
+
+    queries_to_add.append(query_part(clean_title))
+    if full_wild_title and full_wild_title != clean_title:
+        queries_to_add.append(query_part(full_wild_title))
+
     for query in queries_to_add:
         if query and query not in queries:
             queries.append(query)

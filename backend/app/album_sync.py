@@ -231,10 +231,12 @@ def clean_track_title(basename: str, artist: str, album: str) -> str:
     Extract a clean track title from a filename by stripping out
     artist names, album names, track numbers, and extra delimiters.
     """
+    from backend.app.sync import clean_search_title
+
     title = basename
-    if title.lower().endswith((".mp3", ".flac", ".m4a")):
+    if title.lower().endswith((".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus", ".aac", ".alac")):
         title = os.path.splitext(title)[0]
-        
+
     # Split by underscore to handle Artist_Album_TrackNum_Title convention
     parts = title.split('_')
     if len(parts) >= 4:
@@ -242,33 +244,55 @@ def clean_track_title(basename: str, artist: str, album: str) -> str:
             if p.isdigit() and len(p) <= 3:
                 candidate = "_".join(parts[idx+1:]).strip()
                 if candidate:
-                    return candidate
+                    return clean_search_title(candidate) or candidate
 
-    # Remove artist & album (case insensitive)
-    title = re.sub(re.escape(artist), '', title, flags=re.IGNORECASE)
-    title = re.sub(re.escape(album), '', title, flags=re.IGNORECASE)
-    
-    # Clean parts of artist/album
-    for part in re.split(r'[,&-]', album):
-        part = part.strip()
-        if len(part) > 2:
-            title = re.sub(re.escape(part), '', title, flags=re.IGNORECASE)
-            
-    for part in re.split(r'[,&-]', artist):
-        part = part.strip()
-        if len(part) > 2:
-            title = re.sub(re.escape(part), '', title, flags=re.IGNORECASE)
+    # Handle "Artist - Album - 01 - Title" or "Artist - 01 - Title" where a track number sits between separators
+    mid_num_match = re.match(r'^.+?\s+[-_]\s*(?:\d{1,2}[-_.])?\d{1,2}\s*(?:[-_.]\s*|\s+)(.+)$', title)
+    if mid_num_match:
+        candidate = mid_num_match.group(1).strip()
+        if clean_search_title(candidate):
+            title = candidate
 
-    # Remove numbers / counters
-    title = re.sub(r'\b\d{1,3}\b', '', title)
-    title = re.sub(r'^\d+\s*[-_.]?\s*', '', title)
+    # Strip leading disc/track numbers (e.g. "1-09 ", "09 - ", "09. ")
+    title = re.sub(r'^\s*(?:\d{1,2}\s*[-_.]\s*)?\d{1,3}\s*(?:[-_.]|\s)+\s*', '', title).strip()
+
+    # Strip leading artist/album prefixes only when followed by a separator (e.g. "Artist - Album - 01 - Title")
+    # and only if stripping does not erase the actual track title (for eponymous title tracks like "Bully").
+    prefixes = [artist, album]
+    for item in (artist, album):
+        for part in re.split(r'[,&-]', item or ""):
+            if len(part.strip()) > 2:
+                prefixes.append(part.strip())
+
+    changed = True
+    while changed:
+        changed = False
+        stripped_num = re.sub(r'^\s*(?:\d{1,2}\s*[-_.]\s*)?\d{1,3}\s*(?:[-_.]|\s)+\s*', '', title).strip()
+        if stripped_num and stripped_num != title and clean_search_title(stripped_num):
+            title = stripped_num
+            changed = True
+        for pref in prefixes:
+            if not pref:
+                continue
+            m = re.match(rf'(?i)^\s*{re.escape(pref)}\s*(?:[-_]+|\s+[-_]\s*)\s*(.+)$', title)
+            if m:
+                remainder = m.group(1).strip()
+                if clean_search_title(remainder):
+                    title = remainder
+                    changed = True
+                    break
+
     title = re.sub(r'[_\-\s.]{2,}', ' ', title)
-    
+
     # Strip release group scene tags & emojis (PMEDIA, 320kbps, FLAC, ⭐️, etc.)
     title = re.sub(r'(?i)[\(\[]?\b(PMEDIA|320kbps|320|FLAC|MP3|WEB|Explicit|HQ|CD|V0|V2|PMedia|PMedia1)\b[\)\]]?', '', title)
     title = re.sub(r'[⭐️⭐★✨]', '', title)
     title = title.strip(' -_./\\')
-    
+
+    cleaned = clean_search_title(title)
+    if cleaned:
+        title = cleaned
+
     if not title:
         title = basename
         if title.lower().endswith((".mp3", ".flac", ".m4a")):

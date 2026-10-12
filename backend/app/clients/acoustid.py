@@ -219,6 +219,8 @@ class AcoustIDClient:
             artist_aliases.append(lead)
             last_word = tagged_artist.split()[-1]
             artist_aliases.append(f"{lead} & The {last_word}")
+        if norm_raw_art in ("kanyewest", "ye") or norm(main_art) in ("kanyewest", "ye"):
+            artist_aliases.extend(["Kanye West", "Ye"])
         if norm_raw_art in ("¥$", "ys") or (tagged_artist and tagged_artist.strip() == "¥$"):
             artist_aliases.extend(["¥$", "Kanye West & Ty Dolla $ign", "Ye & Ty Dolla $ign"])
         elif any(k in norm_raw_art for k in ["kanyewest", "ye"]) and any(k in norm_raw_art for k in ["tydolla", "tydollasign"]):
@@ -282,6 +284,8 @@ class AcoustIDClient:
                             rec_backing = re.search(r"(?i)^(.+?)\s+(?:and|&)\s+the\s+", art_name or "")
                             if rec_backing:
                                 art_candidates.append(rec_backing.group(1).strip())
+                            if norm(art_name) in ("kanyewest", "ye"):
+                                art_candidates.extend(["Kanye West", "Ye"])
                             if art_name == "¥$" or norm(art_name) in ("¥$", "ys"):
                                 art_candidates.extend(["¥$", "Kanye West & Ty Dolla $ign", "Kanye West", "Ty Dolla $ign", "Ye"])
                             elif "$" in art_name:
