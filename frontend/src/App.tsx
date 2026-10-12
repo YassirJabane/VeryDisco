@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   ThemeProvider, CssBaseline, Box, Drawer, AppBar, Toolbar, 
   List, ListItem, ListItemButton, ListItemIcon, ListItemText, 
-  Typography, IconButton, Divider, Avatar, Tooltip, Chip, Slider, Collapse, Button
+  Typography, IconButton, Divider, Avatar, Tooltip, Chip, Slider, Collapse, Button, LinearProgress
 } from '@mui/material';
 import { 
   Menu as MenuIcon, 
@@ -34,33 +34,34 @@ import {
   KeyboardArrowDown as ArrowDownIcon
 } from '@mui/icons-material';
 import getTheme from './theme';
-import Dashboard from './components/Dashboard';
-import Configuration from './components/Configuration';
-import RunHistory from './components/RunHistory';
-import LiveLogs from './components/LiveLogs';
-import Explore from './components/Explore';
-import SearchMusic from './components/SearchMusic';
-import MyFeedback from './components/MyFeedback';
-import ListenBrainz from './components/ListenBrainz';
-import MyArtists from './components/MyArtists';
-import ServerHealth from './components/ServerHealth';
-import LibraryManager from './components/LibraryManager';
-import LyricsManager from './components/LyricsManager';
-import AlbumArtManager from './components/AlbumArtManager';
-import DuplicatesManager from './components/DuplicatesManager';
 import Login from './components/Login';
-import UserSettings from './components/UserSettings';
 import Setup from './components/Setup';
-import RunningTasks from './components/RunningTasks';
-import AcoustIDManager from './components/AcoustIDManager';
-import NamingConvention from './components/NamingConvention';
-import FeatFixer from './components/FeatFixer';
-import ArtistAliases from './components/ArtistAliases';
-import MusicBrainzInspector from './components/MusicBrainzInspector';
-import MusicRequests from './components/MusicRequests';
-import MetadataRebuild from './components/MetadataRebuild';
-import PlaylistImport from './components/PlaylistImport';
 import { AuthProvider, useAuth } from './context/AuthContext';
+
+const Dashboard = React.lazy(() => import('./components/Dashboard'));
+const Configuration = React.lazy(() => import('./components/Configuration'));
+const RunHistory = React.lazy(() => import('./components/RunHistory'));
+const LiveLogs = React.lazy(() => import('./components/LiveLogs'));
+const Explore = React.lazy(() => import('./components/Explore'));
+const SearchMusic = React.lazy(() => import('./components/SearchMusic'));
+const MyFeedback = React.lazy(() => import('./components/MyFeedback'));
+const ListenBrainz = React.lazy(() => import('./components/ListenBrainz'));
+const MyArtists = React.lazy(() => import('./components/MyArtists'));
+const ServerHealth = React.lazy(() => import('./components/ServerHealth'));
+const LibraryManager = React.lazy(() => import('./components/LibraryManager'));
+const LyricsManager = React.lazy(() => import('./components/LyricsManager'));
+const AlbumArtManager = React.lazy(() => import('./components/AlbumArtManager'));
+const DuplicatesManager = React.lazy(() => import('./components/DuplicatesManager'));
+const UserSettings = React.lazy(() => import('./components/UserSettings'));
+const RunningTasks = React.lazy(() => import('./components/RunningTasks'));
+const AcoustIDManager = React.lazy(() => import('./components/AcoustIDManager'));
+const NamingConvention = React.lazy(() => import('./components/NamingConvention'));
+const FeatFixer = React.lazy(() => import('./components/FeatFixer'));
+const ArtistAliases = React.lazy(() => import('./components/ArtistAliases'));
+const MusicBrainzInspector = React.lazy(() => import('./components/MusicBrainzInspector'));
+const MusicRequests = React.lazy(() => import('./components/MusicRequests'));
+const MetadataRebuild = React.lazy(() => import('./components/MetadataRebuild'));
+const PlaylistImport = React.lazy(() => import('./components/PlaylistImport'));
 
 const DRAWER_WIDTH = 260;
 const DRAWER_COLLAPSED_WIDTH = 78;
@@ -523,30 +524,32 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
           bgcolor: 'background.default',
         }}
       >
-        {activeTab === 'dashboard' && <Dashboard onNavigateToConfig={() => navigateTo('config')} />}
-        {activeTab === 'explore' && <Explore />}
-        {activeTab === 'search' && <SearchMusic />}
-        {activeTab === 'requests' && <MusicRequests />}
-        {activeTab === 'my-artists' && <MyArtists />}
-        {activeTab === 'feedback' && <MyFeedback />}
-        {activeTab === 'listenbrainz' && <ListenBrainz />}
-        {activeTab === 'playlist-import' && <PlaylistImport />}
-        {activeTab === 'server-health' && user?.isAdmin && <ServerHealth />}
-        {activeTab === 'acoustid' && <AcoustIDManager />}
-        {activeTab === 'library-manager' && <LibraryManager />}
-        {activeTab === 'naming' && <NamingConvention />}
-        {activeTab === 'feat-fixer' && <FeatFixer />}
-        {activeTab === 'metadata-rebuild' && <MetadataRebuild />}
-        {activeTab === 'aliases' && <ArtistAliases />}
-        {activeTab === 'musicbrainz-inspector' && <MusicBrainzInspector />}
-        {activeTab === 'lyrics' && <LyricsManager />}
-        {activeTab === 'album-art' && <AlbumArtManager />}
-        {activeTab === 'duplicates' && <DuplicatesManager />}
-        {activeTab === 'config' && <Configuration />}
-        {activeTab === 'tasks' && <RunningTasks />}
-        {activeTab === 'history' && <RunHistory />}
-        {activeTab === 'logs' && <LiveLogs />}
-        {activeTab === 'user-settings' && <UserSettings />}
+        <React.Suspense fallback={<LinearProgress sx={{ borderRadius: 4 }} />}>
+          {activeTab === 'dashboard' && <Dashboard onNavigateToConfig={() => navigateTo('config')} />}
+          {activeTab === 'explore' && <Explore />}
+          {activeTab === 'search' && <SearchMusic />}
+          {activeTab === 'requests' && <MusicRequests />}
+          {activeTab === 'my-artists' && <MyArtists />}
+          {activeTab === 'feedback' && <MyFeedback />}
+          {activeTab === 'listenbrainz' && <ListenBrainz />}
+          {activeTab === 'playlist-import' && <PlaylistImport />}
+          {activeTab === 'server-health' && user?.isAdmin && <ServerHealth />}
+          {activeTab === 'acoustid' && <AcoustIDManager />}
+          {activeTab === 'library-manager' && <LibraryManager />}
+          {activeTab === 'naming' && <NamingConvention />}
+          {activeTab === 'feat-fixer' && <FeatFixer />}
+          {activeTab === 'metadata-rebuild' && <MetadataRebuild />}
+          {activeTab === 'aliases' && <ArtistAliases />}
+          {activeTab === 'musicbrainz-inspector' && <MusicBrainzInspector />}
+          {activeTab === 'lyrics' && <LyricsManager />}
+          {activeTab === 'album-art' && <AlbumArtManager />}
+          {activeTab === 'duplicates' && <DuplicatesManager />}
+          {activeTab === 'config' && <Configuration />}
+          {activeTab === 'tasks' && <RunningTasks />}
+          {activeTab === 'history' && <RunHistory />}
+          {activeTab === 'logs' && <LiveLogs />}
+          {activeTab === 'user-settings' && <UserSettings />}
+        </React.Suspense>
       </Box>
 
       <Box sx={{ display: { xs: 'flex', md: 'none' }, position: 'fixed', bottom: currentTrack ? '82px' : 0, left: 0, right: 0, zIndex: 1200, p: 1, gap: .5, bgcolor: 'rgba(21,19,29,.92)', borderTop: '1px solid', borderColor: 'divider', backdropFilter: 'blur(24px)' }}>

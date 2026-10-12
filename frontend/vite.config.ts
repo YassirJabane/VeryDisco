@@ -77,6 +77,17 @@ export default defineConfig({
       }
     }
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('/@mui/icons-material/')) return 'mui-icons'
+          if (id.includes('/axios/')) return 'network-vendor'
+          return undefined
+        }
+      }
+    }
+  },
   // @ts-ignore
   test: {
     globals: true,

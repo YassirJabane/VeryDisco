@@ -15,9 +15,9 @@ const handlers = {
 };
 
 describe('Library album completeness', () => {
-  test('local 6/6 is unverified, then official 6/9 is partial', () => {
+  test('persisted full status is shown, then expanded official 6/9 is partial', () => {
     const view = render(<AlbumCard album={album} expanded={false} tracks={undefined} tracksLoading={false} {...handlers} />);
-    expect(screen.getByText('Unverified (6 local)')).toBeInTheDocument();
+    expect(screen.getByText('Full (6/6)')).toBeInTheDocument();
 
     const titles = ["Let's Go Crazy", 'Take Me With U', 'The Beautiful Ones', 'Computer Blue',
       'Darling Nikki', 'When Doves Cry', 'I Would Die 4 U', "Baby I'm a Star", 'Purple Rain'];

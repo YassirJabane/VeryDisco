@@ -64,5 +64,6 @@ navidrome:
         assert manager.config.slskd.base_url == "http://slskd-service:5030"
         assert manager.config.schedule.daily_time == "04:00"
         assert manager.config.schedule.weekly_day == "tue"
+        assert manager.config.schedule.weekly_time == "04:00"
     finally:
         os.unlink(path)

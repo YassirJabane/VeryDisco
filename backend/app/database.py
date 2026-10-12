@@ -4,7 +4,7 @@ import re
 import aiosqlite
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 class Database:
@@ -207,6 +207,13 @@ class Database:
             """)
             
             # Create essential indexes for fast status polling and query performance
+            # Existing installations gain these columns below, but indexes must
+            # also work on a brand-new database before that migration section.
+            for table in ("runs", "album_downloads"):
+                try:
+                    await db.execute(f"SELECT user_id FROM {table} LIMIT 1")
+                except aiosqlite.OperationalError:
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_run_id ON tracks(run_id);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_album_downloads_status ON album_downloads(status);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_run_id ON logs(run_id);")
@@ -424,6 +431,7 @@ class Database:
                 user_id              TEXT    NOT NULL,
                 filepath             TEXT    NOT NULL,
                 mtime                REAL    NOT NULL,
+                file_size            INTEGER DEFAULT 0,
                 artist               TEXT,
                 album                TEXT,
                 title                TEXT,
@@ -478,6 +486,7 @@ class Database:
             async with db.execute("PRAGMA table_info(library_index)") as cursor:
                 existing_library_columns = {row[1] for row in await cursor.fetchall()}
             library_columns = {
+                "file_size": "INTEGER DEFAULT 0",
                 "size": "INTEGER DEFAULT 0", "mtime_ns": "INTEGER DEFAULT 0",
                 "ctime_ns": "INTEGER DEFAULT 0", "device": "INTEGER DEFAULT 0",
                 "inode": "INTEGER DEFAULT 0", "artists_json": "TEXT DEFAULT '[]'",
@@ -495,12 +504,24 @@ class Database:
                     updated_at TEXT DEFAULT (datetime('now'))
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS album_tracklist_cache (
+                    user_id TEXT NOT NULL,
+                    artist_norm TEXT NOT NULL,
+                    album_norm TEXT NOT NULL,
+                    release_mbid TEXT,
+                    total_tracks INTEGER NOT NULL DEFAULT 0,
+                    tracks_json TEXT NOT NULL DEFAULT '[]',
+                    checked_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (user_id, artist_norm, album_norm)
+                )
+            """)
             await db.commit()
 
     # Runs Operations
     async def create_run(self, status: str = "running", source: Optional[str] = None, user_id: Optional[str] = None) -> int:
         async with self.get_db() as db:
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             cursor = await db.execute(
                 "INSERT INTO runs (timestamp, status, source, user_id) VALUES (?, ?, ?, ?)",
                 (now, status, source, user_id)
@@ -610,7 +631,7 @@ class Database:
     # Logs Operations
     async def add_log(self, level: str, message: str, run_id: Optional[int] = None):
         async with self.get_db() as db:
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             await db.execute(
                 "INSERT INTO logs (timestamp, level, message, run_id) VALUES (?, ?, ?, ?)",
                 (now, level, message, run_id)
@@ -817,8 +838,7 @@ class Database:
     ) -> Dict[str, Any]:
         """Upsert a user row. Returns the full user dict."""
         import json
-        from datetime import datetime
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         async with self.get_db() as db:
             await db.execute(
                 """
@@ -905,8 +925,7 @@ class Database:
     ) -> None:
         """Persist per-user ListenBrainz config."""
         import json
-        from datetime import datetime
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         async with self.get_db() as db:
             await db.execute(
                 """
@@ -930,7 +949,7 @@ class Database:
         """Persist per-user enabled features flags."""
         import json
         from datetime import datetime
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         async with self.get_db() as db:
             await db.execute(
                 """
@@ -1068,12 +1087,22 @@ class Database:
             await db.execute("DELETE FROM library_index WHERE user_id = ?", (user_id,))
             await db.commit()
 
+    async def get_library_mbid_snapshot(self, user_id: str) -> Dict[str, Dict[str, Any]]:
+        """Keep enriched IDs for files whose bytes have not changed."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT filepath, size, mtime_ns, track_mbid, album_mbid FROM library_index WHERE user_id = ?",
+                (user_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return {row["filepath"]: dict(row) for row in rows}
+
     async def upsert_library_index_batch(self, entries: List[Dict[str, Any]]) -> None:
         """Bulk-insert or replace library_index rows. Each entry is a dict matching column names."""
         if not entries:
             return
         cols = [
-            "user_id", "filepath", "mtime",
+            "user_id", "filepath", "mtime", "file_size",
             "artist", "album", "title", "track_num", "total_tracks",
             "disc_num", "total_discs", "year", "album_artist", "duration",
             "ext", "bitrate", "bit_depth", "sample_rate",
@@ -1271,7 +1300,7 @@ class Database:
         async with self.get_db() as db:
             await db.execute(
                 "UPDATE library_index SET track_mbid = ?, album_mbid = ?, mbid_enriched_at = ? WHERE filepath = ?",
-                (track_mbid, album_mbid, datetime.utcnow().isoformat(), filepath)
+                (track_mbid, album_mbid, datetime.now(timezone.utc).isoformat(), filepath)
             )
             await db.commit()
 
@@ -1389,6 +1418,7 @@ class Database:
                        COUNT(*) as track_count,
                        SUM(COALESCE(size, 0)) as total_size,
                        MAX(total_tracks) as total_tracks,
+                       MAX(album_mbid) as album_mbid,
                        MAX(ext) as ext,
                        MAX(bitrate) as bitrate,
                        MAX(has_cover) as has_cover,
@@ -1422,6 +1452,69 @@ class Database:
                 (user_id,),
             ) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_album_tracklists(self, user_id: str) -> Dict[Tuple[str, str], Dict[str, Any]]:
+        """Read the durable MusicBrainz results without contacting MusicBrainz."""
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT * FROM album_tracklist_cache WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return {
+            (row["artist_norm"], row["album_norm"]): {
+                "release_mbid": row["release_mbid"],
+                "total_tracks": row["total_tracks"],
+                "tracks": json.loads(row["tracks_json"]),
+                "checked_at": row["checked_at"],
+            }
+            for row in rows
+        }
+
+    async def get_album_identity_for_filepath(
+        self, user_id: str, filepath: str
+    ) -> Optional[Tuple[str, str]]:
+        async with self.get_db() as db:
+            async with db.execute(
+                "SELECT artist_norm, album_norm FROM library_index WHERE user_id = ? AND filepath = ?",
+                (user_id, filepath),
+            ) as cursor:
+                row = await cursor.fetchone()
+        return (row["artist_norm"], row["album_norm"]) if row else None
+
+    async def save_album_tracklist(
+        self, user_id: str, artist_norm: str, album_norm: str,
+        release_mbid: Optional[str], tracks: List[Dict[str, Any]],
+    ) -> None:
+        async with self.get_db() as db:
+            await db.execute("""
+                INSERT INTO album_tracklist_cache
+                    (user_id, artist_norm, album_norm, release_mbid, total_tracks, tracks_json, checked_at)
+                VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(user_id, artist_norm, album_norm) DO UPDATE SET
+                    release_mbid = excluded.release_mbid,
+                    total_tracks = excluded.total_tracks,
+                    tracks_json = excluded.tracks_json,
+                    checked_at = excluded.checked_at
+            """, (user_id, artist_norm, album_norm, release_mbid,
+                  len(tracks), json.dumps(tracks, ensure_ascii=False)))
+            await db.commit()
+
+    async def prune_album_tracklists(self, user_id: str, keys: List[Tuple[str, str]]) -> None:
+        """Drop cache entries for albums removed during a completed scan."""
+        async with self.get_db() as db:
+            if keys:
+                await db.execute("CREATE TEMP TABLE current_albums (artist_norm TEXT, album_norm TEXT)")
+                await db.executemany("INSERT INTO current_albums VALUES (?, ?)", keys)
+                await db.execute("""
+                    DELETE FROM album_tracklist_cache WHERE user_id = ? AND NOT EXISTS (
+                        SELECT 1 FROM current_albums
+                        WHERE artist_norm = album_tracklist_cache.artist_norm
+                          AND album_norm = album_tracklist_cache.album_norm
+                    )
+                """, (user_id,))
+            else:
+                await db.execute("DELETE FROM album_tracklist_cache WHERE user_id = ?", (user_id,))
+            await db.commit()
 
     async def query_album_disc_track_counts(
         self, user_id: str, artist_norm: str, album_norm: str

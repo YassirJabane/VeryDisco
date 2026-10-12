@@ -166,11 +166,11 @@ def score_release(r: dict, album: str) -> int:
     return score
 
 
-async def inspect_album_releases(artist: str, album: str) -> Dict[str, Any]:
+async def inspect_album_releases(artist: str, album: str, force_refresh: bool = False) -> Dict[str, Any]:
     """Query MusicBrainz for candidate releases, score them against Deezer track count, and return winner details (cached 1h)."""
     cache_key = f"{artist.lower().strip()}||{album.lower().strip()}"
     now = time.time()
-    if cache_key in _album_releases_cache:
+    if not force_refresh and cache_key in _album_releases_cache:
         ts, cached_res = _album_releases_cache[cache_key]
         if now - ts < 3600:
             return cached_res
@@ -543,7 +543,8 @@ class MusicBrainzClient:
         })
 
     async def get_album_tracklist(
-        self, artist: str, album: str, release_mbid: Optional[str] = None
+        self, artist: str, album: str, release_mbid: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Return a normalized release tracklist.
@@ -589,7 +590,7 @@ class MusicBrainzClient:
                 "discs": discs,
             }
         else:
-            res = await inspect_album_releases(artist, album)
+            res = await inspect_album_releases(artist, album, force_refresh=force_refresh)
             winner = res.get("winner")
         if not winner:
             return None

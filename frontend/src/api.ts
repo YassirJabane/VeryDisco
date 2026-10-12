@@ -210,6 +210,8 @@ export interface AlbumItem {
   has_cover?: boolean;
   total_tracks?: number;
   status: 'fully' | 'partially' | 'unverified';
+  release_mbid?: string | null;
+  verified_at?: string | null;
 }
 
 export interface LibraryTrackItem {

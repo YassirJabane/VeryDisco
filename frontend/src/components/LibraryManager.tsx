@@ -57,7 +57,7 @@ export const AlbumCard: React.FC<{
   const totalCount = officialTracks ? officialTracks.length : album.total_tracks;
   const status = officialTracks
     ? (presentCount === officialTracks.length ? 'fully' : 'partially')
-    : album.status === 'fully' ? 'unverified' : album.status;
+    : album.status;
   const statusLabel = status === 'fully' ? 'Full' : status === 'partially' ? 'Partial' : 'Unverified';
   const countLabel = status === 'unverified'
     ? `${album.track_count} local`
@@ -311,7 +311,7 @@ const LibraryManager: React.FC = () => {
   const [localLyricsType, setLocalLyricsType] = useState('');
   const [loadingLyrics, setLoadingLyrics] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [scanProgress, setScanProgress] = useState<{ status: string; processed: number; total: number; percentage: number; error?: string } | null>(null);
+  const [scanProgress, setScanProgress] = useState<{ status: string; phase?: string; processed: number; total: number; percentage: number; error?: string } | null>(null);
 
   const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type });
@@ -621,7 +621,9 @@ const LibraryManager: React.FC = () => {
         <Paper sx={{ p: 2.5, mb: 3, border: '1px solid', borderColor: 'divider', borderRadius: 3, background: theme => theme.palette.mode === 'dark' ? '#1c1b22' : '#ffffff' }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.5}>
             <Typography variant="body2" sx={{ fontWeight: 700 }}>
-              Scanning library files... ({scanProgress.processed} / {scanProgress.total} tracks)
+              {scanProgress.phase === 'verifying_albums'
+                ? `Verifying album tracklists... (${scanProgress.processed} / ${scanProgress.total} albums)`
+                : `Scanning library files... (${scanProgress.processed} / ${scanProgress.total} tracks)`}
             </Typography>
             <Typography variant="body2" color="primary.main" sx={{ fontWeight: 800 }}>
               {scanProgress.percentage}%

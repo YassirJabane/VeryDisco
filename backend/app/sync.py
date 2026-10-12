@@ -472,6 +472,18 @@ def strip_scene_tags(text: str) -> str:
     s = re.sub(r'\s+', ' ', s).strip(' -_./\\')
     return s if s else text
 
+
+def strip_promotional_text(text: Optional[str]) -> str:
+    """Remove distributor links from metadata supplied by downloaded files."""
+    if not text:
+        return ""
+    cleaned = re.sub(
+        r'(?i)\b(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/[\w.-]+',
+        '', text,
+    )
+    cleaned = re.sub(r'(?i)\b(?:www\.)?pmedia(?:_music|1)?\b', '', cleaned)
+    return re.sub(r'\s+', ' ', cleaned).strip(' -_.,;:/\\')
+
 def embed_metadata(
     file_path: str,
     artist: str,
@@ -507,8 +519,9 @@ def embed_metadata(
 
     # Provider display strings are editorial data. Preserve punctuation and
     # join phrases verbatim; normalization is only for matching/search.
-    clean_artist = str(artist or "").strip()
-    clean_title = str(title or "").strip()
+    clean_artist = strip_promotional_text(str(artist or "").strip()) or "Unknown Artist"
+    clean_title = strip_scene_tags(strip_promotional_text(str(title or "").strip())) or "Unknown Title"
+    clean_genre = strip_promotional_text(genre)
     title_feature = re.search(r'(?i)[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+([^\)\]]+)[\)\]]', clean_title)
     featured_from_title = title_feature.group(1).strip() if title_feature else ""
     if featured_from_title and featured_from_title.casefold() not in clean_artist.casefold():
@@ -519,8 +532,10 @@ def embed_metadata(
         final_album_artist = "Various Artists"
         compilation_val = "1"
     else:
-        final_album = album or f"{clean_title} - Single"
-        final_album_artist = str(album_artist or artist or clean_artist).strip()
+        final_album = strip_promotional_text(album) or f"{clean_title} - Single"
+        final_album_artist = strip_promotional_text(
+            str(album_artist or artist or clean_artist).strip()
+        ) or clean_artist
         compilation_val = "0"
 
     final_album_artists = list(dict.fromkeys(
@@ -585,8 +600,8 @@ def embed_metadata(
             tags.add(TPE2(encoding=3, text=final_album_artist))
             tags.add(TALB(encoding=3, text=final_album))
             tags.add(TCMP(encoding=3, text=compilation_val))
-            if genre:
-                tags.add(TCON(encoding=3, text=genre))
+            if clean_genre:
+                tags.add(TCON(encoding=3, text=clean_genre))
 
             if is_explore:
                 tags.add(TPOS(encoding=3, text="1/1"))
@@ -654,8 +669,8 @@ def embed_metadata(
             audio["album"] = [final_album]
             audio["title"] = [clean_title]
             audio["compilation"] = [compilation_val]
-            if genre:
-                audio["genre"] = [genre]
+            if clean_genre:
+                audio["genre"] = [clean_genre]
 
             if is_explore:
                 audio["discnumber"] = ["1"]
@@ -721,8 +736,8 @@ def embed_metadata(
             audio["©nam"] = [clean_title]
             audio["©alb"] = [final_album]
             audio["cpil"] = is_explore
-            if genre:
-                audio["©gen"] = [genre]
+            if clean_genre:
+                audio["©gen"] = [clean_genre]
 
             if is_explore:
                 audio["disk"] = [(1, 1)]
@@ -777,6 +792,7 @@ def embed_metadata(
         logger.info(f"Embedded metadata and cover art into: {file_path}")
     except Exception as e:
         logger.error(f"Failed to embed metadata into {file_path}: {e}")
+        raise
 
 def extract_main_artist(artist_name: str) -> str:
     """

@@ -1038,6 +1038,18 @@ async def _download_album_task_internal(
                             copied_files.append((f, dest_path))
                         except Exception as e:
                             logger.error(f"Failed to copy and link existing track {clean_title}: {e}")
+                            # The source is only copied in this path. If canonical tagging
+                            # fails, discard that new copy so raw third-party tags never
+                            # become part of the managed library.
+                            try:
+                                if Path(existing_path).resolve() != Path(dest_path).resolve():
+                                    if Path(dest_path).exists():
+                                        Path(dest_path).unlink()
+                                    failed_lrc = Path(dest_path).with_suffix(".lrc")
+                                    if failed_lrc.exists():
+                                        failed_lrc.unlink()
+                            except Exception as cleanup_error:
+                                logger.error(f"Could not remove failed library copy {dest_path}: {cleanup_error}")
                             to_download.append(f)
                     else:
                         to_download.append(f)
@@ -1407,6 +1419,11 @@ async def _download_album_task_internal(
                         )
                     except Exception as e:
                         logger.error(f"Failed to embed metadata/lyrics for {dest_path}: {e}")
+                        try:
+                            await asyncio.to_thread(safe_move_file, dest_path, local_path)
+                        except Exception as restore_error:
+                            logger.error(f"Could not restore untagged download {dest_path}: {restore_error}")
+                        continue
 
                     overall_downloaded.append((f, dest_path))
 
@@ -1823,6 +1840,11 @@ async def _download_single_track_internal(
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
             except Exception as e:
                 logger.warning(f"Could not embed metadata/lyrics for single track: {e}")
+                try:
+                    await asyncio.to_thread(safe_move_file, dest_audio_path, downloaded_file)
+                except Exception as restore_error:
+                    logger.error(f"Could not restore untagged download {dest_audio_path}: {restore_error}")
+                continue
 
             if db and user_id and not is_explore:
                 await db.refresh_library_paths(user_id, [str(dest_audio_path)])
@@ -2039,6 +2061,11 @@ async def grab_single_track_task(
             logger.info(f"Saved and embedded metadata for grabbed track '{fetched_artist} - {title_tag}'")
         except Exception as e:
             logger.warning(f"Could not embed metadata/lyrics for grabbed track: {e}")
+            try:
+                await asyncio.to_thread(safe_move_file, dest_audio_path, downloaded_file)
+            except Exception as restore_error:
+                logger.error(f"Could not restore untagged download {dest_audio_path}: {restore_error}")
+            return
 
         # Trigger scan
         if config.navidrome.url and config.navidrome.username and config.navidrome.password:
