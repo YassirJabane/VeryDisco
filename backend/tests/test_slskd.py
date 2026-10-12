@@ -80,3 +80,48 @@ async def test_search_candidates_filtering_and_sorting():
     assert candidates[0]["username"] == "peer_best"
     assert candidates[1]["username"] == "peer_slow"
     assert candidates[2]["username"] == "peer_fast_busy"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_title_track_requires_artist_match():
+    client = SlskdClient(base_url="http://localhost:5030")
+    respx.post("http://localhost:5030/api/v0/searches").respond(status_code=200, json={"id": "search-prince"})
+    respx.get("http://localhost:5030/api/v0/searches/search-prince").respond(status_code=200, json={"isComplete": True})
+
+    mock_responses = [
+        {
+            "username": "peer_cover",
+            "hasFreeUploadSlot": True,
+            "queueLength": 0,
+            "speed": 5000,
+            "files": [
+                {"filename": "Etta James - Purple Rain.flac", "size": 30000000, "bitrate": 0}
+            ]
+        },
+        {
+            "username": "peer_official",
+            "hasFreeUploadSlot": True,
+            "queueLength": 0,
+            "speed": 1000,
+            "files": [
+                {"filename": "Prince - Purple Rain.flac", "size": 35000000, "bitrate": 0}
+            ]
+        }
+    ]
+    respx.get("http://localhost:5030/api/v0/searches/search-prince/responses").respond(
+        status_code=200, json=mock_responses
+    )
+
+    candidates, _ = await client.search_candidates(
+        artist="Prince and The Revolution",
+        title="Purple Rain",
+        album="Purple Rain",
+        query="Purple Rain Prince",
+        audio_quality={"preset": "lossless"}
+    )
+
+    # Cover by Etta James must be excluded despite album title matching the track title
+    assert len(candidates) == 1
+    assert candidates[0]["username"] == "peer_official"
+    assert candidates[0]["full_artist_matched"] is True

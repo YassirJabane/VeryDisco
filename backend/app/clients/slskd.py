@@ -194,8 +194,14 @@ class SlskdClient:
                     len(artist_words) > 0 and all(w in norm_filename for w in artist_words)
                 )
                 partial_artist_match = any(w in norm_filename for w in artist_words if len(w) >= 4)
-                album_match = (norm_album in norm_filename) if (norm_album and len(norm_album) >= 3) else False
+                album_is_distinct = bool(norm_album and len(norm_album) >= 3 and norm_album != norm_title)
+                album_match = (norm_album in norm_filename) if album_is_distinct else False
                 
+                # If album name equals the track title, matching the album provides no proof of the artist:
+                # the artist itself MUST match to prevent downloading random covers or karaoke tracks.
+                if not album_is_distinct and not (full_artist_match or partial_artist_match):
+                    continue
+
                 if not (full_artist_match or partial_artist_match or album_match):
                     continue
  
@@ -203,7 +209,7 @@ class SlskdClient:
                 keywords = [
                     "mashup", "bootleg", "dj set", "live", "remix", "instrumental", 
                     "acoustic", "demo", "karaoke", "cover", "edit", "mix", "vip",
-                    "chopped", "screwed", "slowed", "chopnotslop"
+                    "chopped", "screwed", "slowed", "chopnotslop", "tribute", "parody"
                 ]
                 is_keyword_skipped = False
                 for kw in keywords:
@@ -246,10 +252,10 @@ class SlskdClient:
                     "album_matched": album_match
                 })
  
-        # Sort candidates
+        # Sort candidates: actual artist match comes before audio quality priority
         candidates.sort(key=lambda x: (
-            x["priority"],
             not x["full_artist_matched"],
+            x["priority"],
             not x["album_matched"],
             not x["hasFreeUploadSlot"],
             x["queueLength"],
