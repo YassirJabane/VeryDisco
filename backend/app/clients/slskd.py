@@ -183,10 +183,15 @@ class SlskdClient:
                 if not filename:
                     continue
  
-                # Filename matching: title must match AND (artist must match OR album must match)
-                norm_filename = normalize(filename)
-                if norm_title not in norm_filename:
+                # Filename matching: title must match in the file basename (not the parent folder path!)
+                # Matching directory path causes eponymous title tracks (e.g. Purple Rain on album Purple Rain)
+                # to falsely match every file in the album folder, downloading track 01 instead.
+                basename = os.path.basename(filename.replace("\\", "/"))
+                norm_basename = normalize_title(basename)
+                if norm_title not in norm_basename:
                     continue
+
+                norm_filename = normalize(filename)
                     
                 from backend.app.sync import get_artist_aliases
                 norm_artists = get_artist_aliases(artist)

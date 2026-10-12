@@ -125,3 +125,42 @@ async def test_title_track_requires_artist_match():
     assert len(candidates) == 1
     assert candidates[0]["username"] == "peer_official"
     assert candidates[0]["full_artist_matched"] is True
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_title_track_does_not_match_other_album_tracks():
+    client = SlskdClient(base_url="http://localhost:5030")
+    respx.post("http://localhost:5030/api/v0/searches").respond(status_code=200, json={"id": "search-album"})
+    respx.get("http://localhost:5030/api/v0/searches/search-album").respond(status_code=200, json={"isComplete": True})
+
+    # A peer sharing the whole album in a folder named 'Purple Rain'
+    mock_responses = [
+        {
+            "username": "peer_full_album",
+            "hasFreeUploadSlot": True,
+            "queueLength": 0,
+            "speed": 5000,
+            "files": [
+                {"filename": "Music\\Prince\\Purple Rain\\01 - Let's Go Crazy.flac", "size": 30000000, "bitrate": 0},
+                {"filename": "Music\\Prince\\Purple Rain\\02 - Take Me with U.flac", "size": 25000000, "bitrate": 0},
+                {"filename": "Music\\Prince\\Purple Rain\\09 - Purple Rain.flac", "size": 55000000, "bitrate": 0},
+            ]
+        }
+    ]
+    respx.get("http://localhost:5030/api/v0/searches/search-album/responses").respond(
+        status_code=200, json=mock_responses
+    )
+
+    candidates, _ = await client.search_candidates(
+        artist="Prince and The Revolution",
+        title="Purple Rain",
+        album="Purple Rain",
+        query="Purple Rain Prince",
+        audio_quality={"preset": "lossless"}
+    )
+
+    # Only track 09 should match, never track 01 or 02 simply because the album folder is named 'Purple Rain'
+    assert len(candidates) == 1
+    assert "09 - Purple Rain" in candidates[0]["filename"]
+    assert "01 - Let's Go Crazy" not in candidates[0]["filename"]
