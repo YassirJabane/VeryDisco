@@ -6,7 +6,7 @@ WORKDIR /build
 
 # Copy frontend source files
 COPY frontend/package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY frontend/ ./
 RUN npm run build

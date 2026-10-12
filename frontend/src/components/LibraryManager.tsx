@@ -132,12 +132,12 @@ const AlbumCard: React.FC<{
 
           <Chip
             label={
-              album.status === 'fully'
-                ? `Full (${album.total_tracks && album.total_tracks > 0 ? `${album.track_count}/${album.total_tracks}` : album.track_count})`
-                : `Partial (${album.total_tracks && album.total_tracks > 0 ? `${album.track_count}/${album.total_tracks}` : album.track_count})`
+              album.status === 'unverified'
+                ? `Unverified (${album.track_count} local)`
+                : `${album.status === 'fully' ? 'Full' : 'Partial'} (${album.track_count}/${album.total_tracks})`
             }
             size="small"
-            color={album.status === 'fully' ? 'success' : 'warning'}
+            color={album.status === 'fully' ? 'success' : album.status === 'partially' ? 'warning' : 'default'}
             sx={{ fontWeight: 800, fontSize: '0.68rem', height: 22 }}
           />
 
@@ -300,7 +300,7 @@ const LibraryManager: React.FC = () => {
   const [localLyricsType, setLocalLyricsType] = useState('');
   const [loadingLyrics, setLoadingLyrics] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [scanProgress, setScanProgress] = useState<{ status: string; processed: number; total: number; percentage: number; error?: string } | null>(null);
+  const [scanProgress, setScanProgress] = useState<{ status: string; phase?: string; processed: number; total: number; percentage: number; error?: string } | null>(null);
 
   const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
     setToast({ msg, type });
@@ -324,6 +324,8 @@ const LibraryManager: React.FC = () => {
               setLoading(true);
               const data = await apiService.getLibraryAlbums();
               setAlbums(data);
+              setTracksMap({});
+              setExpandedPath(null);
               setLoading(false);
               if (prog.status === 'completed') {
                 showToast("Library scan completed successfully.");
@@ -606,7 +608,9 @@ const LibraryManager: React.FC = () => {
         <Paper sx={{ p: 2.5, mb: 3, border: '1px solid', borderColor: 'divider', borderRadius: 3, background: theme => theme.palette.mode === 'dark' ? '#1c1b22' : '#ffffff' }}>
           <Stack direction="row" justifyContent="space-between" alignItems="center" mb={1.5}>
             <Typography variant="body2" sx={{ fontWeight: 700 }}>
-              Scanning library files... ({scanProgress.processed} / {scanProgress.total} tracks)
+              {scanProgress.phase === 'verifying_albums'
+                ? `Verifying album tracklists... (${scanProgress.processed} / ${scanProgress.total} albums)`
+                : `Scanning library files... (${scanProgress.processed} / ${scanProgress.total} tracks)`}
             </Typography>
             <Typography variant="body2" color="primary.main" sx={{ fontWeight: 800 }}>
               {scanProgress.percentage}%

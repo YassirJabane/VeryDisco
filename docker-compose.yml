@@ -1,5 +1,6 @@
 services:
   verydisco:
+    build: .
     image: ghcr.io/yassirjabane/verydisco:1.0.0
     container_name: verydisco
     ports:

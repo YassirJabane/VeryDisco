@@ -456,6 +456,18 @@ def strip_scene_tags(text: str) -> str:
     s = re.sub(r'\s+', ' ', s).strip(' -_./\\')
     return s if s else text
 
+
+def strip_promotional_text(text: Optional[str]) -> str:
+    """Remove distributor links from metadata supplied by downloaded files."""
+    if not text:
+        return ""
+    cleaned = re.sub(
+        r'(?i)\b(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/[\w.-]+',
+        '', text,
+    )
+    cleaned = re.sub(r'(?i)\b(?:www\.)?pmedia(?:_music|1)?\b', '', cleaned)
+    return re.sub(r'\s+', ' ', cleaned).strip(' -_.,;:/\\()[]')
+
 def embed_metadata(
     file_path: str,
     artist: str,
@@ -487,16 +499,19 @@ def embed_metadata(
     """
     ext = os.path.splitext(file_path)[1].lower()
 
-    clean_artist = sanitize_artist_name(artist) or artist
-    clean_title = strip_scene_tags(title) or title
+    clean_artist = sanitize_artist_name(strip_promotional_text(artist)) or "Unknown Artist"
+    clean_title = strip_scene_tags(strip_promotional_text(title)) or "Unknown Title"
+    clean_genre = strip_promotional_text(genre)
 
     if is_explore:
         final_album = "Explore Tracks"
         final_album_artist = "Various Artists"
         compilation_val = "1"
     else:
-        final_album = album or f"{clean_title} - Single"
-        final_album_artist = sanitize_artist_name(album_artist or artist) or clean_artist
+        final_album = strip_promotional_text(album) or f"{clean_title} - Single"
+        final_album_artist = sanitize_artist_name(
+            strip_promotional_text(album_artist or artist)
+        ) or clean_artist
         compilation_val = "0"
 
     # ── Build individual artist list for Navidrome ARTISTS multi-value tag ──────
@@ -539,8 +554,8 @@ def embed_metadata(
             tags.add(TPE2(encoding=3, text=final_album_artist))
             tags.add(TALB(encoding=3, text=final_album))
             tags.add(TCMP(encoding=3, text=compilation_val))
-            if genre:
-                tags.add(TCON(encoding=3, text=genre))
+            if clean_genre:
+                tags.add(TCON(encoding=3, text=clean_genre))
 
             if is_explore:
                 tags.add(TPOS(encoding=3, text="1/1"))
@@ -604,8 +619,8 @@ def embed_metadata(
             audio["album"] = [final_album]
             audio["title"] = [clean_title]
             audio["compilation"] = [compilation_val]
-            if genre:
-                audio["genre"] = [genre]
+            if clean_genre:
+                audio["genre"] = [clean_genre]
 
             if is_explore:
                 audio["discnumber"] = ["1"]
@@ -667,8 +682,8 @@ def embed_metadata(
             audio["©nam"] = [clean_title]
             audio["©alb"] = [final_album]
             audio["cpil"] = is_explore
-            if genre:
-                audio["©gen"] = [genre]
+            if clean_genre:
+                audio["©gen"] = [clean_genre]
 
             if is_explore:
                 audio["disk"] = [(1, 1)]
@@ -714,6 +729,7 @@ def embed_metadata(
         logger.info(f"Embedded metadata and cover art into: {file_path}")
     except Exception as e:
         logger.error(f"Failed to embed metadata into {file_path}: {e}")
+        raise
 
 def extract_main_artist(artist_name: str) -> str:
     """
@@ -1968,7 +1984,7 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           # 5. Promotion to final output path
           expected_parent = Path(playlists_dir).resolve()
           resolved_output = output_path.resolve()
-          if not str(resolved_output).startswith(str(expected_parent)):
+          if not resolved_output.is_relative_to(expected_parent):
               raise ValueError(f"Output path {resolved_output} is outside allowed directory {expected_parent}. Aborting.")
 
           PRESERVE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".nfo", ".txt"}

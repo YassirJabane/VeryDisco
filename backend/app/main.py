@@ -3426,9 +3426,12 @@ def _build_library_index_sync(
 
     for idx, f_path in enumerate(audio_files, 1):
         try:
-            mtime = _os.path.getmtime(f_path)
+            file_stat = f_path.stat()
+            mtime = file_stat.st_mtime
+            file_size = file_stat.st_size
         except Exception:
             mtime = 0.0
+            file_size = 0
 
         # ── Tags ──────────────────────────────────────────────────────────────
         meta = read_file_metadata_with_cache(f_path, metadata_cache, new_entries)
@@ -3604,6 +3607,7 @@ def _build_library_index_sync(
             'user_id':              user_id,
             'filepath':             str(f_path),
             'mtime':                mtime,
+            'file_size':            file_size,
             'artist':               artist or None,
             'album':                album or None,
             'title':                title or None,
@@ -3727,11 +3731,49 @@ async def run_library_scan_task(user_id: str, music_dir: Path):
             metadata_cache, progress_callback
         )
 
+        previous_mbids = await db.get_library_mbid_snapshot(user_id)
+        for row in rows:
+            previous = previous_mbids.get(row["filepath"])
+            if (previous and previous["mtime"] == row["mtime"]
+                    and previous["file_size"] == row["file_size"]):
+                row["track_mbid"] = row["track_mbid"] or previous["track_mbid"]
+                row["album_mbid"] = row["album_mbid"] or previous["album_mbid"]
+
         # Persist to DB
         logger.info(f"💾 [Library Scan] Writing {len(rows)} track records to library_index database table...")
         await db.clear_library_index(user_id)
         await db.upsert_library_index_batch(rows)
         await db.invalidate_user_caches(user_id)
+
+        # Resolve official tracklists only on an explicit library refresh. Album
+        # cards and expanded tracklists read these durable results from SQLite.
+        albums = await db.query_library_albums_grouped(user_id)
+        existing_tracklists = await db.get_album_tracklists(user_id)
+        keys = [(a["artist_norm"], a["album_norm"]) for a in albums]
+        library_scan_progress[user_id].update({
+            "phase": "verifying_albums", "processed": 0, "total": len(albums),
+            "percentage": 0,
+        })
+        from backend.app.clients.musicbrainz import musicbrainz_client
+        for index, album in enumerate(albums, 1):
+            key = (album["artist_norm"], album["album_norm"])
+            try:
+                result = await musicbrainz_client.get_album_tracklist(
+                    album["artist"], album["album"], force_refresh=True
+                )
+                if result and result.get("tracks"):
+                    await db.save_album_tracklist(
+                        user_id, *key, result.get("release_mbid"), result["tracks"]
+                    )
+                elif key not in existing_tracklists:
+                    await db.save_album_tracklist(user_id, *key, None, [])
+            except Exception as exc:
+                logger.warning("Album verification failed for %s — %s: %s",
+                               album["artist"], album["album"], exc)
+            library_scan_progress[user_id].update({
+                "processed": index, "percentage": int(index * 100 / len(albums)),
+            })
+        await db.prune_album_tracklists(user_id, keys)
 
         issues_found = sum(
             1 for r in rows
@@ -3778,9 +3820,13 @@ async def trigger_full_library_scan(request: Request):
     if not music_dir.exists():
         return {"status": "success", "message": "Library path does not exist."}
         
-    if library_scan_progress.get(user_id, {}).get("status") == "scanning":
+    if library_scan_progress.get(user_id, {}).get("status") == "running":
         return {"status": "success", "message": "Scan already in progress."}
-        
+
+    library_scan_progress[user_id] = {
+        "status": "running", "phase": "indexing", "processed": 0,
+        "total": 0, "percentage": 0, "issues_found": 0,
+    }
     _create_tracked_task(
         run_library_scan_task(user_id, music_dir),
         task_id=f"library_scan:{user_id}",
@@ -3811,46 +3857,29 @@ async def get_library_albums(request: Request):
     
     db_albums = await db.query_library_albums_grouped(user_id)
     if db_albums:
+        tracklists = await db.get_album_tracklists(user_id)
         result = []
         for a in db_albums:
             sample_fp = a.get("sample_filepath") or ""
-            folder_p = str(Path(sample_fp).parent) if sample_fp else ""
+            sample_parent = Path(sample_fp).parent if sample_fp else None
+            if sample_parent and re.match(r'(?i)^(?:disc|cd|disk)\s*\d+$', sample_parent.name):
+                sample_parent = sample_parent.parent
+            folder_p = str(sample_parent) if sample_parent else ""
             t_count = a.get("track_count", 0)
-            tot_tracks = a.get("total_tracks") or 0
 
             art_norm = a.get("artist_norm", "")
             alb_norm = a.get("album_norm", "")
-            if art_norm and alb_norm:
-                disc_rows = await db.query_album_disc_track_counts(user_id, art_norm, alb_norm)
-                if len(disc_rows) > 1:
-                    tot_tracks = sum(
-                        max(r.get("max_total_tracks") or 0, r.get("max_track_num") or 0, r.get("track_count") or 0)
-                        for r in disc_rows
-                    )
-                elif disc_rows:
-                    tot_tracks = max(
-                        tot_tracks,
-                        disc_rows[0].get("max_track_num") or 0,
-                        t_count
-                    )
+            official = tracklists.get((art_norm, alb_norm))
+            tot_tracks = official["total_tracks"] if official else 0
 
-            total_size = 0
-            if folder_p and os.path.isdir(folder_p):
-                try:
-                    total_size = sum(
-                        os.path.getsize(os.path.join(folder_p, fn))
-                        for fn in os.listdir(folder_p)
-                        if os.path.isfile(os.path.join(folder_p, fn))
-                    )
-                except Exception:
-                    total_size = 0
+            total_size = a.get("total_size") or 0
 
-            if tot_tracks > 0 and t_count >= tot_tracks:
+            if not official or official["total_tracks"] <= 0:
+                status = 'unverified'
+            elif t_count >= tot_tracks:
                 status = 'fully'
-            elif tot_tracks > 0:
-                status = 'partially'
             else:
-                status = 'fully'
+                status = 'partially'
 
             ext_val = (a.get("ext") or "mp3").lstrip(".").upper()
             br_val = a.get("bitrate")
@@ -3861,7 +3890,9 @@ async def get_library_albums(request: Request):
                 "album": a.get("album") or "Unknown Album",
                 "year": a.get("year") or "",
                 "track_count": t_count,
-                "total_tracks": tot_tracks,
+                "total_tracks": tot_tracks if status != 'unverified' else 0,
+                "release_mbid": official["release_mbid"] if official else None,
+                "verified_at": official["checked_at"] if official else None,
                 "total_size": total_size,
                 "quality": quality,
                 "status": status,
@@ -3945,7 +3976,7 @@ async def get_album_cover(folder_path: str, request: Request):
         targets = [Path(folder_path).resolve()]
         
     target = targets[0] if targets else Path(folder_path).resolve()
-    if not str(target).startswith(str(music_dir)):
+    if not target.is_relative_to(music_dir):
         logger.error(f"Access denied in get_album_cover: target {target} does not start with music_dir {music_dir} (user: {user_id})")
         raise HTTPException(status_code=403, detail="Access denied")
         
@@ -3982,7 +4013,7 @@ def _get_local_tracks_for_album_sync(target: Path, metadata_cache: dict, new_cac
 
 @app.get("/api/library/albums/tracks")
 async def get_library_album_tracks(folder_path: str, request: Request):
-    """Fetch complete list of album tracks matching Deezer schema against on-disk files for current user."""
+    """Match on-disk tracks against the official tracklist saved at refresh."""
     if not folder_path or folder_path.strip().lower() in ("undefined", "null", ""):
         raise HTTPException(status_code=400, detail="Invalid folder_path parameter")
         
@@ -4005,7 +4036,7 @@ async def get_library_album_tracks(folder_path: str, request: Request):
     if re.match(r'(?i)^(?:disc|cd|disk)\s*\d+$', target.name):
         target = target.parent
 
-    if not str(target).startswith(str(music_dir)):
+    if not target.is_relative_to(music_dir):
         logger.error(f"Access denied in get_library_album_tracks: target {target} does not start with music_dir {music_dir} (user: {user_id})")
         raise HTTPException(status_code=403, detail="Access denied")
         
@@ -4022,17 +4053,13 @@ async def get_library_album_tracks(folder_path: str, request: Request):
     if new_cache_entries:
         await db.save_file_metadata_batch(new_cache_entries)
         
-    album_name = target.name
-    artist_name = target.parent.name if target.parent != music_dir else ""
-    
     official_tracks = []
-    try:
-        from backend.app.clients.musicbrainz import musicbrainz_client
-        mb_res = await musicbrainz_client.get_album_tracklist(artist_name, album_name)
-        if mb_res:
-            official_tracks = mb_res.get("tracks", [])
-    except Exception as e:
-        logger.warning(f"Failed to fetch tracklist from MusicBrainz for {artist_name} - {album_name}: {e}")
+    if local_tracks:
+        identity = await db.get_album_identity_for_filepath(user_id, local_tracks[0]["filepath"])
+        if identity:
+            cached = (await db.get_album_tracklists(user_id)).get(identity)
+            if cached:
+                official_tracks = cached["tracks"]
 
     results = []
     if official_tracks:
@@ -4120,7 +4147,7 @@ async def delete_library_album(req: DeleteAlbumRequest, request: Request):
     for fp in folders:
         target = Path(fp)
         resolved_target = target.resolve()
-        if not str(resolved_target).startswith(str(music_dir)):
+        if not resolved_target.is_relative_to(music_dir):
             raise HTTPException(status_code=403, detail="Access denied. Path must be inside the music directory.")
         valid_paths.append(target)
 
@@ -4807,7 +4834,7 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
             playlists_dir = Path(user_row["playlist_dir"]).resolve()
             
     target_path = Path(req.target_path)
-    if not str(target_path.resolve()).startswith(str(music_dir)) and not str(target_path.resolve()).startswith(str(playlists_dir)):
+    if not target_path.resolve().is_relative_to(music_dir) and not target_path.resolve().is_relative_to(playlists_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if req.action != "merge_albums" and not os.path.exists(req.target_path):
@@ -5001,38 +5028,40 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
         if not req.params or "source_folder" not in req.params or "dest_folder" not in req.params:
             raise HTTPException(status_code=400, detail="Missing source_folder or dest_folder parameters.")
             
-        src = Path(req.params["source_folder"])
-        dst = Path(req.params["dest_folder"])
+        src = Path(req.params["source_folder"]).resolve()
+        dst = Path(req.params["dest_folder"]).resolve()
         
-        if not str(src.resolve()).startswith(str(music_dir)) or not str(dst.resolve()).startswith(str(music_dir)):
+        if not src.resolve().is_relative_to(music_dir) or not dst.resolve().is_relative_to(music_dir):
             raise HTTPException(status_code=403, detail="Access denied. Path must be inside the music directory.")
+        if src == dst or src in dst.parents or dst in src.parents:
+            raise HTTPException(status_code=400, detail="Source and destination must be separate album folders.")
+        if not src.is_dir() or not dst.is_dir():
+            raise HTTPException(status_code=404, detail="Album folder not found.")
             
         try:
+            conflicts = []
             for f in os.listdir(str(src)):
                 src_file = src / f
                 if not src_file.is_file():
                     continue
                 dst_file = dst / f
                 if dst_file.exists():
-                    from backend.app.sync import get_file_audio_info
-                    _, src_bitrate, _, _ = get_file_audio_info(src_file)
-                    _, dst_bitrate, _, _ = get_file_audio_info(dst_file)
-                    if src_bitrate > dst_bitrate:
-                        os.remove(str(dst_file))
-                        shutil.move(str(src_file), str(dst_file))
-                    else:
-                        os.remove(str(src_file))
+                    conflicts.append(f)
                 else:
                     shutil.move(str(src_file), str(dst_file))
                     
-            if src.is_dir():
-                shutil.rmtree(str(src))
+            if not any(src.iterdir()):
+                src.rmdir()
                 
             parent = src.parent
             if parent != music_dir and parent.is_dir() and not os.listdir(str(parent)):
-                shutil.rmtree(str(parent))
+                parent.rmdir()
                 
-            return {"status": "success", "message": "Folders merged successfully."}
+            return {
+                "status": "partial" if conflicts else "success",
+                "message": "Matching filenames were kept in the source folder." if conflicts else "Folders merged successfully.",
+                "conflicts": conflicts,
+            }
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to merge folders: {e}")
             
@@ -5338,7 +5367,7 @@ async def verify_user_access_to_path(user_id: str, path_str: str):
             playlists_dir = Path(user_row["playlist_dir"]).resolve()
             
     resolved = Path(path_str).resolve()
-    if not str(resolved).startswith(str(music_dir)) and not str(resolved).startswith(str(playlists_dir)):
+    if not resolved.is_relative_to(music_dir) and not resolved.is_relative_to(playlists_dir):
         raise HTTPException(status_code=403, detail="Access denied")
 
 @app.post("/api/maintenance/ignore")
@@ -5571,7 +5600,7 @@ async def get_lyrics_file_endpoint(filepath: str, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(filepath)
-    if not str(target_path.resolve()).startswith(str(music_dir)):
+    if not target_path.resolve().is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     lrc_path = target_path.with_suffix(".lrc")
@@ -5625,7 +5654,7 @@ async def save_lyrics_endpoint(req: SaveLyricsRequest, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(req.filepath)
-    if not str(target_path.resolve()).startswith(str(music_dir)):
+    if not target_path.resolve().is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.exists():
@@ -5807,7 +5836,7 @@ async def save_art_endpoint(req: SaveArtRequest, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(req.folder_path).resolve()
-    if not str(target_path).startswith(str(music_dir)):
+    if not target_path.is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.is_dir():
@@ -5906,7 +5935,7 @@ async def get_track_tags_endpoint(filepath: str, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(filepath).resolve()
-    if not str(target_path).startswith(str(music_dir)):
+    if not target_path.is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.exists():
@@ -5941,7 +5970,7 @@ async def edit_track_tags_endpoint(req: EditTagsRequest, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(req.filepath).resolve()
-    if not str(target_path).startswith(str(music_dir)):
+    if not target_path.is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.exists():
@@ -6280,7 +6309,7 @@ def _resolve_duplicates_sync(paths_to_delete: list[str], music_dir: Path) -> tup
     errors = []
     for filepath_str in paths_to_delete:
         filepath = Path(filepath_str).resolve()
-        if not str(filepath).startswith(str(music_dir)):
+        if not filepath.is_relative_to(music_dir):
             errors.append({"path": filepath_str, "error": "Access denied"})
             continue
             
@@ -6443,7 +6472,7 @@ async def stream_track_endpoint(filepath: str, request: Request):
         music_dir = Path(user_row["music_dir"]).resolve()
         
     target_path = Path(filepath).resolve()
-    if not str(target_path).startswith(str(music_dir)):
+    if not target_path.is_relative_to(music_dir):
         raise HTTPException(status_code=403, detail="Access denied")
         
     if not target_path.exists():
@@ -6825,7 +6854,14 @@ async def fix_folder_tags_endpoint(req: FixFolderTagsRequest, request: Request):
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
 
-    folder = Path(req.folder_path)
+    user_row = await db.get_user_by_id(user["id"])
+    music_dir = Path(
+        user_row.get("music_dir") if user_row and user_row.get("music_dir")
+        else config_manager.config.paths.music_dir
+    ).resolve()
+    folder = Path(req.folder_path).resolve()
+    if not folder.is_relative_to(music_dir):
+        raise HTTPException(status_code=403, detail="Access denied")
     if not folder.exists() or not folder.is_dir():
         raise HTTPException(status_code=404, detail="Folder not found")
 

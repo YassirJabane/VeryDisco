@@ -1,4 +1,3 @@
-import os
 import sys
 import shutil
 import logging
@@ -6,11 +5,22 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from backend.app.config import load_config
-from backend.app.sync import embed_metadata, get_library_filename
+from backend.app.sync import embed_metadata, extract_audio_mbids, get_library_filename
 from backend.app.album_sync import extract_track_num_from_filename, clean_track_title
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+AUDIO_EXTENSIONS = {".mp3", ".flac", ".m4a"}
+
+def _album_identity(album_dir: Path) -> str:
+    """Use a release MBID for cross-artist merges; otherwise keep folders isolated."""
+    for audio_file in album_dir.rglob("*"):
+        if audio_file.is_file() and audio_file.suffix.lower() in AUDIO_EXTENSIONS:
+            _, album_mbid = extract_audio_mbids(audio_file)
+            if album_mbid:
+                return f"mbid:{album_mbid.lower()}"
+    return f"path:{album_dir.parent.name.casefold()}::{album_dir.name.casefold()}"
 
 def process_and_fix_album_folder(primary_dir: Path, primary_artist: str, album_name: str) -> int:
     """
@@ -70,7 +80,8 @@ def process_and_fix_album_folder(primary_dir: Path, primary_artist: str, album_n
             new_path = primary_dir / new_filename
             if f.resolve() != new_path.resolve():
                 if new_path.exists():
-                    os.remove(new_path)
+                    logger.warning(f"Name collision: kept both '{f}' and '{new_path}' for manual review")
+                    continue
                 shutil.move(str(f), str(new_path))
                 # Also move sidecar lrc if exists
                 old_lrc = f.with_suffix(".lrc")
@@ -104,7 +115,7 @@ def consolidate_split_albums(music_dir: str, target_album_filter: str = "") -> i
                     alb_name = album_dir.name
                     if target_album_filter and target_album_filter.lower() not in alb_name.lower():
                         continue
-                    key = alb_name.lower()
+                    key = _album_identity(album_dir)
                     if key not in album_map:
                         album_map[key] = []
                     album_map[key].append(album_dir)
@@ -140,7 +151,7 @@ def consolidate_split_albums(music_dir: str, target_album_filter: str = "") -> i
                         shutil.move(str(item), str(dest_file))
                         logger.info(f"Moved '{item.name}' from {sec_dir.parent.name} to {primary_dir.parent.name}")
                     else:
-                        os.remove(item)
+                        logger.warning(f"Name collision: kept '{item}' for manual review")
 
             try:
                 sec_dir.rmdir()
