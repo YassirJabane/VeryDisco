@@ -265,6 +265,11 @@ async def test_acoustid_fingerprint_json_and_strict_identity(monkeypatch, tmp_pa
     ("¥$", ["Kill the Vultures"], False),
     ("A$AP Rocky", ["ASAP Rocky"], True),
     ("ASAP Rocky", ["A$AP Rocky"], True),
+    ("Prince and The Revolution", ["Prince"], True),
+    ("Prince", ["Prince and The Revolution"], True),
+    ("Prince and The Revolution", ["Prince and The Revolution"], True),
+    ("Prince and The Revolution", ["Madonna"], False),
+    ("Bob Marley & The Wailers", ["Bob Marley"], True),
 ])
 async def test_acoustid_joint_artist_credit(monkeypatch, expected_artist, recording_artists, expected_valid):
     client = AcoustIDClient()

@@ -213,6 +213,12 @@ class AcoustIDClient:
         main_art = extract_main_artist(tagged_artist)
         artist_aliases = [tagged_artist, main_art]
         norm_raw_art = norm(tagged_artist)
+        backing_match = re.search(r"(?i)^(.+?)\s+(?:and|&)\s+the\s+", tagged_artist or "")
+        if backing_match:
+            lead = backing_match.group(1).strip()
+            artist_aliases.append(lead)
+            last_word = tagged_artist.split()[-1]
+            artist_aliases.append(f"{lead} & The {last_word}")
         if norm_raw_art in ("¥$", "ys") or (tagged_artist and tagged_artist.strip() == "¥$"):
             artist_aliases.extend(["¥$", "Kanye West & Ty Dolla $ign", "Ye & Ty Dolla $ign"])
         elif any(k in norm_raw_art for k in ["kanyewest", "ye"]) and any(k in norm_raw_art for k in ["tydolla", "tydollasign"]):
@@ -235,6 +241,10 @@ class AcoustIDClient:
 
         def explicit_credit_parts(artist: str) -> list[str]:
             """Split only explicit joint credits, never ordinary band names."""
+            # Backing bands like 'Prince and The Revolution' or 'Bob Marley & The Wailers'
+            # should not be split into mandatory separate artist entities.
+            if re.search(r"(?i)\s+(?:and|&)\s+the\s+", artist or ""):
+                return []
             if not re.search(r"(?i)&|,|\b(?:and|with|x|feat(?:uring)?|ft)\b", artist or ""):
                 return []
             parts = re.split(r"(?i)\s*(?:&|,|\band\b|\bwith\b|\bx\b|\bfeat(?:uring)?\b|\bft)\.?\s*", artist)
@@ -269,6 +279,9 @@ class AcoustIDClient:
                         for art in rec_artists:
                             art_name = art.get("name", "")
                             art_candidates = [art_name]
+                            rec_backing = re.search(r"(?i)^(.+?)\s+(?:and|&)\s+the\s+", art_name or "")
+                            if rec_backing:
+                                art_candidates.append(rec_backing.group(1).strip())
                             if art_name == "¥$" or norm(art_name) in ("¥$", "ys"):
                                 art_candidates.extend(["¥$", "Kanye West & Ty Dolla $ign", "Kanye West", "Ty Dolla $ign", "Ye"])
                             elif "$" in art_name:

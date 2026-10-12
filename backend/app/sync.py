@@ -1345,16 +1345,30 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     clean_artist = re.sub(r"\$", "S", clean_artist)
     clean_album = re.sub(r"[\(\[].*?[\)\]]", "", album or "").strip()
 
+    lead_artist = ""
+    backing_match = re.search(r"(?i)^(.+?)\s+(?:and|&)\s+the\s+", clean_artist or "")
+    if backing_match:
+        lead_artist = backing_match.group(1).strip()
+
     queries: list[str] = []
     if clean_album and clean_album.casefold() not in {
         clean_title.casefold(), clean_artist.casefold(), "unknown album", "single", "ep"
     }:
         queries.append(query_part(f"{clean_title} {main_artist} {clean_album}"))
+        if lead_artist and lead_artist != main_artist:
+            queries.append(query_part(f"{clean_title} {lead_artist} {clean_album}"))
 
     title_variants = wildcard_text_variants(clean_title)
     queries_to_add = [
         query_part(f"{clean_title} {main_artist}"),
         query_part(f"{clean_title} {clean_artist}"),
+    ]
+    if lead_artist and lead_artist not in (main_artist, clean_artist):
+        queries_to_add.append(query_part(f"{clean_title} {lead_artist}"))
+    if " and the " in clean_artist.lower():
+        queries_to_add.append(query_part(f"{clean_title} {re.sub(r'(?i)\s+and\s+the\s+', ' ', clean_artist)}"))
+
+    queries_to_add.extend([
         *(query_part(f"{title_variant} {main_artist}") for title_variant in title_variants[1:]),
         # Search by title alone as a deliberate fallback. slskd may return
         # many files, but _parse_candidates still applies the strict artist /
@@ -1362,11 +1376,16 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
         # because the artist folder is indexed differently.
         query_part(clean_title),
         *(query_part(title_variant) for title_variant in title_variants[1:]),
-    ]
+    ])
     queries_to_add.extend(
         query_part(f"{clean_title} {artist_variant}")
         for artist_variant in wildcard_artist_variants(main_artist)[1:]
     )
+    if lead_artist and lead_artist != main_artist:
+        queries_to_add.extend(
+            query_part(f"{clean_title} {artist_variant}")
+            for artist_variant in wildcard_artist_variants(lead_artist)[1:]
+        )
     for query in queries_to_add:
         if query and query not in queries:
             queries.append(query)

@@ -36,6 +36,14 @@ def test_track_query_has_title_only_fallback_for_busy_artists():
     assert "Purple Rain *rince" in queries
 
 
+def test_track_query_generates_lead_artist_for_backing_band():
+    queries = build_track_search_queries("Prince and The Revolution", "Purple Rain", "Purple Rain")
+
+    assert "Purple Rain Prince and The Revolution" in queries
+    assert "Purple Rain Prince" in queries
+    assert queries.index("Purple Rain Prince") < queries.index("Purple Rain")
+
+
 def test_wildcard_artist_variants_expand_each_multiword_artist():
     assert wildcard_artist_variants("Kanye West") == [
         "Kanye West",
