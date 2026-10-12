@@ -196,16 +196,32 @@ class AcoustIDClient:
 
         # 5. Fallback: string matching
         import re
-        from backend.app.sync import extract_main_artist, clean_search_title
+        from backend.app.sync import extract_main_artist, clean_search_title, get_artist_aliases
         def norm(s: str) -> str:
-            return re.sub(r'[^\w]', '', s).lower()
+            if not s:
+                return ""
+            cleaned = re.sub(r'[^\w]', '', s).lower()
+            if not cleaned:
+                # If removing non-word characters completely emptied the string (e.g. '¥$', '!!!', '+/-'),
+                # strip only whitespace so symbols are preserved.
+                cleaned = re.sub(r'\s+', '', s).lower()
+            return cleaned
 
         clean_tagged_title = norm(clean_search_title(tagged_title))
         norm_tagged_title = norm(tagged_title)
         
         main_art = extract_main_artist(tagged_artist)
         artist_aliases = [tagged_artist, main_art]
-        norm_aliases = [norm(a) for a in artist_aliases if a]
+        norm_raw_art = norm(tagged_artist)
+        if norm_raw_art in ("¥$", "ys") or (tagged_artist and tagged_artist.strip() == "¥$"):
+            artist_aliases.extend(["¥$", "Kanye West & Ty Dolla $ign", "Ye & Ty Dolla $ign"])
+        elif any(k in norm_raw_art for k in ["kanyewest", "ye"]) and any(k in norm_raw_art for k in ["tydolla", "tydollasign"]):
+            artist_aliases.extend(["¥$", "Kanye West & Ty Dolla $ign", "Ye & Ty Dolla $ign"])
+        if "$" in (tagged_artist or ""):
+            artist_aliases.append(tagged_artist.replace("$", "s"))
+            artist_aliases.append(tagged_artist.replace("$", "S"))
+
+        norm_aliases = list({norm(a) for a in artist_aliases if norm(a)})
         # AcoustID/MusicBrainz returns joint credits as separate artist entities,
         # while our expected credit can be a display string such as
         # "Drake & 21 Savage feat. Travis Scott". Only compare the complete
@@ -214,6 +230,8 @@ class AcoustIDClient:
             r"(?i)\b(?:feat(?:uring)?|ft|and|with|x)\b\.?", "", tagged_artist or ""
         )
         norm_joint_credit = norm(credit_without_joiners)
+        if not norm_joint_credit and norm_raw_art in ("¥$", "ys"):
+            norm_joint_credit = norm("Kanye West Ty Dolla $ign")
 
         def explicit_credit_parts(artist: str) -> list[str]:
             """Split only explicit joint credits, never ordinary band names."""
@@ -223,6 +241,8 @@ class AcoustIDClient:
             return [norm(part) for part in parts if norm(part)]
 
         expected_credit_parts = explicit_credit_parts(tagged_artist or "")
+        if not expected_credit_parts and (norm_raw_art in ("¥$", "ys") or (tagged_artist and tagged_artist.strip() == "¥$")):
+            expected_credit_parts = [norm("Kanye West"), norm("Ty Dolla $ign")]
 
         best_match_desc = ""
         highest_score = 0.0
@@ -247,9 +267,18 @@ class AcoustIDClient:
                         artist_match = not tagged_artist
                     else:
                         for art in rec_artists:
-                            rec_art = norm(art.get("name", ""))
-                            if any(alias == rec_art for alias in norm_aliases if alias):
-                                artist_match = True
+                            art_name = art.get("name", "")
+                            art_candidates = [art_name]
+                            if art_name == "¥$" or norm(art_name) in ("¥$", "ys"):
+                                art_candidates.extend(["¥$", "Kanye West & Ty Dolla $ign", "Kanye West", "Ty Dolla $ign", "Ye"])
+                            elif "$" in art_name:
+                                art_candidates.append(art_name.replace("$", "s"))
+                            for cand in art_candidates:
+                                rec_art = norm(cand)
+                                if rec_art and any(alias == rec_art for alias in norm_aliases if alias):
+                                    artist_match = True
+                                    break
+                            if artist_match:
                                 break
                         if not artist_match and len(rec_artists) > 1 and norm_joint_credit:
                             joined_credit = norm("".join(art.get("name", "") for art in rec_artists))

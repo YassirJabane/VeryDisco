@@ -837,11 +837,20 @@ def get_artist_aliases(artist_name: str) -> list[str]:
         if clean_rp:
             aliases.add(clean_rp)
 
+    # Ensure raw symbol artist names (e.g. ¥$, !!!) are included if alphanumeric stripping emptied them
+    symbol_art = re.sub(r'\s+', '', artist_name).lower().strip()
+    if symbol_art:
+        aliases.add(symbol_art)
+
     # Special artist aliases
     if any(k in aliases for k in ["kanyewest", "ye", "kanye"]):
         aliases.update(["kanyewest", "ye", "kanye"])
     if any(a in aliases for a in ["asaprocky", "aaprocky", "asap"]):
         aliases.update(["asaprocky", "aaprocky", "asap", "rocky"])
+    if "¥$" in artist_name or any(k in aliases for k in ["¥$", "ys"]):
+        aliases.update(["¥$", "ys", "kanyewest", "tydolla", "tydollasign", "ye", "kanyewesttydollasign"])
+    elif any(k in aliases for k in ["kanyewest", "ye"]) and any(k in aliases for k in ["tydolla", "tydollasign"]):
+        aliases.update(["¥$", "ys"])
 
     return list(aliases)
 

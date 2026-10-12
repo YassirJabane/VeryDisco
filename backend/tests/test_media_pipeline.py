@@ -258,6 +258,13 @@ async def test_acoustid_fingerprint_json_and_strict_identity(monkeypatch, tmp_pa
     ("Florence and the Machine", ["Florence and the Machine"], True),
     ("Drake & 21 Savage", ["Drake"], False),
     ("Drake & 21 Savage", ["Drake", "Future"], False),
+    ("¥$", ["¥$", "Young Thug"], True),
+    ("¥$", ["¥$"], True),
+    ("¥$", ["Kanye West", "Ty Dolla $ign"], True),
+    ("Kanye West & Ty Dolla $ign", ["¥$"], True),
+    ("¥$", ["Kill the Vultures"], False),
+    ("A$AP Rocky", ["ASAP Rocky"], True),
+    ("ASAP Rocky", ["A$AP Rocky"], True),
 ])
 async def test_acoustid_joint_artist_credit(monkeypatch, expected_artist, recording_artists, expected_valid):
     client = AcoustIDClient()
