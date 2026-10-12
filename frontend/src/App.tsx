@@ -57,7 +57,6 @@ const RunningTasks = React.lazy(() => import('./components/RunningTasks'));
 const AcoustIDManager = React.lazy(() => import('./components/AcoustIDManager'));
 const NamingConvention = React.lazy(() => import('./components/NamingConvention'));
 const FeatFixer = React.lazy(() => import('./components/FeatFixer'));
-const ArtistAliases = React.lazy(() => import('./components/ArtistAliases'));
 const MusicBrainzInspector = React.lazy(() => import('./components/MusicBrainzInspector'));
 const MusicRequests = React.lazy(() => import('./components/MusicRequests'));
 const MetadataRebuild = React.lazy(() => import('./components/MetadataRebuild'));
@@ -360,7 +359,6 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         ...(user?.isAdmin ? [
           { id: 'server-health', text: 'Server health', icon: <HealthIcon /> },
           { id: 'acoustid', text: 'AcoustID verification', icon: <FingerprintIcon /> },
-          { id: 'aliases', text: 'Artist aliases', icon: <ArtistsIcon /> },
           { id: 'config', text: 'Configuration', icon: <SettingsIcon /> },
         ] : []),
       ],
@@ -539,7 +537,6 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
           {activeTab === 'naming' && <NamingConvention />}
           {activeTab === 'feat-fixer' && <FeatFixer />}
           {activeTab === 'metadata-rebuild' && <MetadataRebuild />}
-          {activeTab === 'aliases' && <ArtistAliases />}
           {activeTab === 'musicbrainz-inspector' && <MusicBrainzInspector />}
           {activeTab === 'lyrics' && <LyricsManager />}
           {activeTab === 'album-art' && <AlbumArtManager />}

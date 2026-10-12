@@ -242,9 +242,6 @@ const ServerHealth: React.FC = () => {
     setLoading(true);
     setScanned(false);
     try {
-      if (forceScan) {
-        await apiService.triggerLibraryScan();
-      }
       const result = await apiService.scanMaintenanceIssues(forceScan);
       setIssues(result);
       setScanned(true);
@@ -256,7 +253,12 @@ const ServerHealth: React.FC = () => {
   }, []);
 
   React.useEffect(() => {
-    runScan(false);
+    void runScan(false);
+    const refreshCached = async () => {
+      try { setIssues(await apiService.scanMaintenanceIssues(false)); } catch { /* keep last snapshot */ }
+    };
+    const timer = window.setInterval(refreshCached, 10000);
+    return () => window.clearInterval(timer);
   }, [runScan]);
 
   const handleFixAll = async () => {
@@ -270,11 +272,11 @@ const ServerHealth: React.FC = () => {
         try {
           await apiService.fixMaintenanceIssue(issue.type, issue.target_path, action.action, action.params);
           return { id: issue.id, success: true };
-        } catch {
-          return { id: issue.id, success: false };
+        } catch (error: any) {
+          return { id: issue.id, success: false, error: error?.response?.data?.detail || error?.message || 'Unknown error' };
         }
       }
-      return { id: issue.id, success: false };
+      return { id: issue.id, success: false, error: 'No automatic action is available' };
     });
 
     const results = await Promise.all(promises);
@@ -287,7 +289,8 @@ const ServerHealth: React.FC = () => {
     const successCount = succeededIds.length;
     const failCount = results.length - successCount;
     if (failCount > 0) {
-      showToast(`Fixed ${successCount} issues, ${failCount} failed.`, 'error');
+      const firstError = results.find(result => !result.success)?.error;
+      showToast(`Fixed ${successCount} issues, ${failCount} failed.${firstError ? ` First error: ${firstError}` : ''}`, 'error');
     } else {
       showToast(`Successfully fixed all ${successCount} issues!`);
     }

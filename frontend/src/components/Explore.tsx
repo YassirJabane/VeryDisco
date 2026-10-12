@@ -22,6 +22,8 @@ import {
 import { apiService, GetStatusResponse } from '../api';
 import { useNotification } from '../context/NotificationContext';
 
+const PLAYLIST_KINDS = ['daily-jams', 'weekly-jams', 'weekly-exploration'] as const;
+
 export const Explore: React.FC = () => {
   const { notify } = useNotification();
   const theme = useTheme();
@@ -174,9 +176,6 @@ export const Explore: React.FC = () => {
       setStatus(data);
       if (data.active_playlists) {
         setActivePlaylists(data.active_playlists);
-        if (data.active_playlists.length > 0) {
-          setSource(prev => data.active_playlists.includes(prev) ? prev : data.active_playlists[0]);
-        }
       }
     } catch (e) {
       console.error("Failed to fetch status", e);
@@ -279,6 +278,7 @@ export const Explore: React.FC = () => {
   // Currently, we store the active source in state. If the sync progress shows active, we can check.
   const isSyncingThisSource = status?.is_syncing && status?.progress?.status === 'running';
   const latestRunForSource = status?.latest_runs?.[source];
+  const selectedSourceIndex = Math.max(0, PLAYLIST_KINDS.findIndex(kind => kind === source));
 
   const found = isSyncingThisSource ? status?.progress?.tracks_found : latestRunForSource?.tracks_found || 0;
   const downloaded = isSyncingThisSource ? status?.progress?.tracks_downloaded : latestRunForSource?.tracks_downloaded || 0;
@@ -419,8 +419,8 @@ export const Explore: React.FC = () => {
           <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3, display: 'flex', flexDirection: 'column', gap: 1.5 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 2 }}>
               <Tabs 
-                value={activePlaylists.indexOf(source) >= 0 ? activePlaylists.indexOf(source) : 0} 
-                onChange={(_, val) => setSource(activePlaylists[val])}
+                value={selectedSourceIndex}
+                onChange={(_, val) => setSource(PLAYLIST_KINDS[val])}
                 variant="scrollable"
                 scrollButtons="auto"
                 allowScrollButtonsMobile
@@ -437,8 +437,8 @@ export const Explore: React.FC = () => {
                   }
                 }}
               >
-                {activePlaylists.map(pl => (
-                  <Tab key={pl} label={pl.replace('-', ' ').toUpperCase()} />
+                {PLAYLIST_KINDS.map(pl => (
+                  <Tab key={pl} label={`${pl.replace('-', ' ').toUpperCase()}${activePlaylists.includes(pl) ? '' : ' · MANUAL'}`} />
                 ))}
               </Tabs>
               {status?.next_run && (

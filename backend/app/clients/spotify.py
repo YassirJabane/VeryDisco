@@ -96,7 +96,18 @@ class SpotifyClient:
             title_match = re.search(r"<title>(.*?)</title>", embed_response.text, re.IGNORECASE | re.DOTALL)
             title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else "Spotify playlist"
             title = re.sub(r"\s*[·|-]\s*Spotify$", "", title, flags=re.IGNORECASE).strip()
-            return {"id": playlist_id, "name": title, "description": "", "tracks": embed_tracks}
+            image_match = re.search(
+                r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
+                embed_response.text, re.IGNORECASE,
+            ) or re.search(
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+                embed_response.text, re.IGNORECASE,
+            )
+            return {
+                "id": playlist_id, "name": title, "description": "",
+                "artwork_url": image_match.group(1) if image_match else "",
+                "tracks": embed_tracks,
+            }
 
         # Optional compatibility fallback for installations that already have API credentials.
         # Public embeds are intentionally attempted first, so credentials are not required.
@@ -124,4 +135,5 @@ class SpotifyClient:
             response.raise_for_status()
             page = response.json()
         data["tracks"] = tracks
+        data["artwork_url"] = ((data.get("images") or [{}])[0].get("url") or "")
         return data

@@ -36,15 +36,17 @@ class LrcLibClient:
         resp = await client.get(url, params=params)
         
         if resp.status_code == 404:
-            logger.info(f"No lyrics found (404) for '{artist} - {title}'")
-            return None, "missing"
-        
-        resp.raise_for_status()
-        results = resp.json()
+            results = []
+        else:
+            resp.raise_for_status()
+            results = resp.json()
         
         if not results:
-            logger.info(f"No lyrics found (empty list) for '{artist} - {title}'")
-            return None, "missing"
+            logger.info(f"Strict lyrics lookup missed '{artist} - {title}'; trying album/title and title-only fallbacks")
+            results = await self.search_lyrics(artist, title, album, include_strict=False)
+            if not results:
+                logger.info(f"No lyrics found for '{artist} - {title}'")
+                return None, "missing"
         
         import re
         def _normalize(s: str) -> str:
@@ -63,6 +65,10 @@ class LrcLibClient:
                 
         if not best_match:
             best_match = results[0]
+
+        if best_match.get("instrumental") is True:
+            logger.info(f"LRCLIB identifies '{artist} - {title}' as instrumental")
+            return None, "instrumental"
         
         synced = best_match.get("syncedLyrics")
         plain = best_match.get("plainLyrics")
@@ -77,19 +83,35 @@ class LrcLibClient:
         logger.info(f"Lyrics result was empty for '{artist} - {title}'")
         return None, "missing"
 
-    async def search_lyrics(self, artist: str, title: str) -> list:
-        """Search for lyrics on LRCLIB and return all candidate listings."""
+    async def search_lyrics(self, artist: str, title: str, album: Optional[str] = None,
+                            include_strict: bool = True) -> list:
+        """Search LRCLIB progressively: artist+title, album+title, then title only."""
         url = f"{self.base_url}/api/search"
-        params = {
-            "artist_name": artist,
-            "track_name": title
-        }
         try:
             client = await get_http_client()
-            resp = await client.get(url, params=params)
-            if resp.status_code == 200:
-                return resp.json()
-            return []
+            strategies = []
+            if include_strict:
+                strategies.append({"artist_name": artist, "track_name": title})
+            if album:
+                strategies.append({"album_name": album, "track_name": title})
+            strategies.append({"track_name": title})
+            seen, combined = set(), []
+            for params in strategies:
+                resp = await client.get(url, params=params)
+                if resp.status_code != 200:
+                    continue
+                for item in resp.json() or []:
+                    key = item.get("id") or (
+                        (item.get("artistName") or "").casefold(),
+                        (item.get("trackName") or "").casefold(),
+                        round(float(item.get("duration") or 0)),
+                    )
+                    if key not in seen:
+                        seen.add(key)
+                        combined.append(item)
+                if combined and params.get("artist_name"):
+                    break
+            return combined
         except Exception as e:
             logger.warning(f"LRCLIB search failed: {e}")
             return []

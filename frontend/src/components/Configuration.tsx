@@ -129,6 +129,8 @@ export const Configuration: React.FC = () => {
   const [runOnStartup, setRunOnStartup] = useState(true);
   const [batchSize, setBatchSize] = useState(5);
   const [maxAttempts, setMaxAttempts] = useState(3);
+  const [backgroundRefreshMinutes, setBackgroundRefreshMinutes] = useState(5);
+  const [healthRefreshMinutes, setHealthRefreshMinutes] = useState(30);
 
   const [weeklyOutputDir, setWeeklyOutputDir] = useState('/data/weekly/current');
 
@@ -300,6 +302,8 @@ export const Configuration: React.FC = () => {
         setRunOnStartup(p.schedule?.run_on_startup !== false);
         setBatchSize(p.schedule?.batch_size || 5);
         setMaxAttempts(p.schedule?.max_candidate_attempts || 3);
+        setBackgroundRefreshMinutes(p.schedule?.background_refresh_minutes || 5);
+        setHealthRefreshMinutes(p.schedule?.health_refresh_minutes || 30);
 
         setWeeklyOutputDir(p.paths?.weekly_output_dir || '/data/weekly/current');
 
@@ -427,6 +431,8 @@ export const Configuration: React.FC = () => {
       runOnStartup !== (configResponse?.parsed?.schedule?.run_on_startup !== false) ||
       String(batchSize) !== String(configResponse?.parsed?.schedule?.batch_size || 5) ||
       String(maxAttempts) !== String(configResponse?.parsed?.schedule?.max_candidate_attempts || 3) ||
+      String(backgroundRefreshMinutes) !== String(configResponse?.parsed?.schedule?.background_refresh_minutes || 5) ||
+      String(healthRefreshMinutes) !== String(configResponse?.parsed?.schedule?.health_refresh_minutes || 30) ||
       weeklyOutputDir !== (configResponse?.parsed?.paths?.weekly_output_dir || '/data/weekly/current') ||
       navidromeUrl !== (configResponse?.parsed?.navidrome?.url || '') ||
       navidromeUsername !== (configResponse?.parsed?.navidrome?.username || '') ||
@@ -437,7 +443,7 @@ export const Configuration: React.FC = () => {
       String(downloadTimeout) !== String(configResponse?.parsed?.timeouts?.download_seconds || 240) ||
       logLevel !== (configResponse?.parsed?.log_level || 'INFO')
     );
-  }, [slskdUrl, slskdApiKey, slskdDownloadsDir, audioQualityPreset, audioQualityLadder, provider, lyricsUrl, dailyTime, weeklyTime, weeklyDay, fileChecksTime, fileChecksDay, runOnStartup, batchSize, maxAttempts, weeklyOutputDir, navidromeUrl, navidromeUsername, navidromePassword, acoustidApiKey, httpTimeout, searchTimeout, downloadTimeout, logLevel, configResponse]);
+  }, [slskdUrl, slskdApiKey, slskdDownloadsDir, audioQualityPreset, audioQualityLadder, provider, lyricsUrl, dailyTime, weeklyTime, weeklyDay, fileChecksTime, fileChecksDay, runOnStartup, batchSize, maxAttempts, backgroundRefreshMinutes, healthRefreshMinutes, weeklyOutputDir, navidromeUrl, navidromeUsername, navidromePassword, acoustidApiKey, httpTimeout, searchTimeout, downloadTimeout, logLevel, configResponse]);
 
   // Warn on page unload if there are unsaved changes
   useEffect(() => {
@@ -534,6 +540,8 @@ export const Configuration: React.FC = () => {
         run_on_startup: runOnStartup,
         batch_size: Number(batchSize),
         max_candidate_attempts: Number(maxAttempts),
+        background_refresh_minutes: Number(backgroundRefreshMinutes),
+        health_refresh_minutes: Number(healthRefreshMinutes),
       },
       paths: {
         weekly_output_dir: weeklyOutputDir,
@@ -1266,6 +1274,24 @@ export const Configuration: React.FC = () => {
                         label="Max candidate search attempts per track"
                         value={maxAttempts}
                         onChange={(e) => setMaxAttempts(Number(e.target.value))}
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        required fullWidth type="number" label="Background refresh interval (minutes)"
+                        value={backgroundRefreshMinutes}
+                        onChange={(e) => setBackgroundRefreshMinutes(Math.max(1, Number(e.target.value)))}
+                        inputProps={{ min: 1, max: 1440 }}
+                        helperText="Feedback, starred tracks and page caches"
+                      />
+                    </Grid>
+                    <Grid item xs={12} md={6}>
+                      <TextField
+                        required fullWidth type="number" label="Server Health refresh interval (minutes)"
+                        value={healthRefreshMinutes}
+                        onChange={(e) => setHealthRefreshMinutes(Math.max(5, Number(e.target.value)))}
+                        inputProps={{ min: 5, max: 10080 }}
+                        helperText="Health scans run in background, never when opening the page"
                       />
                     </Grid>
                   </Grid>

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   Box, Typography, Button, Chip, CircularProgress, Alert,
-  Card, CardContent, Grid, LinearProgress, Stack, Paper, Divider
+  Card, CardContent, Grid, LinearProgress, Stack, Paper, Divider,
+  Dialog, DialogTitle, DialogContent, DialogActions, TextField, List, ListItem, ListItemText
 } from '@mui/material';
 import {
   Fingerprint as FingerprintIcon,
@@ -17,6 +18,11 @@ export const AcoustIDManager: React.FC = () => {
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const [failureToFix, setFailureToFix] = useState<any | null>(null);
+  const [fixArtist, setFixArtist] = useState('');
+  const [fixTitle, setFixTitle] = useState('');
+  const [fixAlbum, setFixAlbum] = useState('');
+  const [queueingFix, setQueueingFix] = useState(false);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -40,6 +46,27 @@ export const AcoustIDManager: React.FC = () => {
     } catch (e: any) {
       setScanning(false);
       setToast({ msg: e?.response?.data?.detail ?? 'Failed to start AcoustID scan.', type: 'error' });
+    }
+  };
+
+  const openFailureFix = (failure: any) => {
+    setFailureToFix(failure);
+    setFixArtist(failure.artist || '');
+    setFixTitle(failure.title || '');
+    setFixAlbum(failure.album || '');
+  };
+
+  const queueReplacement = async () => {
+    if (!failureToFix) return;
+    setQueueingFix(true);
+    try {
+      const result = await apiService.replaceLibraryTrack(failureToFix.file_path, fixArtist, fixTitle, fixAlbum);
+      setToast({ msg: result.message, type: 'success' });
+      setFailureToFix(null);
+    } catch (error: any) {
+      setToast({ msg: error?.response?.data?.detail || 'Unable to queue replacement.', type: 'error' });
+    } finally {
+      setQueueingFix(false);
     }
   };
 
@@ -204,6 +231,46 @@ export const AcoustIDManager: React.FC = () => {
           )}
         </CardContent>
       </Card>
+
+      {acoustidStats && acoustidStats.failures?.length > 0 && (
+        <Card sx={{ borderRadius: 4, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
+          <CardContent>
+            <Typography variant="h6" fontWeight={800}>Failed verification</Typography>
+            <Typography variant="body2" color="text.secondary" mb={2}>
+              Review the detected mismatch. You can correct artist/title before safely replacing the audio; the current file remains until a verified replacement is ready.
+            </Typography>
+            <List disablePadding>
+              {acoustidStats.failures.map((failure) => (
+                <ListItem key={failure.file_path} divider secondaryAction={
+                  <Button size="small" variant="outlined" onClick={() => openFailureFix(failure)}>Correct / Replace</Button>
+                }>
+                  <ListItemText
+                    primary={`${failure.artist || 'Unknown artist'} — ${failure.title || 'Unknown title'}`}
+                    secondary={<>{failure.reason}<br />{failure.suggestion}</>}
+                    sx={{ pr: 18 }}
+                  />
+                </ListItem>
+              ))}
+            </List>
+          </CardContent>
+        </Card>
+      )}
+
+      <Dialog open={Boolean(failureToFix)} onClose={() => !queueingFix && setFailureToFix(null)} fullWidth maxWidth="sm">
+        <DialogTitle>Correct AcoustID mismatch</DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1.5 }}>
+          <TextField label="Artist" value={fixArtist} onChange={event => setFixArtist(event.target.value)} />
+          <TextField label="Title" value={fixTitle} onChange={event => setFixTitle(event.target.value)} />
+          <TextField label="Album" value={fixAlbum} onChange={event => setFixAlbum(event.target.value)} />
+          <Alert severity="info">{failureToFix?.reason}</Alert>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setFailureToFix(null)} disabled={queueingFix}>Cancel</Button>
+          <Button variant="contained" onClick={queueReplacement} disabled={queueingFix || !fixArtist.trim() || !fixTitle.trim()}>
+            {queueingFix ? 'Queueing…' : 'Replace safely'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

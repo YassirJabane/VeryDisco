@@ -32,6 +32,8 @@ schedule:
   run_on_startup: true                     # Optional: Run sync immediately when the app starts
   batch_size: 5                            # Optional: Max number of concurrent search/download flows
   max_candidate_attempts: 3                # Optional: Max search result candidates to try before failing
+  background_refresh_minutes: 5           # Feedback and starred-track background refresh interval
+  health_refresh_minutes: 30               # Server Health cached scan refresh interval
 
 # File storage paths
 paths:

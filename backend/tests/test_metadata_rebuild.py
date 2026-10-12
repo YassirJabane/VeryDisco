@@ -7,8 +7,28 @@ from mutagen.id3 import COMM, ID3, TALB, TIT2, TPE1, TPE2, TPOS, TRCK
 from backend.app.metadata_pipeline.providers import (
     ArtworkProvider, MusicBrainzReleaseProvider, artist_credit, normalize,
 )
-from backend.app.metadata_pipeline.service import MetadataRebuildService
+from backend.app.metadata_pipeline.service import (
+    MetadataRebuildService,
+    _preserve_cosmetic_spelling,
+    _preserve_cosmetic_spellings,
+)
 from backend.app.metadata_pipeline.tags import read_track, write_track
+
+
+@pytest.mark.parametrize(("local", "canonical", "expected"), [
+    ("JAY-Z", "JAŸ-Z", "JAY-Z"),
+    ("Beyonce", "Beyoncé", "Beyonce"),
+    ("AC/DC", "AC-DC", "AC/DC"),
+    ("Travi$ Scott", "Travis Scott", "Travis Scott"),
+])
+def test_cosmetic_artist_spelling_is_preserved_generically(local, canonical, expected):
+    assert _preserve_cosmetic_spelling(local, canonical) == expected
+
+
+def test_cosmetic_spelling_is_preserved_for_multi_artist_credits():
+    assert _preserve_cosmetic_spellings(
+        ["Beyonce", "JAY-Z"], ["Beyoncé", "JAŸ-Z", "Kanye West"]
+    ) == ["Beyonce", "JAY-Z", "Kanye West"]
 
 
 def _make_tagged_mp3(

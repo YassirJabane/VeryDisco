@@ -3,8 +3,8 @@ import {
   Box, Card, CardContent, Typography, Grid, Button, IconButton, 
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, 
   CircularProgress, Avatar, Tooltip, CardActionArea, Divider, Chip,
-  List, ListItem, ListItemAvatar, ListItemText, useTheme, useMediaQuery
-  , Select, MenuItem
+  List, ListItem, ListItemAvatar, ListItemText, useTheme, useMediaQuery,
+  Select, MenuItem
 } from '@mui/material';
 import { 
   Person as ArtistIcon, 
@@ -19,7 +19,8 @@ import {
   Favorite as FavoriteIcon,
   HeartBroken as HeartBrokenIcon,
   DeleteForever as DangerousIcon,
-  LibraryMusic as LibraryIcon
+  LibraryMusic as LibraryIcon,
+  Refresh as RefreshIcon
 } from '@mui/icons-material';
 import apiService, { getErrorMessage } from '../api';
 import { useNotification } from '../context/NotificationContext';
@@ -123,13 +124,22 @@ export const MyArtists: React.FC = () => {
   const handlePinArtist = async () => {
     if (!searchResult) return;
     try {
-      await apiService.pinArtist(searchResult.name, searchResult.id, searchResult.picture_medium);
+      await apiService.pinArtist(searchResult.name, undefined, searchResult.picture_medium, searchResult.id);
       setAddDialogOpen(false);
       notify(`Pinned artist "${searchResult.name}"!`, "success");
       fetchArtists();
     } catch (err: any) {
       notify(getErrorMessage(err, "Failed to pin artist."), "error");
     }
+  };
+
+  const mergeTrackPresence = (remote: any[], local: any[]) => {
+    const normalize = (value: string) => (value || '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    const localByTitle = new Map((local || []).map(track => [normalize(track.title), track]));
+    return (remote || []).map(track => {
+      const present = localByTitle.get(normalize(track.title));
+      return { ...track, exists: Boolean(present), quality_status: present?.quality_status, filepath: present?.filepath };
+    });
   };
 
   const handleUnpinArtist = async (e: React.MouseEvent, id: number, name: string) => {
@@ -197,6 +207,7 @@ export const MyArtists: React.FC = () => {
           cover_medium: r.cover_medium || r.cover_small || r.cover || '',
           release_date: r.release_date || '',
           record_type: (r.record_type || 'album').toLowerCase(),
+          track_count: r.track_count,
           checking: true,
           tracks: []
         }));
@@ -337,7 +348,7 @@ export const MyArtists: React.FC = () => {
         const tracklist = await apiService.getReleaseTracklist(edition.release_mbid);
         setReleases(prev => prev.map(item => item.id === release.id ? {
           ...item,
-          tracks: tracklist?.tracks || [],
+          tracks: mergeTrackPresence(tracklist?.tracks || [], item.tracks || []),
         } : item));
       }
     } catch (err) {
@@ -367,7 +378,7 @@ export const MyArtists: React.FC = () => {
       let remoteTracks = check?.tracks || [];
       try {
         const tracklist = await apiService.getReleaseTracklist(edition.release_mbid || edition.id);
-        remoteTracks = tracklist?.tracks || remoteTracks;
+        remoteTracks = mergeTrackPresence(tracklist?.tracks || [], check?.tracks || []);
       } catch (tracklistError) {
         console.debug('Selected release tracklist unavailable', tracklistError);
       }
@@ -558,6 +569,24 @@ export const MyArtists: React.FC = () => {
                 >
                   <DeleteIcon sx={{ fontSize: 16 }} />
                 </IconButton>
+                <Tooltip title="Refresh verified artist image">
+                  <IconButton
+                    onClick={async (event) => {
+                      event.stopPropagation();
+                      try {
+                        const result = await apiService.refreshPinnedArtistImage(artist.id);
+                        setArtists(current => current.map(item => item.id === artist.id ? { ...item, picture_url: result.picture_url } : item));
+                        notify(`Updated image for ${artist.artist_name}.`, 'success');
+                      } catch (error) {
+                        notify(getErrorMessage(error, 'No exact artist image found.'), 'error');
+                      }
+                    }}
+                    sx={{ position: 'absolute', top: -10, left: -10, bgcolor: 'background.paper', zIndex: 10, width: 28, height: 28 }}
+                    size="small"
+                  >
+                    <RefreshIcon sx={{ fontSize: 16 }} />
+                  </IconButton>
+                </Tooltip>
 
                 <CardActionArea 
                   onClick={() => handleOpenDetail(artist)}

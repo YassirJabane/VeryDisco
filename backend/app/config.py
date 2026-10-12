@@ -85,6 +85,14 @@ class ScheduleConfig(BaseModel):
     run_on_startup: bool = Field(True, description="Execute sync immediately on application startup")
     batch_size: int = Field(5, description="Number of tracks to process concurrently")
     max_candidate_attempts: int = Field(3, description="Maximum number of search results to try downloading if previous ones fail")
+    background_refresh_minutes: int = Field(
+        5, ge=1, le=1440,
+        description="Refresh interval for feedback and starred-track background data",
+    )
+    health_refresh_minutes: int = Field(
+        30, ge=5, le=10080,
+        description="Refresh interval for the cached Server Health dataset",
+    )
 
 class PathsConfig(BaseModel):
     weekly_output_dir: str = Field("/data/weekly/current", description="Destination directory for synchronized tracks")
@@ -199,6 +207,8 @@ schedule:
   run_on_startup: true                     # Run sync when verydisco starts
   batch_size: 5                            # Number of tracks to process concurrently
   max_candidate_attempts: 3                # Max search results to try downloading
+  background_refresh_minutes: 5           # Feedback and starred-track background refresh interval
+  health_refresh_minutes: 30               # Server Health cache refresh interval
 
 # File storage paths
 paths:

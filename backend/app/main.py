@@ -826,6 +826,12 @@ async def trigger_sync(source: Optional[str] = None, request: Request = None):
 class SpotifyPlaylistRequest(BaseModel):
     url: str
 
+class ImportedPlaylistUpdate(BaseModel):
+    name: str
+    description: str = ""
+    artwork_url: str = ""
+    tracks: List[Dict[str, Any]]
+
 def _spotify_source_name(name: str, playlist_id: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip().lower()).strip("-")[:60]
     return f"spotify-{slug or playlist_id}"
@@ -849,12 +855,17 @@ async def _spotify_playlist(request: Request, body: SpotifyPlaylistRequest) -> t
         logger.error("Spotify playlist import failed: %r", exc)
         raise HTTPException(status_code=502, detail="Impossibile recuperare la playlist da Spotify.")
     playlist_id = client.playlist_id(body.url)
-    return user, {"id": playlist_id, "name": playlist.get("name") or "Spotify playlist", "description": playlist.get("description") or "", "tracks": playlist.get("tracks", [])}
+    return user, {
+        "id": playlist_id, "name": playlist.get("name") or "Spotify playlist",
+        "description": playlist.get("description") or "",
+        "artwork_url": playlist.get("artwork_url") or ((playlist.get("images") or [{}])[0].get("url") or ""),
+        "tracks": playlist.get("tracks", []),
+    }
 
 @app.post("/api/spotify/playlist/preview")
 async def preview_spotify_playlist(body: SpotifyPlaylistRequest, request: Request):
     _, playlist = await _spotify_playlist(request, body)
-    return {"id": playlist["id"], "name": playlist["name"], "description": playlist["description"], "tracks": playlist["tracks"], "track_count": len(playlist["tracks"])}
+    return {**playlist, "track_count": len(playlist["tracks"])}
 
 @app.post("/api/spotify/playlist/import")
 async def import_spotify_playlist(body: SpotifyPlaylistRequest, request: Request):
@@ -862,12 +873,47 @@ async def import_spotify_playlist(body: SpotifyPlaylistRequest, request: Request
     source = _spotify_source_name(playlist["name"], playlist["id"])
     if sync_module.is_syncing:
         raise HTTPException(status_code=400, detail="Sync process already in progress")
+    playlist["source"] = source
+    playlist_id = await db.save_imported_playlist(user["id"], playlist)
     _create_tracked_task(
         run_sync(db, config_manager.config, source, user_id=user["id"],
                  tracks_override=playlist["tracks"], album_override="Playlist Tracks"),
         task_id=f"sync:{source}", task_type="spotify-import",
         metadata={"source": source, "playlist_name": playlist["name"], "user_id": user["id"]})
-    return {"status": "success", "source": source, "name": playlist["name"], "track_count": len(playlist["tracks"])}
+    return {"status": "success", "id": playlist_id, "source": source, "name": playlist["name"], "artwork_url": playlist["artwork_url"], "track_count": len(playlist["tracks"])}
+
+@app.get("/api/playlists/imported")
+async def list_imported_playlists(request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    return await db.list_imported_playlists(user["id"])
+
+@app.put("/api/playlists/imported/{playlist_id}")
+async def update_imported_playlist(playlist_id: int, body: ImportedPlaylistUpdate, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    updated = await db.update_imported_playlist(playlist_id, user["id"], body.model_dump())
+    if not updated:
+        raise HTTPException(status_code=404, detail="Imported playlist not found.")
+    return {"status": "success", "message": "Playlist saved. Use Sync to fetch newly added tracks."}
+
+@app.post("/api/playlists/imported/{playlist_id}/sync")
+async def sync_imported_playlist(playlist_id: int, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    playlists = await db.list_imported_playlists(user["id"])
+    playlist = next((item for item in playlists if item["id"] == playlist_id), None)
+    if not playlist:
+        raise HTTPException(status_code=404, detail="Imported playlist not found.")
+    if sync_module.is_syncing:
+        raise HTTPException(status_code=409, detail="A sync is already in progress.")
+    _create_tracked_task(
+        run_sync(db, config_manager.config, playlist["source"], user_id=user["id"],
+                 tracks_override=playlist["tracks"], album_override="Playlist Tracks"),
+        task_id=f"sync:{playlist['source']}", task_type="playlist-import",
+        metadata={"source": playlist["source"], "playlist_name": playlist["name"], "user_id": user["id"]},
+    )
+    return {"status": "success", "message": f"Sync started for {playlist['name']}."}
 
 @app.post("/api/sync/stop")
 async def stop_sync(request: Request):
@@ -1139,13 +1185,22 @@ async def get_acoustid_stats(request: Request = None):
 
     is_running = "acoustid_scan" in _active_tasks
 
+    failures = await db.get_acoustid_failures(user_id) if user_id else []
+    for failure in failures:
+        reason = (failure.get("reason") or "").lower()
+        failure["suggestion"] = (
+            "Correct the artist/title and scan again, or replace the audio file."
+            if "expected" in reason or "matched this audio" in reason
+            else "Replace the audio file or retry the fingerprint scan."
+        )
     return {
         "total": total_files,
         "scanned": scanned_count,
         "verified": verified_count,
         "failed": failed_count,
         "remaining": max(0, total_files - scanned_count),
-        "running": is_running
+        "running": is_running,
+        "failures": failures,
     }
 
 async def fetch_itunes_metadata(artist: str, title: str) -> dict:
@@ -1343,7 +1398,7 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
 
 @app.get("/api/playlist/feedback")
 async def get_feedback(request: Request, score: Optional[int] = None, count: int = 100, offset: int = 0):
-    """Retrieve user feedback (loved/unloved tracks) from ListenBrainz."""
+    """Serve feedback immediately from SQLite; populate it once when empty."""
     if not config_manager.is_configured or not config_manager.config:
         raise HTTPException(status_code=400, detail="App is not configured yet.")
         
@@ -1356,6 +1411,26 @@ async def get_feedback(request: Request, score: Optional[int] = None, count: int
             detail="ListenBrainz integration is not configured. Please configure your ListenBrainz username and token in settings."
         )
     user_id = user["id"] if user else None
+    cached_feedback = await db.get_feedback_cache(user_id, score=score, count=count, offset=offset)
+    cache_ready = await db.get_cache(f"feedback_ready_{user_id}", max_age=86400 * 365, allow_stale=True)
+    if cached_feedback or cache_ready is not None:
+        return {"feedback": cached_feedback, "cached": True}
+    return {"feedback": await refresh_feedback_cache_for_user(user_id, lb_username, lb_token, score, count, offset), "cached": False}
+
+async def refresh_feedback_cache_for_user(user_id: str, lb_username: Optional[str] = None,
+                                          lb_token: Optional[str] = None,
+                                          score: Optional[int] = None, count: int = 1000,
+                                          offset: int = 0) -> list[dict[str, Any]]:
+    """Refresh one user's durable ListenBrainz feedback snapshot."""
+    cfg = config_manager.config
+    if not cfg:
+        return []
+    if not lb_username or not lb_token:
+        user_cfg = await db.get_user_config(user_id)
+        lb_username = (user_cfg or {}).get("lb_username") or cfg.listenbrainz.username
+        lb_token = (user_cfg or {}).get("lb_token") or cfg.listenbrainz.token
+    if not lb_username or not lb_token:
+        return []
     active_playlists = []
     if user_id:
         user_cfg = await db.get_user_config(user_id)
@@ -1399,10 +1474,21 @@ async def get_feedback(request: Request, score: Optional[int] = None, count: int
             }
 
         feedback_list = await asyncio.gather(*(enrich_feedback_item(item) for item in feedback_raw))
-        return {"feedback": feedback_list}
+        if score is None and offset == 0:
+            await db.replace_feedback_cache(user_id, feedback_list)
+            # Distinguish a valid empty snapshot from a cache miss, so users with
+            # no feedback do not trigger a ListenBrainz request on every visit.
+            await db.set_cache(f"feedback_ready_{user_id}", True, ttl=86400 * 365)
+        else:
+            for item in feedback_list:
+                await db.upsert_feedback_cache(user_id, item)
+        return feedback_list
     except Exception as e:
         logger.error(f"Error fetching feedback from ListenBrainz: {repr(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to fetch feedback: {e}")
+        cached = await db.get_feedback_cache(user_id, score=score, count=count, offset=offset)
+        if cached:
+            return cached
+        raise HTTPException(status_code=502, detail=f"Failed to refresh feedback: {e}")
 
 @app.get("/api/deezer/search")
 async def deezer_search(query: str, type: str = "track"):
@@ -1488,6 +1574,17 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
             track_title_map[(art_norm, t_norm)] = row
 
     results = []
+    durable_tracklists = await db.get_album_tracklists(user_id)
+
+    def _present_tracks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [{
+            "title": row.get("title") or Path(row.get("filepath") or "").stem,
+            "track_position": row.get("track_num"), "disk_number": row.get("disc_num") or 1,
+            "exists": True,
+            "quality_status": "better" if (row.get("ext") or "").lower() == "flac" else "same",
+            "filepath": row.get("filepath"),
+        } for row in rows]
+
     for item in items:
         artist_clean = _norm(extract_main_artist(item.artist) or item.artist)
         album_id_str = str(item.album_id).strip() if item.album_id else ""
@@ -1497,11 +1594,14 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
             matched_tracks = album_mbid_map.get(album_id_str, [])
             if matched_tracks:
                 cnt = len(matched_tracks)
+                expected = item.expected_tracks or max(
+                    (int(row.get("total_tracks") or 0) for row in matched_tracks), default=0
+                )
                 results.append({
                     "exists": True,
-                    "status": _album_completion_status(cnt, item.expected_tracks),
+                    "status": _album_completion_status(cnt, expected),
                     "upgrade_available": False,
-                    "tracks": matched_tracks
+                    "tracks": _present_tracks(matched_tracks)
                 })
                 continue
 
@@ -1514,11 +1614,17 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 
             if matched_tracks:
                 cnt = len(matched_tracks)
+                cached_list = durable_tracklists.get(
+                    (matched_tracks[0].get("artist_norm"), matched_tracks[0].get("album_norm")), {}
+                )
+                expected = item.expected_tracks or cached_list.get("total_tracks") or max(
+                    (int(row.get("total_tracks") or 0) for row in matched_tracks), default=0
+                )
                 results.append({
                     "exists": True,
-                    "status": _album_completion_status(cnt, item.expected_tracks),
+                    "status": _album_completion_status(cnt, expected),
                     "upgrade_available": False,
-                    "tracks": matched_tracks
+                    "tracks": _present_tracks(matched_tracks)
                 })
                 continue
                 
@@ -2299,24 +2405,27 @@ async def fetch_deezer_artist_picture(artist_name: str, deezer_id: int = None) -
                 resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()
+                    remote_name = data.get("name") or ""
+                    norm = lambda value: re.sub(r"[^\w]", "", (value or "").casefold())
                     pic = data.get("picture_xl") or data.get("picture_big") or data.get("picture_medium") or data.get("picture")
-                    if pic:
+                    if pic and norm(remote_name) == norm(artist_name):
                         return pic
 
             clean_name = artist_name.split('feat')[0].split('ft.')[0].strip()
-            url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(clean_name)}&limit=1"
+            url = f"https://api.deezer.com/search/artist?q={urllib.parse.quote(clean_name)}&limit=10"
             resp = await client.get(url)
             if resp.status_code == 200:
                 data = resp.json().get("data", [])
-                if data and data[0]:
-                    first = data[0]
-                    return first.get("picture_xl") or first.get("picture_big") or first.get("picture_medium") or first.get("picture") or ""
+                norm = lambda value: re.sub(r"[^\w]", "", (value or "").casefold())
+                exact = next((item for item in data if norm(item.get("name")) == norm(clean_name)), None)
+                if exact:
+                    return exact.get("picture_xl") or exact.get("picture_big") or exact.get("picture_medium") or exact.get("picture") or ""
     except Exception as e:
         logger.warning(f"Failed to fetch Deezer artist picture for '{artist_name}': {e}")
     return ""
 
 @app.get("/api/pinned_artists")
-async def get_pinned_artists(request: Request):
+async def get_pinned_artists(request: Request, refresh: bool = False):
     """Fetch all pinned/saved artists, automatically importing new ones from Navidrome or on-disk using MusicBrainz."""
     try:
         from backend.app.auth import get_current_user
@@ -2352,6 +2461,11 @@ async def get_pinned_artists(request: Request):
             
         artists = await db.get_pinned_artists(user_id)
         
+        # Normal page loads are DB-only. Provider discovery runs only for the
+        # initial population or an explicit/background refresh.
+        if artists and not refresh:
+            return artists
+
         cfg = config_manager.config
         # Only auto-import from Navidrome for admin
         if user.get("is_admin") and cfg and cfg.navidrome and cfg.navidrome.url:
@@ -2440,6 +2554,24 @@ async def get_pinned_artists(request: Request):
     except Exception as e:
         logger.error(f"Failed to fetch pinned artists: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {e}")
+
+@app.post("/api/pinned_artists/{artist_id}/refresh-image")
+async def refresh_pinned_artist_image(artist_id: int, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    async with db.get_db() as conn:
+        async with conn.execute(
+            "SELECT * FROM pinned_artists WHERE id = ? AND user_id = ?", (artist_id, user["id"]),
+        ) as cursor:
+            artist = await cursor.fetchone()
+        if not artist:
+            raise HTTPException(status_code=404, detail="Pinned artist not found.")
+        picture = await fetch_deezer_artist_picture(artist["artist_name"], artist["deezer_id"])
+        if not picture:
+            raise HTTPException(status_code=404, detail="No exact artist image match was found.")
+        await conn.execute("UPDATE pinned_artists SET picture_url = ? WHERE id = ?", (picture, artist_id))
+        await conn.commit()
+    return {"status": "success", "picture_url": picture}
 
 @app.post("/api/pinned_artists")
 async def pin_artist(req: PinArtistRequest, request: Request):
@@ -2558,28 +2690,38 @@ async def get_artist_releases_mb(artist_identifier: str):
     """Fetch official release groups (albums, EPs, singles) for an artist from MusicBrainz."""
     from backend.app.clients.musicbrainz import musicbrainz_client
     mbid = artist_identifier
+    resolved_artist_name = ""
+    mbid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
 
     # Check if artist_identifier is a database ID or name
-    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', artist_identifier, re.IGNORECASE):
+    if not re.match(mbid_pattern, artist_identifier, re.IGNORECASE):
         async with db.get_db() as conn:
             cursor = await conn.execute("SELECT mbid, artist_name FROM pinned_artists WHERE id = ? OR deezer_id = ?", (artist_identifier, artist_identifier))
             row = await cursor.fetchone()
-            if row and row["mbid"]:
+            if row:
+                resolved_artist_name = row["artist_name"] or ""
+            if row and row["mbid"] and re.match(mbid_pattern, row["mbid"], re.IGNORECASE):
                 mbid = row["mbid"]
-            elif row and row["artist_name"]:
-                mb_art = await musicbrainz_client.search_artist(row["artist_name"])
+            elif resolved_artist_name:
+                mb_art = await musicbrainz_client.search_artist(resolved_artist_name)
                 if mb_art:
                     mbid = mb_art.get("id")
+                    await conn.execute("UPDATE pinned_artists SET mbid = ? WHERE id = ?", (mbid, artist_identifier))
+                    await conn.commit()
 
-    if not mbid or not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', mbid, re.IGNORECASE):
-        mb_art = await musicbrainz_client.search_artist(artist_identifier)
+    if not mbid or not re.match(mbid_pattern, mbid, re.IGNORECASE):
+        mb_art = await musicbrainz_client.search_artist(resolved_artist_name or artist_identifier)
         if mb_art:
             mbid = mb_art.get("id")
 
     if not mbid:
         raise HTTPException(status_code=404, detail="Artist MBID not found on MusicBrainz.")
 
-    releases = await musicbrainz_client.get_artist_release_groups(mbid)
+    cache_key = f"artist-releases:{mbid}"
+    releases = await db.get_provider_cache(cache_key)
+    if releases is None:
+        releases = await musicbrainz_client.get_artist_release_groups(mbid)
+        await db.set_provider_cache(cache_key, releases, 7 * 24 * 3600)
     return releases
 
 @app.get("/api/deezer/artist/{artist_id}/releases")
@@ -2593,7 +2735,13 @@ async def get_release_group_releases(release_group_mbid: str):
     if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', release_group_mbid, re.IGNORECASE):
         raise HTTPException(status_code=400, detail="Invalid release-group MBID.")
     from backend.app.clients.musicbrainz import musicbrainz_client
-    return await musicbrainz_client.get_release_group_releases(release_group_mbid)
+    cache_key = f"release-group-editions:{release_group_mbid}"
+    cached = await db.get_provider_cache(cache_key)
+    if cached is not None:
+        return cached
+    releases = await musicbrainz_client.get_release_group_releases(release_group_mbid)
+    await db.set_provider_cache(cache_key, releases, 7 * 24 * 3600)
+    return releases
 
 @app.get("/api/release/{release_mbid}/tracklist")
 async def get_release_tracklist(release_mbid: str):
@@ -2667,6 +2815,11 @@ async def like_track(req: LikeRequest, request: Request = None):
         lb_success = await lb_client.submit_feedback(req.artist, req.title, req.score, mbid=mbid)
         if lb_success:
             lb_message = "Feedback submitted to ListenBrainz."
+            cached_meta = await fetch_itunes_metadata(req.artist, req.title)
+            await db.upsert_feedback_cache(user_id, {
+                "artist": req.artist, "title": req.title, "album": req.album or cached_meta.get("album", ""),
+                "artwork": cached_meta.get("artwork", ""), "mbid": mbid or "", "score": req.score,
+            })
         else:
             lb_message = "ListenBrainz feedback could not be submitted (check token/MBID). Music action will still proceed."
             logger.warning(f"LB feedback returned False for '{req.artist} - {req.title}'")
@@ -3557,7 +3710,7 @@ async def run_full_library_audit():
             await db.set_cache(f"missing_lyrics_{u_id}", missing_lyrics)
             await db.set_cache(f"maintenance_{u_id}", maintenance_issues)
 
-async def _append_acoustid_failures(issues: list, silenced: set):
+async def _append_acoustid_failures(issues: list, silenced: set, music_dir: Optional[Path] = None):
     acoustid_results = await db.get_acoustid_results()
     
     # Only include true mismatches — NOT "not found in DB" results.
@@ -3583,6 +3736,12 @@ async def _append_acoustid_failures(issues: list, silenced: set):
         if any(skip in reason_lower for skip in _SKIP_REASONS):
             continue
         f_path = Path(r["file_path"])
+        if music_dir:
+            try:
+                if not f_path.resolve().is_relative_to(music_dir.resolve()):
+                    continue
+            except (OSError, ValueError):
+                continue
         if str(f_path) in silenced:
             continue
         if not f_path.exists():
@@ -3689,7 +3848,17 @@ async def run_maintenance_scan_internal_user(user_id: str):
                 "actions": [{"name": "Move to Correct Folder", "action": "move_misfiled_tracks", "label": "Move to correct album folder"}]
             })
             
-    await _append_acoustid_failures(issues, silenced)
+    await _append_acoustid_failures(issues, silenced, music_dir)
+    return issues
+
+async def refresh_health_cache_for_user(user_id: str) -> list[dict[str, Any]]:
+    """Build and persist the Server Health snapshot without coupling it to page navigation."""
+    if not config_manager.config:
+        return []
+    issues = await run_maintenance_scan_internal(user_id)
+    await db.set_cache(f"maintenance_{user_id}", issues, ttl=max(
+        300, int(getattr(config_manager.config.schedule, "health_refresh_minutes", 30)) * 60
+    ))
     return issues
 
 
@@ -4519,15 +4688,21 @@ async def scan_maintenance(request: Request, refresh: bool = False):
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
     cache_key = f"maintenance_{user['id']}"
+    max_age = max(300, int(getattr(config_manager.config.schedule, "health_refresh_minutes", 30)) * 60)
     if refresh:
-        await db.delete_cache(cache_key)
-    else:
-        cached = await db.get_cache(cache_key)
-        if cached is not None:
-            return cached
-    issues = await run_maintenance_scan_internal(user["id"])
-    await db.set_cache(cache_key, issues)
-    return issues
+        return await refresh_health_cache_for_user(user["id"])
+    cached = await db.get_cache(cache_key, max_age=max_age, allow_stale=True)
+    if cached is not None:
+        return cached
+    # First visit stays responsive; the scheduler/background task publishes the snapshot.
+    task_id = f"health-cache:{user['id']}"
+    if task_id not in _active_tasks:
+        _create_tracked_task(
+            refresh_health_cache_for_user(user["id"]),
+            task_id=task_id, task_type="health-cache",
+            metadata={"user_id": user["id"]},
+        )
+    return []
 
 async def run_maintenance_scan_internal(user_id: str):
     if not config_manager.config:
@@ -4554,7 +4729,7 @@ async def run_maintenance_scan_internal(user_id: str):
     if new_cache_entries:
         await db.save_file_metadata_batch(new_cache_entries)
         
-    await _append_acoustid_failures(issues, silenced)
+    await _append_acoustid_failures(issues, silenced, music_dir.resolve())
     return issues
 
 def is_valid_album_artist(album_artist: str, track_artist: str) -> bool:
@@ -5117,6 +5292,10 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
             
     target_path = Path(req.target_path)
     if not target_path.resolve().is_relative_to(music_dir) and not target_path.resolve().is_relative_to(playlists_dir):
+        logger.warning(
+            "Maintenance fix denied for user=%s action=%s target=%s music_root=%s playlist_root=%s",
+            user_id, req.action, target_path.resolve(), music_dir, playlists_dir,
+        )
         raise HTTPException(status_code=403, detail="Access denied")
         
     if req.action != "merge_albums" and not os.path.exists(req.target_path):
@@ -5876,6 +6055,14 @@ async def get_missing_lyrics(request: Request):
     
     rows = await db.query_library_lyrics_missing(user_id)
     if rows:
+        for row in rows:
+            filepath = row.get("filepath", "")
+            if filepath not in instrumental_set and re.search(
+                r"(?i)(?:^|[\s\[(\-])instrumental(?:$|[\s\])\-])",
+                f"{row.get('title') or ''} {row.get('album') or ''}",
+            ):
+                await db.mark_instrumental(filepath, user_id)
+                instrumental_set.add(filepath)
         return [{
             "artist": r.get("artist") or "Unknown Artist",
             "title": r.get("title") or "Unknown Title",
@@ -5937,12 +6124,12 @@ async def get_lyrics_file_endpoint(filepath: str, request: Request):
     }
 
 @app.get("/api/lyrics/search")
-async def search_lyrics_endpoint(artist: str, title: str, request: Request):
+async def search_lyrics_endpoint(artist: str, title: str, request: Request, album: Optional[str] = None):
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
     from backend.app.clients.lrclib import LrcLibClient
     lrclib_client = LrcLibClient()
-    results = await lrclib_client.search_lyrics(artist, title)
+    results = await lrclib_client.search_lyrics(artist, title, album)
     return results
 
 @app.post("/api/lyrics/save")
@@ -6250,6 +6437,38 @@ class EditTagsRequest(BaseModel):
     track: Optional[str] = None
     year: Optional[str] = None
     genre: Optional[str] = None
+
+class ReplaceTrackRequest(BaseModel):
+    filepath: str
+    artist: str
+    title: str
+    album: str = ""
+
+@app.post("/api/library/track/replace")
+async def replace_library_track(req: ReplaceTrackRequest, request: Request):
+    """Queue an atomic replacement; the current file survives every failed attempt."""
+    if not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured.")
+    from backend.app.auth import get_current_user
+    from backend.app.album_sync import download_single_track_task
+    user = await get_current_user(request)
+    user_row = await db.get_user_by_id(user["id"])
+    music_root = Path((user_row or {}).get("music_dir") or config_manager.config.paths.music_dir).resolve()
+    target = Path(req.filepath).resolve()
+    if not target.is_file() or not target.is_relative_to(music_root):
+        raise HTTPException(status_code=403, detail="Track is outside your library or no longer exists.")
+    task_id = f"track:replace:{user['id']}:{target.name}"
+    if task_id in _active_tasks:
+        raise HTTPException(status_code=409, detail="This track replacement is already running.")
+    _create_tracked_task(
+        download_single_track_task(
+            req.artist.strip(), req.title.strip(), req.album.strip(), config_manager.config,
+            db=db, force=True, user_id=user["id"], replace_path_override=str(target),
+        ),
+        task_id=task_id, task_type="track-replacement",
+        metadata={"user_id": user["id"], "filepath": str(target), "artist": req.artist, "title": req.title},
+    )
+    return {"status": "success", "message": "Replacement queued. The current file is kept until the new audio passes verification."}
 
 @app.get("/api/library/track/tags")
 async def get_track_tags_endpoint(filepath: str, request: Request):

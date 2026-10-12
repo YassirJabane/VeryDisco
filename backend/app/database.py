@@ -516,6 +516,36 @@ class Database:
                     PRIMARY KEY (user_id, artist_norm, album_norm)
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS feedback_cache (
+                    user_id TEXT NOT NULL,
+                    cache_key TEXT NOT NULL,
+                    artist TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    album TEXT DEFAULT '',
+                    artwork TEXT DEFAULT '',
+                    recording_mbid TEXT DEFAULT '',
+                    score INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (user_id, cache_key)
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_feedback_user_score ON feedback_cache(user_id, score);")
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS imported_playlists (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    provider TEXT NOT NULL DEFAULT 'spotify',
+                    provider_id TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT DEFAULT '',
+                    artwork_url TEXT DEFAULT '',
+                    tracks_json TEXT NOT NULL DEFAULT '[]',
+                    updated_at TEXT DEFAULT (datetime('now')),
+                    UNIQUE(user_id, provider, provider_id)
+                )
+            """)
             await db.commit()
 
     # Runs Operations
@@ -715,7 +745,7 @@ class Database:
             )
             await db.commit()
 
-    async def get_cache(self, key: str) -> Optional[Any]:
+    async def get_cache(self, key: str, max_age: int = 3600, allow_stale: bool = False) -> Optional[Any]:
         import time
         async with self.mem_cache_lock:
             entry = self.mem_cache.get(key)
@@ -732,13 +762,13 @@ class Database:
                     try:
                         from datetime import datetime, timezone
                         updated = datetime.fromisoformat(row["updated_at"].replace(" ", "T")).replace(tzinfo=timezone.utc)
-                        if time.time() - updated.timestamp() >= 3600:
+                        if not allow_stale and time.time() - updated.timestamp() >= max_age:
                             return None
                         val = json.loads(row["value"])
                         async with self.mem_cache_lock:
                             self.mem_cache[key] = {
                                 "value": val,
-                                "expires": time.time() + 3600
+                                "expires": time.time() + max_age
                             }
                         return val
                     except Exception:
@@ -1078,6 +1108,116 @@ class Database:
         async with self.get_db() as conn:
             await conn.execute("DELETE FROM acoustid_results WHERE file_path = ?", (file_path,))
             await conn.commit()
+
+    async def get_acoustid_failures(self, user_id: str) -> list:
+        async with self.get_db() as conn:
+            async with conn.execute("""
+                SELECT ar.file_path, ar.reason, ar.scanned_at,
+                       li.artist, li.title, li.album
+                FROM acoustid_results ar
+                JOIN library_index li ON li.filepath = ar.file_path
+                WHERE li.user_id = ? AND ar.status = 'failed'
+                ORDER BY ar.scanned_at DESC, ar.file_path
+            """, (user_id,)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    # ── Persistent feedback and imported playlists ─────────────────────────
+    async def replace_feedback_cache(self, user_id: str, items: list[dict[str, Any]]) -> None:
+        rows = []
+        for item in items:
+            artist = item.get("artist") or "Unknown Artist"
+            title = item.get("title") or "Unknown Track"
+            mbid = item.get("mbid") or ""
+            key = mbid or f"{artist.casefold()}\0{title.casefold()}"
+            rows.append((user_id, key, artist, title, item.get("album") or "",
+                         item.get("artwork") or "", mbid, int(item.get("score") or 0)))
+        async with self.get_db() as conn:
+            await conn.execute("DELETE FROM feedback_cache WHERE user_id = ?", (user_id,))
+            if rows:
+                await conn.executemany("""
+                    INSERT INTO feedback_cache
+                    (user_id, cache_key, artist, title, album, artwork, recording_mbid, score, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """, rows)
+            await conn.commit()
+
+    async def upsert_feedback_cache(self, user_id: str, item: dict[str, Any]) -> None:
+        artist = item.get("artist") or "Unknown Artist"
+        title = item.get("title") or "Unknown Track"
+        mbid = item.get("mbid") or ""
+        key = mbid or f"{artist.casefold()}\0{title.casefold()}"
+        async with self.get_db() as conn:
+            if int(item.get("score") or 0) == 0:
+                await conn.execute("DELETE FROM feedback_cache WHERE user_id = ? AND cache_key = ?", (user_id, key))
+            else:
+                await conn.execute("""
+                    INSERT INTO feedback_cache
+                    (user_id, cache_key, artist, title, album, artwork, recording_mbid, score, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    ON CONFLICT(user_id, cache_key) DO UPDATE SET
+                      artist=excluded.artist, title=excluded.title, album=excluded.album,
+                      artwork=excluded.artwork, recording_mbid=excluded.recording_mbid,
+                      score=excluded.score, updated_at=datetime('now')
+                """, (user_id, key, artist, title, item.get("album") or "",
+                      item.get("artwork") or "", mbid, int(item.get("score") or 0)))
+            await conn.commit()
+
+    async def get_feedback_cache(self, user_id: str, score: Optional[int] = None,
+                                 count: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        query = "SELECT artist, title, album, artwork, recording_mbid AS mbid, score, updated_at FROM feedback_cache WHERE user_id = ?"
+        params: list[Any] = [user_id]
+        if score is not None:
+            query += " AND score = ?"
+            params.append(score)
+        query += " ORDER BY updated_at DESC, artist, title LIMIT ? OFFSET ?"
+        params.extend([count, offset])
+        async with self.get_db() as conn:
+            async with conn.execute(query, tuple(params)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def save_imported_playlist(self, user_id: str, playlist: dict[str, Any]) -> int:
+        async with self.get_db() as conn:
+            await conn.execute("""
+                INSERT INTO imported_playlists
+                (user_id, provider, provider_id, source, name, description, artwork_url, tracks_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT(user_id, provider, provider_id) DO UPDATE SET
+                  source=excluded.source, name=excluded.name, description=excluded.description,
+                  artwork_url=excluded.artwork_url, tracks_json=excluded.tracks_json,
+                  updated_at=datetime('now')
+            """, (user_id, playlist.get("provider") or "spotify", playlist["id"],
+                  playlist["source"], playlist["name"], playlist.get("description") or "",
+                  playlist.get("artwork_url") or "", json.dumps(playlist.get("tracks") or [], ensure_ascii=False)))
+            await conn.commit()
+            async with conn.execute(
+                "SELECT id FROM imported_playlists WHERE user_id = ? AND provider = ? AND provider_id = ?",
+                (user_id, playlist.get("provider") or "spotify", playlist["id"]),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row["id"])
+
+    async def list_imported_playlists(self, user_id: str) -> list[dict[str, Any]]:
+        async with self.get_db() as conn:
+            async with conn.execute("SELECT * FROM imported_playlists WHERE user_id = ? ORDER BY updated_at DESC", (user_id,)) as cursor:
+                rows = await cursor.fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["tracks"] = json.loads(item.pop("tracks_json") or "[]")
+            result.append(item)
+        return result
+
+    async def update_imported_playlist(self, playlist_id: int, user_id: str, playlist: dict[str, Any]) -> bool:
+        async with self.get_db() as conn:
+            cursor = await conn.execute("""
+                UPDATE imported_playlists SET name = ?, description = ?, artwork_url = ?,
+                    tracks_json = ?, updated_at = datetime('now')
+                WHERE id = ? AND user_id = ?
+            """, (playlist["name"], playlist.get("description") or "",
+                  playlist.get("artwork_url") or "", json.dumps(playlist.get("tracks") or [], ensure_ascii=False),
+                  playlist_id, user_id))
+            await conn.commit()
+            return cursor.rowcount == 1
 
     # ── Library Index ─────────────────────────────────────────────────────────
 

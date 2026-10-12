@@ -128,7 +128,10 @@ const MetadataRebuild: React.FC = () => {
 
       {message && <Alert severity={message.type} sx={{ mb: 2 }} onClose={() => setMessage(null)}>{message.text}</Alert>}
       <Alert severity="info" sx={{ mb: 2 }}>
-        Scans never write media files. Apply is available per album only after every local track is matched; each apply creates a rollback backup.
+        <strong>1. Scan:</strong> reads tags and prepares proposals without changing files.{' '}
+        <strong>2. Review:</strong> open an album and verify the selected release and changed fields.{' '}
+        <strong>3. Apply:</strong> writes one reviewed album and creates a rollback backup first.
+        Artist aliases are resolved automatically through MusicBrainz; cosmetic spellings such as JAY-Z are preserved instead of being rewritten to JAŸ-Z.
       </Alert>
 
       <Paper variant="outlined" sx={{ p: 2.5, mb: 2.5, borderRadius: 3 }}>

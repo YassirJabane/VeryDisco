@@ -2133,6 +2133,8 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
                           bitrate=grabbed_candidate.get("bitrate", 320),
                           size=grabbed_candidate["size"]
                       )
+                      if l_status == "instrumental":
+                          await db.mark_instrumental(str(lib_file), user_id)
                       track_result = "downloaded"
 
                   else:

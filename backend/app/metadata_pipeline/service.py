@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import unicodedata
 import json
 import os
 import re
@@ -389,6 +390,9 @@ class MetadataRebuildService:
         changes: list[dict[str, Any]] = []
         matched = 0
         if winner:
+            preferred_album_artist = _preserve_cosmetic_spelling(
+                group.get("album_artist", ""), winner.get("album_artist", "")
+            )
             remaining = list(winner["tracks"])
             for local in group["tracks"]:
                 remote = self._match_track(local, remaining)
@@ -398,11 +402,21 @@ class MetadataRebuildService:
                     matched += 1
                     album_entities = winner.get("album_artists") or []
                     album_artist_mbid = (album_entities or [{}])[0].get("mbid", "")
+                    preferred_track_artist = _preserve_cosmetic_spelling(
+                        local.get("artist", ""), remote.get("artist", "")
+                    )
+                    album_artist_names = [item["name"] for item in album_entities]
+                    if album_artist_names and preferred_album_artist != winner["album_artist"]:
+                        album_artist_names[0] = preferred_album_artist
+                    track_artist_names = _preserve_cosmetic_spellings(
+                        local.get("artists") or [local.get("artist", "")],
+                        [item["name"] for item in remote["artists"]],
+                    )
                     proposed = {
-                        "title": remote["title"], "artist": remote["artist"],
-                        "artists": [item["name"] for item in remote["artists"]],
-                        "album": winner["album"], "album_artist": winner["album_artist"],
-                        "album_artists": [item["name"] for item in album_entities],
+                        "title": remote["title"], "artist": preferred_track_artist,
+                        "artists": track_artist_names,
+                        "album": winner["album"], "album_artist": preferred_album_artist,
+                        "album_artists": album_artist_names,
                         "album_artist_mbid": album_artist_mbid,
                         "album_artist_mbids": [item["mbid"] for item in album_entities if item.get("mbid")],
                         "date": winner["date"],
@@ -582,3 +596,28 @@ class MetadataRebuildService:
 def _similarity(left: str, right: str) -> float:
     from difflib import SequenceMatcher
     return SequenceMatcher(None, normalize(left), normalize(right)).ratio()
+
+
+def _cosmetic_key(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value or "")
+    without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+    return re.sub(r"[^a-z0-9]", "", without_marks.casefold())
+
+
+def _preserve_cosmetic_spelling(local: str, canonical: str) -> str:
+    """Preserve any local spelling when the canonical change is only cosmetic."""
+    if local and canonical and _cosmetic_key(local) == _cosmetic_key(canonical):
+        return local
+    return canonical or local
+
+
+def _preserve_cosmetic_spellings(local: list[str], canonical: list[str]) -> list[str]:
+    """Apply cosmetic-spelling preservation generically to multi-artist credits."""
+    preserved = []
+    for canonical_name in canonical:
+        local_match = next(
+            (name for name in local if _cosmetic_key(name) == _cosmetic_key(canonical_name)),
+            "",
+        )
+        preserved.append(_preserve_cosmetic_spelling(local_match, canonical_name))
+    return preserved

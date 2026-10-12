@@ -289,7 +289,8 @@ class SchedulerManager:
 
     def update_schedule(self, config: AppConfig):
         """Updates the cron schedules for daily and weekly jobs."""
-        for job_id in ["daily_sync_job", "weekly_sync_job", "navidrome_starred_sync_job"]:
+        for job_id in ["daily_sync_job", "weekly_sync_job", "navidrome_starred_sync_job",
+                       "background_cache_refresh_job", "health_cache_refresh_job", "file_checks_job"]:
             if self.scheduler.get_job(job_id):
                 self.scheduler.remove_job(job_id)
                 logger.info(f"Cancelled existing scheduled sync job: {job_id}")
@@ -356,19 +357,22 @@ class SchedulerManager:
         except Exception as e:
             logger.error(f"Error scheduling weekly sync job: {e}")
 
-        # Schedule Navidrome Starred Sync Job (every 5 minutes)
+        refresh_minutes = max(1, int(getattr(config.schedule, "background_refresh_minutes", 5) or 5))
+        health_minutes = max(5, int(getattr(config.schedule, "health_refresh_minutes", 30) or 30))
+
+        # Schedule Navidrome Starred Sync Job on the configured background cadence.
         if config.navidrome.url and config.navidrome.username and config.navidrome.password:
             try:
                 self.scheduler.add_job(
                     self.sync_navidrome_starred,
                     trigger='interval',
-                    minutes=5,
+                    minutes=refresh_minutes,
                     args=[config],
                     id="navidrome_starred_sync_job",
                     replace_existing=True,
                     max_instances=1
                 )
-                logger.info("Navidrome Starred synchronization job scheduled (every 5 minutes).")
+                logger.info("Navidrome Starred synchronization job scheduled (every %s minutes).", refresh_minutes)
             except Exception as e:
                 logger.error(f"Error scheduling Navidrome Starred sync job: {e}")
 
@@ -400,6 +404,32 @@ class SchedulerManager:
             logger.info(f"Automated File Checks job scheduled ({file_checks_day.upper()}s at {file_checks_hour:02d}:{file_checks_minute:02d}).")
         except Exception as e:
             logger.error(f"Error scheduling file checks job: {e}")
+
+        async def refresh_background_caches():
+            from backend.app.main import refresh_feedback_cache_for_user
+            for user in await self.db.list_users():
+                try:
+                    await refresh_feedback_cache_for_user(user["id"])
+                except Exception as exc:
+                    logger.error("Feedback cache refresh failed for %s: %s", user["id"], exc)
+
+        async def refresh_health_caches():
+            from backend.app.main import refresh_health_cache_for_user
+            for user in await self.db.list_users():
+                try:
+                    await refresh_health_cache_for_user(user["id"])
+                except Exception as exc:
+                    logger.error("Server Health cache refresh failed for %s: %s", user["id"], exc)
+
+        self.scheduler.add_job(
+            refresh_background_caches, trigger="interval", minutes=refresh_minutes,
+            id="background_cache_refresh_job", replace_existing=True, max_instances=1,
+        )
+        self.scheduler.add_job(
+            refresh_health_caches, trigger="interval", minutes=health_minutes,
+            id="health_cache_refresh_job", replace_existing=True, max_instances=1,
+        )
+        logger.info("Background caches scheduled every %s min; Server Health every %s min.", refresh_minutes, health_minutes)
 
     def get_next_run_time(self) -> Optional[str]:
         """Returns the next scheduled run timestamp across all active sync jobs in ISO format or None."""
@@ -544,6 +574,10 @@ class SchedulerManager:
                         success = await lb_client.submit_feedback(artist, title, 1, mbid=track_mbid)
                         if success:
                             logger.info(f"Submitted Love to ListenBrainz for user {username}: '{artist} - {title}'")
+                            await self.db.upsert_feedback_cache(uid, {
+                                "artist": artist, "title": title, "album": album,
+                                "mbid": track_mbid or "", "score": 1,
+                            })
                         else:
                             logger.warning(f"LB feedback failed for user {username}: '{artist} - {title}' — continuing with promote+download.")
                     except Exception as e:

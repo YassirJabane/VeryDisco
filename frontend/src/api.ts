@@ -10,7 +10,15 @@ const api = axios.create({
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    const method = (response.config.method || 'get').toLowerCase();
+    if (['post', 'put', 'patch', 'delete'].includes(method)) {
+      window.dispatchEvent(new CustomEvent('verydisco-data-changed', {
+        detail: { url: response.config.url || '', method },
+      }));
+    }
+    return response;
+  },
   (error) => {
     if (error.response && error.response.status === 401) {
       const url = error.config?.url || '';
@@ -98,6 +106,8 @@ export interface ConfigData {
     run_on_startup: boolean;
     batch_size: number;
     max_candidate_attempts: number;
+    background_refresh_minutes: number;
+    health_refresh_minutes: number;
   };
   paths: {
     weekly_output_dir: string;
@@ -164,6 +174,10 @@ export interface AcoustidStats {
   failed: number;
   remaining: number;
   running: boolean;
+  failures: Array<{
+    file_path: string; reason: string; scanned_at: string;
+    artist: string; title: string; album: string; suggestion: string;
+  }>;
 }
 
 export interface GetStatusResponse {
@@ -269,6 +283,18 @@ export const apiService = {
   },
   async importSpotifyPlaylist(url: string): Promise<any> {
     const resp = await api.post('/api/spotify/playlist/import', { url });
+    return resp.data;
+  },
+  async getImportedPlaylists(): Promise<any[]> {
+    const resp = await api.get('/api/playlists/imported');
+    return resp.data;
+  },
+  async updateImportedPlaylist(id: number, playlist: any): Promise<any> {
+    const resp = await api.put(`/api/playlists/imported/${id}`, playlist);
+    return resp.data;
+  },
+  async syncImportedPlaylist(id: number): Promise<any> {
+    const resp = await api.post(`/api/playlists/imported/${id}/sync`);
     return resp.data;
   },
   async getConfig(): Promise<GetConfigResponse> {
@@ -433,6 +459,11 @@ export const apiService = {
     return resp.data;
   },
 
+  async refreshPinnedArtistImage(id: number): Promise<{ status: string; picture_url: string }> {
+    const resp = await api.post(`/api/pinned_artists/${id}/refresh-image`);
+    return resp.data;
+  },
+
   async getArtistReleases(artistIdOrMbid: string | number, mbid?: string): Promise<any[]> {
     const target = mbid || artistIdOrMbid;
     const resp = await api.get<any[]>(`/api/artist/${target}/releases`);
@@ -496,8 +527,9 @@ export const apiService = {
     return resp.data;
   },
 
-  async searchLyrics(artist: string, title: string): Promise<LrcLibCandidate[]> {
-    const resp = await api.get<LrcLibCandidate[]>(`/api/lyrics/search?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}`);
+  async searchLyrics(artist: string, title: string, album?: string): Promise<LrcLibCandidate[]> {
+    const albumParam = album ? `&album=${encodeURIComponent(album)}` : '';
+    const resp = await api.get<LrcLibCandidate[]>(`/api/lyrics/search?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}${albumParam}`);
     return resp.data;
   },
 
@@ -707,6 +739,11 @@ export const apiService = {
 
   async saveTrackTags(tags: any): Promise<any> {
     const resp = await api.post('/api/library/track/tags', tags);
+    return resp.data;
+  },
+
+  async replaceLibraryTrack(filepath: string, artist: string, title: string, album: string): Promise<any> {
+    const resp = await api.post('/api/library/track/replace', { filepath, artist, title, album });
     return resp.data;
   },
 

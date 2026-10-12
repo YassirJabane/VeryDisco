@@ -45,6 +45,7 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
   const { notify } = useNotification();
   const [artist, setArtist] = useState(defaultArtist);
   const [title, setTitle] = useState(defaultTitle);
+  const [album, setAlbum] = useState(defaultAlbum);
   const [candidates, setCandidates] = useState<LrcLibCandidate[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedCandidate, setSelectedCandidate] = useState<LrcLibCandidate | null>(null);
@@ -52,13 +53,13 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const fetchCandidates = async (searchArtist: string, searchTitle: string) => {
+  const fetchCandidates = async (searchArtist: string, searchTitle: string, searchAlbum: string = album) => {
     setLoading(true);
     setSelectedCandidate(null);
     setLyricsContent('');
     setIsEditing(false);
     try {
-      const data = await apiService.searchLyrics(searchArtist, searchTitle);
+      const data = await apiService.searchLyrics(searchArtist, searchTitle, searchAlbum);
       setCandidates(data || []);
       if (data && data.length > 0) {
         const sorted = [...data].sort((a, b) => {
@@ -84,19 +85,20 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
     if (open) {
       setArtist(defaultArtist);
       setTitle(defaultTitle);
+      setAlbum(defaultAlbum);
       if (defaultLyricsText) {
         setLyricsContent(defaultLyricsText);
         setCandidates([]);
         setSelectedCandidate(null);
       } else {
-        fetchCandidates(defaultArtist, defaultTitle);
+        fetchCandidates(defaultArtist, defaultTitle, defaultAlbum);
       }
     }
   }, [open, defaultArtist, defaultTitle, defaultLyricsText]);
 
   const handleManualSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchCandidates(artist, title);
+    fetchCandidates(artist, title, album);
   };
 
   const handleSelectCandidate = (cand: LrcLibCandidate) => {
@@ -176,6 +178,13 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
                   fullWidth
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
+                />
+                <TextField
+                  label="Album (optional fallback)"
+                  size="small"
+                  fullWidth
+                  value={album}
+                  onChange={(e) => setAlbum(e.target.value)}
                 />
                 <Button
                   type="submit"

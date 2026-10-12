@@ -1545,6 +1545,13 @@ async def _download_album_task_internal(
 
 _single_track_semaphore = asyncio.Semaphore(2)
 
+def _is_instrumental_track(title: str, album: str = "", lyrics_type: str = "") -> bool:
+    """Mark only when provider metadata or the release title gives explicit evidence."""
+    return lyrics_type == "instrumental" or bool(re.search(
+        r"(?i)(?:^|[\s\[(\-])instrumental(?:$|[\s\])\-])",
+        f"{title or ''} {album or ''}",
+    ))
+
 async def download_single_track_task(
     artist: str,
     title: str,
@@ -1555,13 +1562,14 @@ async def download_single_track_task(
     user_id: Optional[str] = None,
     is_explore: bool = False,
     dest_dir_override: Optional[str] = None,
-    mbid_album_override: Optional[str] = None
+    mbid_album_override: Optional[str] = None,
+    replace_path_override: Optional[str] = None,
 ):
     """Background task to search, download and organize a single track."""
     async with _single_track_semaphore:
         return await _download_single_track_internal(
             artist, title, album, config, db, force, user_id, is_explore,
-            dest_dir_override, mbid_album_override
+            dest_dir_override, mbid_album_override, replace_path_override
         )
 
 
@@ -1575,7 +1583,8 @@ async def _download_single_track_internal(
     user_id: Optional[str] = None,
     is_explore: bool = False,
     dest_dir_override: Optional[str] = None,
-    mbid_album_override: Optional[str] = None
+    mbid_album_override: Optional[str] = None,
+    replace_path_override: Optional[str] = None,
 ) -> bool:
     logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
 
@@ -1779,7 +1788,13 @@ async def _download_single_track_internal(
                 continue
 
             from backend.app.sync import resolve_album_dir, get_library_filename, get_safe_filename
-            if dest_dir_override:
+            if replace_path_override:
+                import uuid
+                replace_target = Path(replace_path_override).resolve()
+                dest_dir = replace_target.parent
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest_audio_path = dest_dir / f".verydisco-replacement-{uuid.uuid4().hex}{ext}"
+            elif dest_dir_override:
                 dest_dir = Path(dest_dir_override)
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 clean_filename = get_safe_filename(fetched_artist, title_tag, ext)
@@ -1808,6 +1823,7 @@ async def _download_single_track_internal(
 
             # 3. Fetch lyrics and embed tags
             lyrics_content = None
+            l_type = "missing"
             try:
                 lyrics_content, l_type = await lrclib_client.get_lyrics(artist, title_tag)
                 if lyrics_content:
@@ -1846,8 +1862,32 @@ async def _download_single_track_internal(
                     logger.error(f"Could not restore untagged download {dest_audio_path}: {restore_error}")
                 continue
 
+            published_path = dest_audio_path
+            replaced_paths: list[str] = []
+            if replace_path_override:
+                old_path = Path(replace_path_override).resolve()
+                published_path = old_path if old_path.suffix.lower() == dest_audio_path.suffix.lower() else old_path.with_suffix(dest_audio_path.suffix)
+                temp_lyrics = dest_audio_path.with_suffix(".lrc")
+                final_lyrics = published_path.with_suffix(".lrc")
+                try:
+                    await asyncio.to_thread(safe_move_file, dest_audio_path, published_path)
+                    if temp_lyrics.exists():
+                        await asyncio.to_thread(safe_move_file, temp_lyrics, final_lyrics)
+                    if old_path != published_path and old_path.exists():
+                        old_path.unlink()
+                    old_lyrics = old_path.with_suffix(".lrc")
+                    if old_lyrics != final_lyrics and old_lyrics.exists():
+                        old_lyrics.unlink()
+                    replaced_paths = [str(old_path), str(published_path)]
+                    logger.info("Atomically replaced library track '%s' with '%s'", old_path, published_path)
+                except Exception as publish_error:
+                    logger.error("Could not publish replacement for %s: %s", old_path, publish_error)
+                    continue
+
             if db and user_id and not is_explore:
-                await db.refresh_library_paths(user_id, [str(dest_audio_path)])
+                await db.refresh_library_paths(user_id, replaced_paths or [str(published_path)])
+                if _is_instrumental_track(title_tag, album, l_type):
+                    await db.mark_instrumental(str(published_path), user_id)
 
             # Trigger scan
             if config.navidrome.url and config.navidrome.username and config.navidrome.password:
@@ -2029,6 +2069,7 @@ async def grab_single_track_task(
 
         # 3. Fetch lyrics and embed tags
         lyrics_content = None
+        l_type = "missing"
         try:
             lyrics_content, l_type = await lrclib_client.get_lyrics(artist, title_tag)
             if lyrics_content:
@@ -2068,6 +2109,11 @@ async def grab_single_track_task(
             return
 
         # Trigger scan
+        if db and user_id and not is_explore:
+            await db.refresh_library_paths(user_id, [str(dest_audio_path)])
+            if _is_instrumental_track(title_tag, album, l_type):
+                await db.mark_instrumental(str(dest_audio_path), user_id)
+
         if config.navidrome.url and config.navidrome.username and config.navidrome.password:
             from backend.app.clients.navidrome import NavidromeClient
             nd_client = NavidromeClient(

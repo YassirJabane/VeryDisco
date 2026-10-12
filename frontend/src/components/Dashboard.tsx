@@ -32,7 +32,22 @@ const Dashboard: React.FC<DashboardProps> = ({ onNavigateToConfig }) => {
     finally { setLoading(false); }
   };
   const fetchStats = async () => { try { setNavidromeStats(await apiService.getNavidromeStats()); } catch { setNavidromeStats(null); } finally { setStatsLoading(false); } };
-  useEffect(() => { void fetchStatus(); void fetchStats(); const statusTimer = window.setInterval(fetchStatus, 5000); const statsTimer = window.setInterval(fetchStats, 60000); return () => { window.clearInterval(statusTimer); window.clearInterval(statsTimer); abortControllerRef.current?.abort(); }; }, []);
+  useEffect(() => {
+    const refreshAll = () => { void fetchStatus(); void fetchStats(); };
+    refreshAll();
+    const statusTimer = window.setInterval(fetchStatus, 5000);
+    const statsTimer = window.setInterval(fetchStats, 30000);
+    window.addEventListener('verydisco-data-changed', refreshAll);
+    window.addEventListener('focus', refreshAll);
+    document.addEventListener('visibilitychange', refreshAll);
+    return () => {
+      window.clearInterval(statusTimer); window.clearInterval(statsTimer);
+      window.removeEventListener('verydisco-data-changed', refreshAll);
+      window.removeEventListener('focus', refreshAll);
+      document.removeEventListener('visibilitychange', refreshAll);
+      abortControllerRef.current?.abort();
+    };
+  }, []);
 
   const playlists = useMemo(() => Object.entries(status?.latest_runs || {}) as [string, RunRecord][], [status]);
   const totals = useMemo(() => playlists.reduce((acc, [, run]) => ({ found: acc.found + (run?.tracks_found || 0), downloaded: acc.downloaded + (run?.tracks_downloaded || 0), failed: acc.failed + (run?.tracks_failed || 0) }), { found: 0, downloaded: 0, failed: 0 }), [playlists]);

@@ -19,6 +19,7 @@ import {
   Edit as EditIcon,
   Lyrics as LyricsIcon,
   CompareArrows as OrganizeIcon,
+  Autorenew as ReplaceIcon,
 } from '@mui/icons-material';
 import apiService, { AlbumItem, LibraryTrackItem } from '../api';
 import LyricsPreviewDialog from './LyricsPreviewDialog';
@@ -50,8 +51,9 @@ export const AlbumCard: React.FC<{
   onDownloadMissing: () => void;
   onEditTags: (track: LibraryTrackItem) => void;
   onEditLyrics: (track: LibraryTrackItem) => void;
+  onReplace?: (track: LibraryTrackItem) => void;
   onPlayPreview: (track: LibraryTrackItem) => void;
-}> = ({ album, onDelete, expanded, onToggle, tracks, tracksLoading, onDownloadMissing, onEditTags, onEditLyrics, onPlayPreview }) => {
+}> = ({ album, onDelete, expanded, onToggle, tracks, tracksLoading, onDownloadMissing, onEditTags, onEditLyrics, onReplace, onPlayPreview }) => {
   const officialTracks = tracks?.length && tracks.every(track => track.verified === true) ? tracks : undefined;
   const presentCount = officialTracks ? officialTracks.filter(track => track.exists).length : album.track_count;
   const totalCount = officialTracks ? officialTracks.length : album.total_tracks;
@@ -257,6 +259,11 @@ export const AlbumCard: React.FC<{
                             <LyricsIcon sx={{ fontSize: 16 }} />
                           </IconButton>
                         </Tooltip>
+                        {onReplace && <Tooltip title="Replace wrong audio safely">
+                          <IconButton size="small" onClick={() => onReplace(t)} aria-label="Replace audio">
+                            <ReplaceIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Tooltip>}
                       </>
                     )}
                   </Box>
@@ -302,6 +309,7 @@ const LibraryManager: React.FC = () => {
   const [editYear, setEditYear] = useState('');
   const [editGenre, setEditGenre] = useState('');
   const [savingTags, setSavingTags] = useState(false);
+  const [replacingTrack, setReplacingTrack] = useState(false);
 
   // Inline Lyrics Editor state
   const [lyricsEditorOpen, setLyricsEditorOpen] = useState(false);
@@ -472,6 +480,20 @@ const LibraryManager: React.FC = () => {
       showToast('Failed to save track tags.', 'error');
     } finally {
       setSavingTags(false);
+    }
+  };
+
+  const handleQueueReplacement = async () => {
+    if (!editingTrack?.filepath || !editArtist.trim() || !editTitle.trim()) return;
+    setReplacingTrack(true);
+    try {
+      const result = await apiService.replaceLibraryTrack(editingTrack.filepath, editArtist, editTitle, editAlbum);
+      showToast(result.message || 'Safe replacement queued.');
+      setTagEditorOpen(false);
+    } catch (error: any) {
+      showToast(error?.response?.data?.detail || 'Failed to queue track replacement.', 'error');
+    } finally {
+      setReplacingTrack(false);
     }
   };
 
@@ -724,6 +746,7 @@ const LibraryManager: React.FC = () => {
                   onDownloadMissing={() => handleDownloadMissing(a)}
                   onEditTags={handleOpenTagEditor}
                   onEditLyrics={(track) => handleOpenLyricsEditor(track, a.artist)}
+                  onReplace={handleOpenTagEditor}
                   onPlayPreview={(track) => handlePlayPreview(track, a.artist)}
                 />
               ))}
@@ -815,6 +838,12 @@ const LibraryManager: React.FC = () => {
         </DialogContent>
         <DialogActions sx={{ p: 2.5 }}>
           <Button onClick={() => setTagEditorOpen(false)} disabled={savingTags}>Cancel</Button>
+          <Button
+            color="warning" variant="outlined" startIcon={<ReplaceIcon />}
+            onClick={handleQueueReplacement} disabled={savingTags || replacingTrack || !editArtist.trim() || !editTitle.trim()}
+          >
+            {replacingTrack ? 'Queueing…' : 'Replace Audio'}
+          </Button>
           <Button variant="contained" onClick={handleSaveTags} disabled={savingTags} sx={{ borderRadius: 2 }}>
             {savingTags ? 'Saving…' : 'Save Tags'}
           </Button>
