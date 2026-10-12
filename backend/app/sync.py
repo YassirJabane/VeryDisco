@@ -1074,13 +1074,27 @@ def extract_audio_mbids(file_path: Union[str, Path]) -> Tuple[Optional[str], Opt
     return track_mbid, album_mbid
 
 def clean_track_filename(filename: str, target_artist: str = "") -> str:
-    """Strips audio extensions, artist prefixes, track/disc numbers, and audio format tags."""
+    """Strips audio extensions, artist prefixes, album+tracknum prefixes, track/disc numbers, and audio format tags."""
     base = os.path.splitext(filename)[0] if any(filename.lower().endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.wav', '.ogg', '.lrc']) else filename
     if target_artist:
-        for art_alias in get_artist_aliases(target_artist):
-            if art_alias:
-                pattern = rf'(?i)^{re.escape(art_alias)}\s*[-_]*\s*'
-                base = re.sub(pattern, '', base).strip(' -_./\\')
+        main_art = extract_main_artist(target_artist)
+        candidate_prefixes = [
+            target_artist,
+            sanitize_filename(target_artist),
+            main_art,
+            sanitize_filename(main_art),
+            *get_artist_aliases(target_artist),
+        ]
+        for art_alias in sorted({p for p in candidate_prefixes if p}, key=len, reverse=True):
+            pattern = rf'(?i)^{re.escape(art_alias)}\s*[-_]+\s*'
+            stripped = re.sub(pattern, '', base).strip(' -_./\\')
+            if stripped != base and stripped:
+                base = stripped
+                break
+    # Handle library naming convention: {Artist}_{Album}_{TrackNum:02d}_{Title} (or {Album}_{TrackNum:02d}_{Title})
+    lib_match = re.match(r'^.+?_\d{1,3}_(.+)$', base)
+    if lib_match and lib_match.group(1).strip():
+        base = lib_match.group(1).strip()
     base = re.sub(r'^(?:\d+[-._\s]+|\d+\.\s*|[a-z]\d+[\s._-]+|\d+_\d+[\s._-]+)', '', base, flags=re.IGNORECASE).strip()
     base = re.sub(r'(?i)\s*[\(\[](?:remastered|remaster|live|explicit|clean|audio|bonus|deluxe|version|edit|hd|hq)[\)\]]', '', base).strip()
     return base
@@ -1093,18 +1107,20 @@ def match_track_titles(target_title: str, candidate_filename: str, target_artist
         t = txt.lower().replace('_', ' ').replace('&', 'and')
         return re.sub(r'[^\w]', '', t)
         
-    norm_target = norm(target_title)
-    norm_candidate = norm(clean_candidate)
+    target_variants = {norm(target_title), norm(clean_search_title(target_title))}
+    candidate_variants = {norm(clean_candidate), norm(clean_search_title(clean_candidate))}
+    target_variants.discard("")
+    candidate_variants.discard("")
     
-    if not norm_target or not norm_candidate:
+    if not target_variants or not candidate_variants:
         return False
 
-    if norm_target == norm_candidate:
+    if target_variants & candidate_variants:
         return True
 
     raw_target = re.sub(r'[^\w]', '', target_title.lower().replace('_', ''))
     raw_candidate = re.sub(r'[^\w]', '', clean_candidate.lower().replace('_', ''))
-    if raw_target == raw_candidate:
+    if raw_target and raw_target == raw_candidate:
         return True
 
     return False
@@ -2081,7 +2097,8 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           # 2. Build library index once to avoid O(n*m) filesystem walks
           logger.info(f"Building music library index from {music_dir}...")
           library_index = await asyncio.to_thread(_build_library_index, music_dir)
-          logger.info(f"Library index built: {len(library_index)} tracks indexed.")
+          indexed_count = len(library_index.get("filename_index", library_index)) if isinstance(library_index, dict) else len(library_index)
+          logger.info(f"Library index built: {indexed_count} tracks indexed.")
 
           # --- Sequential Download Loop ---
           results = []

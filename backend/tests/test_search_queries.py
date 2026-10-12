@@ -135,4 +135,22 @@ def test_clean_track_title_preserves_title_track_matching_album_name():
     assert clean_track_title("Ye - BULLY - DELUXE - 09 - BULLY (feat. CeeLo Green).mp3", "Kanye West", "BULLY - DELUXE") == "BULLY"
 
 
+def test_match_track_titles_matches_library_naming_and_live_or_con_variants():
+    from backend.app.sync import match_track_titles
+
+    assert match_track_titles(
+        "Purple Rain",
+        "Prince and The Revolution_Purple Rain_09_Purple Rain.mp3",
+        "Prince and The Revolution",
+    )
+    assert match_track_titles(
+        "La Pioggia Alla Domenica (con Marracash)",
+        "Vasco Rossi_Siamo qui_05_La pioggia alla domenica.mp3",
+        "Vasco Rossi, Marracash",
+    )
+    assert match_track_titles(
+        "Marea - Vasco Live 20|26",
+        "Vasco Rossi_Marea_01_Marea.mp3",
+        "Vasco Rossi",
+    )
 
