@@ -886,7 +886,36 @@ async def import_spotify_playlist(body: SpotifyPlaylistRequest, request: Request
 async def list_imported_playlists(request: Request):
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
-    return await db.list_imported_playlists(user["id"])
+    playlists = await db.list_imported_playlists(user["id"])
+    cfg = config_manager.config
+    for item in playlists:
+        if (
+            item.get("provider") == "spotify"
+            and item.get("provider_id")
+            and (not item.get("name") or item.get("name") == "Spotify playlist" or not item.get("artwork_url"))
+        ):
+            try:
+                client = SpotifyClient(
+                    cfg.spotify.client_id if cfg else "",
+                    cfg.spotify.client_secret if cfg else "",
+                    cfg.timeouts.http_seconds if cfg else 20,
+                )
+                fresh = await client.get_playlist(item["provider_id"])
+                new_name = (
+                    fresh.get("name")
+                    if (not item.get("name") or item.get("name") == "Spotify playlist") and fresh.get("name")
+                    else item.get("name")
+                )
+                new_art = item.get("artwork_url") or fresh.get("artwork_url") or ""
+                new_desc = item.get("description") or fresh.get("description") or ""
+                if new_name != item.get("name") or new_art != (item.get("artwork_url") or ""):
+                    item["name"] = new_name
+                    item["artwork_url"] = new_art
+                    item["description"] = new_desc
+                    await db.update_imported_playlist(item["id"], user["id"], item)
+            except Exception as exc:
+                logger.debug("Could not backfill metadata for Spotify playlist %s: %s", item.get("provider_id"), exc)
+    return playlists
 
 @app.put("/api/playlists/imported/{playlist_id}")
 async def update_imported_playlist(playlist_id: int, body: ImportedPlaylistUpdate, request: Request):

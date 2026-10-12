@@ -1,4 +1,5 @@
 import base64
+import json
 import re
 from html.parser import HTMLParser
 from typing import Any, Dict, List
@@ -50,6 +51,104 @@ def _parse_embed_tracks(html: str) -> List[Dict[str, Any]]:
     return tracks
 
 
+def _parse_embed_playlist(html: str) -> Dict[str, Any]:
+    """Extract playlist name, description, artwork_url, and tracks from Spotify embed HTML."""
+    name = ""
+    description = ""
+    artwork_url = ""
+    tracks: List[Dict[str, Any]] = []
+
+    next_data_match = re.search(
+        r'<script[^>]+id=["\']__NEXT_DATA__["\'][^>]*>(.*?)</script>',
+        html,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if next_data_match:
+        try:
+            payload = json.loads(next_data_match.group(1))
+            entity = (
+                ((payload.get("props") or {}).get("pageProps") or {})
+                .get("state", {})
+                .get("data", {})
+                .get("entity")
+                or {}
+            )
+            name = re.sub(r"\s+", " ", (entity.get("name") or entity.get("title") or "")).strip()
+            raw_desc = re.sub(r"\s+", " ", (entity.get("description") or "")).strip()
+            if raw_desc:
+                description = raw_desc
+            sources = ((entity.get("coverArt") or {}).get("sources")) or []
+            if isinstance(sources, list) and sources:
+                best_source = max(
+                    (s for s in sources if isinstance(s, dict) and s.get("url")),
+                    key=lambda s: (int(s.get("width") or 0), int(s.get("height") or 0)),
+                    default=None,
+                )
+                if best_source:
+                    artwork_url = str(best_source.get("url") or "").strip()
+
+            track_list = entity.get("trackList") or []
+            if isinstance(track_list, list):
+                for item in track_list:
+                    if not isinstance(item, dict):
+                        continue
+                    t_title = re.sub(r"\s+", " ", (item.get("title") or "").replace("\xa0", " ")).strip()
+                    t_artist = re.sub(r"\s+", " ", (item.get("subtitle") or "").replace("\xa0", " ")).strip()
+                    if t_title and t_artist:
+                        tracks.append({
+                            "artist": t_artist,
+                            "title": t_title,
+                            "album": "",
+                            "duration": item.get("duration"),
+                        })
+        except Exception:
+            pass
+
+    if not tracks:
+        tracks = _parse_embed_tracks(html)
+
+    if not name:
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+        if title_match:
+            candidate = re.sub(r"\s+", " ", title_match.group(1)).strip()
+            candidate = re.sub(r"\s*[·|-]\s*Spotify$", "", candidate, flags=re.IGNORECASE).strip()
+            if candidate:
+                name = candidate
+
+    if not name:
+        og_title = re.search(
+            r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)',
+            html,
+            re.IGNORECASE,
+        ) or re.search(
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']',
+            html,
+            re.IGNORECASE,
+        )
+        if og_title:
+            name = re.sub(r"\s+", " ", og_title.group(1)).strip()
+
+    if not artwork_url:
+        image_match = re.search(
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
+            html,
+            re.IGNORECASE,
+        ) or re.search(
+            r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+            html,
+            re.IGNORECASE,
+        )
+        if image_match:
+            artwork_url = image_match.group(1).strip()
+
+    return {
+        "name": name,
+        "description": description,
+        "artwork_url": artwork_url,
+        "tracks": tracks,
+    }
+
+
 class SpotifyClient:
     """Spotify Web API client for public playlist imports."""
 
@@ -91,21 +190,33 @@ class SpotifyClient:
         embed_response = await client.get(
             f"https://open.spotify.com/embed/playlist/{playlist_id}", timeout=self.timeout)
         embed_response.raise_for_status()
-        embed_tracks = _parse_embed_tracks(embed_response.text)
+        parsed_embed = _parse_embed_playlist(embed_response.text)
+        embed_tracks = parsed_embed["tracks"]
         if embed_tracks:
-            title_match = re.search(r"<title>(.*?)</title>", embed_response.text, re.IGNORECASE | re.DOTALL)
-            title = re.sub(r"\s+", " ", title_match.group(1)).strip() if title_match else "Spotify playlist"
-            title = re.sub(r"\s*[·|-]\s*Spotify$", "", title, flags=re.IGNORECASE).strip()
-            image_match = re.search(
-                r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
-                embed_response.text, re.IGNORECASE,
-            ) or re.search(
-                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
-                embed_response.text, re.IGNORECASE,
-            )
+            title = parsed_embed["name"]
+            artwork_url = parsed_embed["artwork_url"]
+            description = parsed_embed["description"]
+
+            if not title or not artwork_url:
+                try:
+                    oembed_resp = await client.get(
+                        f"https://open.spotify.com/oembed?url=https://open.spotify.com/playlist/{playlist_id}",
+                        timeout=self.timeout,
+                    )
+                    if oembed_resp.status_code == 200:
+                        oembed_data = oembed_resp.json()
+                        if not title:
+                            title = re.sub(r"\s+", " ", (oembed_data.get("title") or "")).strip()
+                        if not artwork_url:
+                            artwork_url = (oembed_data.get("thumbnail_url") or "").strip()
+                except Exception:
+                    pass
+
             return {
-                "id": playlist_id, "name": title, "description": "",
-                "artwork_url": image_match.group(1) if image_match else "",
+                "id": playlist_id,
+                "name": title or "Spotify playlist",
+                "description": description,
+                "artwork_url": artwork_url,
                 "tracks": embed_tracks,
             }
 
