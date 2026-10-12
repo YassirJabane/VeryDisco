@@ -553,6 +553,43 @@ async def _download_album_task_internal(
         except Exception as e:
             logger.warning(f"Could not pre-fetch official album tracklist from MusicBrainz for '{artist} - {album}': {e}")
 
+        # 1b. If MusicBrainz returned <= 1 track for a non-single album, check Deezer for full album tracklist
+        if not release_mbid and (record_type or "").lower() != "single" and len(official_album_tracks) <= 1:
+            try:
+                dz_alb = await deezer_client.search_album(artist, album)
+                if dz_alb and dz_alb.get("id") and int(dz_alb.get("nb_tracks") or 0) > max(1, len(official_album_tracks)):
+                    dz_tracks_resp = await deezer_client.get_album_tracks(int(dz_alb["id"]))
+                    dz_tracks_raw = (dz_tracks_resp or {}).get("data", []) if dz_tracks_resp else []
+                    if len(dz_tracks_raw) > len(official_album_tracks):
+                        dz_disks = {int(t.get("disk_number") or 1) for t in dz_tracks_raw}
+                        nb_discs = max(dz_disks) if dz_disks else 1
+                        nb_tracks = len(dz_tracks_raw)
+                        dz_aa = (dz_alb.get("artist") or {}).get("name") or artist
+                        official_album_tracks = [
+                            {
+                                "title": t.get("title") or t.get("title_short") or "",
+                                "artist": (t.get("artist") or {}).get("name") or dz_aa,
+                                "credited_artists": [(t.get("artist") or {}).get("name") or dz_aa],
+                                "track_position": int(t.get("track_position") or idx),
+                                "disk_number": int(t.get("disk_number") or 1),
+                                "disc_num": int(t.get("disk_number") or 1),
+                                "id": str(t.get("id") or ""),
+                                "release_mbid": None,
+                                "nb_tracks": nb_tracks,
+                                "nb_discs": nb_discs,
+                            }
+                            for idx, t in enumerate(dz_tracks_raw, start=1)
+                        ]
+                        official_mb_release_mbid = None
+                        if not target_album_artist:
+                            target_album_artist = dz_aa
+                            target_album_artists = [dz_aa]
+                        logger.info(
+                            f"Fetched {len(official_album_tracks)} official tracks from Deezer fallback for '{artist} - {album}'."
+                        )
+            except Exception as e:
+                logger.debug(f"Deezer tracklist fallback failed for '{artist} - {album}': {e}")
+
         # An edition selected by MBID must never fall back to a broad slskd
         # search: that can put a different release (for example an EP or
         # mixtape) into the requested album folder.
@@ -582,32 +619,32 @@ async def _download_album_task_internal(
             logger.info(f"Using manually chosen candidate from peer '{chosen_username}' for folder '{chosen_folder}'")
             candidates = [((chosen_username, chosen_folder), chosen_files)]
         else:
-            # Build album search strategies
-            from backend.app.sync import extract_main_artist
+            # Build album search strategies (never use '-' hyphen separators, which act as exclusion syntax in slskd)
+            from backend.app.sync import extract_main_artist, build_album_wildcard_queries, wildcard_artist_variants
             clean_art = clean_artist_name(artist)
             clean_alb = clean_album_name(album)
             main_art = extract_main_artist(artist)
-            
-            raw_alb = re.sub(r'\s+', ' ', re.sub(r'[^\w\s-]', ' ', album)).strip()
-            stripped_alb = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version)\b', '', album)
-            stripped_alb = re.sub(r'\s+-\s+', ' ', stripped_alb)
-            stripped_alb = re.sub(r'[^\w\s-]', ' ', stripped_alb)
-            stripped_alb = re.sub(r'\s+', ' ', stripped_alb).strip()
 
-            from backend.app.sync import build_album_wildcard_queries
+            raw_alb = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', album)).strip()
+            stripped_alb = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version|edition)\b', '', album)
+            stripped_alb = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', stripped_alb)).strip()
+            clean_alb_q = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', clean_alb)).strip()
+            main_art_q = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', main_art)).strip()
+            clean_art_q = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', clean_art)).strip()
 
             queries = []
-            art_lower = clean_art.lower()
-            alb_lower = clean_alb.lower()
+            art_lower = clean_art_q.lower()
+            alb_lower = clean_alb_q.lower()
 
             seen_q = set()
             def add_query(q_text, req_artist):
-                if q_text and q_text.strip() and q_text.strip() not in seen_q:
-                    seen_q.add(q_text.strip())
-                    queries.append((q_text.strip(), req_artist))
+                normalized = re.sub(r'\s+', ' ', (q_text or '').replace(' - ', ' ').replace('-', ' ')).strip()
+                if normalized and normalized not in seen_q:
+                    seen_q.add(normalized)
+                    queries.append((normalized, req_artist))
 
-            main_art_wildcard = f"*{main_art[1:]}" if len(main_art) >= 3 else main_art
-            clean_art_wildcard = f"*{clean_art[1:]}" if len(clean_art) >= 3 else clean_art
+            main_art_wildcard = f"*{main_art_q[1:]}" if len(main_art_q) >= 3 else main_art_q
+            clean_art_wildcard = f"*{clean_art_q[1:]}" if len(clean_art_q) >= 3 else clean_art_q
 
             album_year = ""
             if official_album_date:
@@ -621,73 +658,84 @@ async def _download_album_task_internal(
                     album_year = m_yr.group(1)
 
             if art_lower == alb_lower:
-                add_query(clean_art, False)
+                for wildcard_query in reversed(wildcard_artist_variants(main_art_q)[1:]):
+                    add_query(wildcard_query, False)
+                add_query(clean_art_q, False)
             elif art_lower in alb_lower:
-                add_query(clean_alb, False)
+                for wildcard_query in build_album_wildcard_queries(main_art_q, raw_alb or stripped_alb or clean_alb_q):
+                    add_query(wildcard_query, False)
+                add_query(clean_alb_q, False)
             elif alb_lower in art_lower:
-                add_query(clean_art, False)
+                for wildcard_query in build_album_wildcard_queries(main_art_q, raw_alb or stripped_alb or clean_alb_q):
+                    add_query(wildcard_query, False)
+                add_query(clean_art_q, False)
             else:
-                # 0. Raw exact album title (including Deluxe / Edition keywords) FIRST
-                if raw_alb and raw_alb.lower() != stripped_alb.lower():
-                    if main_art_wildcard != main_art:
-                        add_query(f"{main_art_wildcard} - {raw_alb}", False)
-                    add_query(f"{main_art} - {raw_alb}", False)
-                    if main_art_wildcard != main_art:
-                        add_query(f"{main_art_wildcard} {raw_alb}", False)
-                    add_query(f"{main_art} {raw_alb}", False)
+                raw_wildcards = build_album_wildcard_queries(main_art_q, raw_alb) if raw_alb else []
+                stripped_wildcards = (
+                    build_album_wildcard_queries(main_art_q, stripped_alb)
+                    if stripped_alb and stripped_alb.lower() != raw_alb.lower()
+                    else []
+                )
 
-                # 1. Hyphenated "Artist - Album" patterns (with wildcard first)
-                if main_art_wildcard != main_art:
-                    add_query(f"{main_art_wildcard} - {stripped_alb}", False)
-                add_query(f"{main_art} - {stripped_alb}", False)
+                # 0. Full-wildcard album + full-wildcard artist FIRST (both raw with Deluxe/Edition and stripped)
+                if raw_wildcards:
+                    add_query(raw_wildcards[0], False)
+                if stripped_wildcards:
+                    add_query(stripped_wildcards[0], False)
 
-                # Try title+artist wildcards early. Keep these
-                # space-separated: a hyphen is exclusion syntax in slskd.
-                for wildcard_query in build_album_wildcard_queries(main_art, raw_alb or stripped_alb or clean_alb):
+                # 1. Remaining title+artist wildcard queries (space-separated, no '-' exclusion syntax)
+                for wildcard_query in raw_wildcards[1:]:
+                    add_query(wildcard_query, False)
+                for wildcard_query in stripped_wildcards[1:]:
                     add_query(wildcard_query, False)
 
-                # 2. Year-based directory patterns (e.g. Artist - Year - Album or Artist - Album (Year))
+                if stripped_alb != clean_alb_q and clean_alb_q:
+                    for wildcard_query in build_album_wildcard_queries(main_art_q, clean_alb_q):
+                        add_query(wildcard_query, False)
+
+                # 2. Clean album + artist / artist + album (space-separated)
+                if raw_alb and raw_alb.lower() != stripped_alb.lower():
+                    add_query(f"{raw_alb} {main_art_q}", False)
+                    add_query(f"{main_art_q} {raw_alb}", False)
+                if stripped_alb:
+                    add_query(f"{stripped_alb} {main_art_q}", False)
+                    add_query(f"{main_art_q} {stripped_alb}", False)
+
+                # 3. Year-based directory patterns (space-separated, no '-')
                 if album_year:
-                    if main_art_wildcard != main_art:
-                        add_query(f"{main_art_wildcard} - {album_year} - {raw_alb if raw_alb else stripped_alb}", False)
-                        add_query(f"{main_art_wildcard} - {raw_alb if raw_alb else stripped_alb} ({album_year})", False)
-                        add_query(f"{main_art_wildcard} - {raw_alb if raw_alb else stripped_alb} {album_year}", False)
-                    add_query(f"{main_art} - {album_year} - {raw_alb if raw_alb else stripped_alb}", False)
-                    add_query(f"{main_art} - {raw_alb if raw_alb else stripped_alb} ({album_year})", False)
-                    add_query(f"{main_art} - {raw_alb if raw_alb else stripped_alb} {album_year}", False)
+                    target_a = raw_alb if raw_alb else stripped_alb
+                    if main_art_wildcard != main_art_q:
+                        add_query(f"{target_a} {main_art_wildcard} {album_year}", False)
+                        add_query(f"{main_art_wildcard} {album_year} {target_a}", False)
+                    add_query(f"{target_a} {main_art_q} {album_year}", False)
+                    add_query(f"{main_art_q} {album_year} {target_a}", False)
+                    if stripped_alb and stripped_alb.lower() != target_a.lower():
+                        if main_art_wildcard != main_art_q:
+                            add_query(f"{stripped_alb} {main_art_wildcard} {album_year}", False)
+                        add_query(f"{stripped_alb} {main_art_q} {album_year}", False)
 
-                if stripped_alb != clean_alb:
-                    if main_art_wildcard != main_art:
-                        add_query(f"{main_art_wildcard} - {clean_alb}", False)
-                    add_query(f"{main_art} - {clean_alb}", False)
+                if stripped_alb != clean_alb_q and clean_alb_q:
+                    add_query(f"{clean_alb_q} {main_art_q}", False)
+                    add_query(f"{main_art_q} {clean_alb_q}", False)
 
-                if main_art != clean_art:
-                    if clean_art_wildcard != clean_art:
-                        add_query(f"{clean_art_wildcard} - {stripped_alb}", False)
-                    add_query(f"{clean_art} - {stripped_alb}", False)
+                if main_art_q != clean_art_q and clean_art_q:
+                    for wildcard_query in build_album_wildcard_queries(clean_art_q, stripped_alb or clean_alb_q):
+                        add_query(wildcard_query, False)
+                    add_query(f"{stripped_alb or clean_alb_q} {clean_art_q}", False)
+                    add_query(f"{clean_art_q} {stripped_alb or clean_alb_q}", False)
 
-                # 3. Space-separated "Artist Album" patterns
-                if main_art_wildcard != main_art:
-                    add_query(f"{main_art_wildcard} {stripped_alb}", False)
-                add_query(f"{main_art} {stripped_alb}", False)
+                # 4. Alternate MusicBrainz album artist (e.g. 'Ye' when requested artist was 'Kanye West')
+                if target_album_artist:
+                    mb_art_q = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', extract_main_artist(target_album_artist))).strip()
+                    if mb_art_q and mb_art_q.lower() not in {main_art_q.lower(), clean_art_q.lower(), "various artists"}:
+                        for wildcard_query in build_album_wildcard_queries(mb_art_q, stripped_alb or raw_alb):
+                            add_query(wildcard_query, False)
+                        add_query(f"{stripped_alb or raw_alb} {mb_art_q}", False)
 
-                if album_year:
-                    if main_art_wildcard != main_art:
-                        add_query(f"{main_art_wildcard} {stripped_alb} {album_year}", False)
-                    add_query(f"{main_art} {stripped_alb} {album_year}", False)
-
-                if stripped_alb != clean_alb:
-                    if main_art_wildcard != main_art:
-                        add_query(f"{main_art_wildcard} {clean_alb}", False)
-                    add_query(f"{main_art} {clean_alb}", False)
-
-                if main_art != clean_art:
-                    if clean_art_wildcard != clean_art:
-                        add_query(f"{clean_art_wildcard} {stripped_alb}", False)
-                    add_query(f"{clean_art} {stripped_alb}", False)
-
-                # 4. Album-only fallback
-                add_query(stripped_alb or clean_alb, True)
+                # 5. Album-only fallback
+                if raw_alb and raw_alb.lower() != (stripped_alb or clean_alb_q).lower():
+                    add_query(raw_alb, True)
+                add_query(stripped_alb or clean_alb_q, True)
 
             best_dir_key = None
             best_files = []

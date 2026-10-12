@@ -180,6 +180,44 @@ class DeezerClient:
             logger.debug(f"Deezer get_album_cover failed for '{artist} - {album}': {e}")
         return None
 
+    async def search_album(self, artist: str, album: str) -> Optional[Dict[str, Any]]:
+        """Search Deezer for an album matching artist and album title, returning its metadata including nb_tracks."""
+        from backend.app.sync import extract_main_artist
+        from backend.app.clients.musicbrainz import _valid_artist_norms
+
+        clean_artist = extract_main_artist(artist)
+        valid_artists = _valid_artist_norms(artist) | _valid_artist_norms(clean_artist)
+        raw_album = re.sub(r"\s+", " ", album or "").strip()
+        clean_album = re.sub(r"[\(\[].*?[\)\]]", "", raw_album).strip()
+
+        query = f"{clean_artist} {raw_album}".strip()
+        url = f"{self.base_url}/search/album?q={urllib.parse.quote(query)}&limit=10"
+        data = await self._request_json(url)
+        results = (data or {}).get("data", []) if data else []
+        if not results and clean_album and clean_album.lower() != raw_album.lower():
+            url2 = f"{self.base_url}/search/album?q={urllib.parse.quote(f'{clean_artist} {clean_album}')}&limit=10"
+            data2 = await self._request_json(url2)
+            results = (data2 or {}).get("data", []) if data2 else []
+
+        target_raw_norm = _normalize(raw_album)
+        target_clean_norm = _normalize(clean_album)
+
+        for res in results:
+            r_artist = _normalize((res.get("artist") or {}).get("name", ""))
+            r_title = _normalize(res.get("title", ""))
+            if r_artist in valid_artists and r_title in {target_raw_norm, target_clean_norm} and r_title:
+                return res
+
+        for res in results:
+            r_artist = _normalize((res.get("artist") or {}).get("name", ""))
+            r_title = _normalize(res.get("title", ""))
+            if r_artist in valid_artists and target_clean_norm and (
+                target_clean_norm in r_title or r_title in target_clean_norm
+            ):
+                return res
+
+        return None
+
     async def search_album_artwork(self, artist: str, album: str) -> List[Dict[str, Any]]:
         """Expose only album-cover candidates with exact artist and album matches."""
         query = urllib.parse.quote(f"{artist} {album}")
@@ -205,4 +243,8 @@ class DeezerClient:
                     "release_date": "",
                 })
         return results
+
+
+deezer_client = DeezerClient()
+
 

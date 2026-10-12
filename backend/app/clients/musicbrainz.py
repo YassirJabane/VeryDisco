@@ -274,46 +274,37 @@ async def inspect_album_releases(artist: str, album: str, force_refresh: bool = 
     except Exception as dz_err:
         logger.debug(f"Could not fetch Deezer track count for comparison: {dz_err}")
 
+    clean_alb = re.sub(
+        r'[\(\[]?\s*(?:deluxe|bonus|explicit|expanded|remastered|special|edition|version|digital|v1|v2|v3).*?[\)\]]?',
+        '',
+        album,
+        flags=re.IGNORECASE,
+    ).strip(' -_')
+
+    if clean_alb and clean_alb.lower() != album.lower():
+        release_clause = f'(release:"{album}" OR release:"{clean_alb}")'
+    else:
+        release_clause = f'release:"{album}"'
+
+    alt_artist = (
+        "Kanye West" if artist.lower().strip() in ("ye", "kanye")
+        else ("Ye" if artist.lower().strip() == "kanye west" else "")
+    )
+    if alt_artist:
+        artist_clause = f'(artist:"{artist}" OR artist:"{alt_artist}")'
+    else:
+        artist_clause = f'artist:"{artist}"'
+
     data = await _mb_get("/release", params={
-        "query": f'release:"{album}" AND artist:"{artist}"',
+        "query": f"{release_clause} AND {artist_clause}",
         "limit": 25,
         "inc": "artist-credits+media+release-groups",
         "fmt": "json",
     })
     if data is None:
         return {"artist": artist, "album": album, "candidates": [], "winner": None}
-        
-    releases = data.get("releases", [])
-    # Fallback search: if 0 releases found or if album contains edition suffixes like (deluxe),
-    # query MusicBrainz using base album name (e.g., "BULLY") so MB releases titled "BULLY" with disambiguation "deluxe" are found!
-    clean_alb = re.sub(r'[\(\[]?\s*(?:deluxe|bonus|explicit|expanded|remastered|special|edition|version|digital|v1|v2|v3).*?[\)\]]?', '', album, flags=re.IGNORECASE).strip(' -_')
-    if not releases or (clean_alb and clean_alb.lower() != album.lower()):
-        if clean_alb:
-            fb_data = await _mb_get("/release", params={
-                "query": f'release:"{clean_alb}" AND artist:"{artist}"',
-                "limit": 25,
-                "inc": "artist-credits+media+release-groups",
-                "fmt": "json",
-            })
-            if fb_data and fb_data.get("releases"):
-                existing_ids = {r.get("id") for r in releases}
-                for r in fb_data.get("releases", []):
-                    if r.get("id") not in existing_ids:
-                        releases.append(r)
 
-    # Fallback for artist name variations (e.g., "Ye" <-> "Kanye West")
-    if not releases:
-        alt_artist = "Kanye West" if artist.lower() in ["ye", "kanye"] else ("Ye" if artist.lower() == "kanye west" else "")
-        if alt_artist:
-            alt_query = f'release:"{clean_alb or album}" AND artist:"{alt_artist}"'
-            alt_data = await _mb_get("/release", params={
-                "query": alt_query,
-                "limit": 25,
-                "inc": "artist-credits+media+release-groups",
-                "fmt": "json",
-            })
-            if alt_data and alt_data.get("releases"):
-                releases = alt_data.get("releases", [])
+    releases = data.get("releases", [])
 
     artist_matched_releases = [r for r in releases if _is_matching_release_artist(r, artist)]
     pool = artist_matched_releases if artist_matched_releases else [

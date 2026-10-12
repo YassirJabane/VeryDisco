@@ -2018,62 +2018,82 @@ async def search_album_candidates(artist: str, album: str, request: Request):
         timeout=cfg.timeouts.http_seconds
     )
     
+    from backend.app.sync import build_album_wildcard_queries, extract_main_artist, wildcard_artist_variants
     clean_art = clean_artist_name(artist)
     clean_alb = clean_album_name(album)
-    
-    art_lower = clean_art.lower()
-    alb_lower = clean_alb.lower()
-    
-    art_wildcard = f"*{clean_art[1:]}" if len(clean_art) >= 3 else clean_art
+    main_art = extract_main_artist(artist)
+
+    clean_art_q = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', clean_art)).strip()
+    clean_alb_q = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', clean_alb)).strip()
+    main_art_q = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', main_art)).strip()
+    raw_alb = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', album)).strip()
+
+    art_lower = clean_art_q.lower()
+    alb_lower = clean_alb_q.lower()
+
+    art_wildcard = f"*{main_art_q[1:]}" if len(main_art_q) >= 3 else main_art_q
 
     queries = []
     if art_lower == alb_lower:
-        queries.append((clean_art, False))
+        for wq in reversed(wildcard_artist_variants(main_art_q)[1:]):
+            queries.append((wq, False))
+        queries.append((clean_art_q, False))
     elif art_lower in alb_lower:
-        queries.append((clean_alb, False))
+        for wq in build_album_wildcard_queries(main_art_q, raw_alb or clean_alb_q)[:4]:
+            queries.append((wq, False))
+        queries.append((clean_alb_q, False))
     elif alb_lower in art_lower:
-        queries.append((clean_art, False))
+        for wq in build_album_wildcard_queries(main_art_q, raw_alb or clean_alb_q)[:4]:
+            queries.append((wq, False))
+        queries.append((clean_art_q, False))
     else:
-        stripped_alb = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version)\b', '', album)
-        stripped_alb = re.sub(r'\s+-\s+', ' ', stripped_alb)
-        stripped_alb = re.sub(r'[^\w\s-]', ' ', stripped_alb)
-        stripped_alb = re.sub(r'\s+', ' ', stripped_alb).strip()
+        stripped_alb = re.sub(r'(?i)\b(single|ep|lp|deluxe|remastered|version|edition)\b', '', album)
+        stripped_alb = re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', stripped_alb)).strip()
 
-        target_alb = stripped_alb if (stripped_alb and len(stripped_alb) >= 2) else clean_alb
+        target_alb = stripped_alb if (stripped_alb and len(stripped_alb) >= 2) else clean_alb_q
 
         album_year = ""
         m_yr = re.search(r'\b(19\d{2}|20\d{2})\b', album)
         if m_yr:
             album_year = m_yr.group(1)
 
-        if art_wildcard != clean_art:
-            queries.append((f"{art_wildcard} - {target_alb}", False))
-            if album_year:
-                queries.append((f"{art_wildcard} - {album_year} - {target_alb}", False))
-                queries.append((f"{art_wildcard} - {target_alb} ({album_year})", False))
-                queries.append((f"{art_wildcard} - {target_alb} {album_year}", False))
-            queries.append((f"{art_wildcard} {target_alb}", False))
-        queries.append((f"{clean_art} - {target_alb}", False))
+        raw_wildcards = build_album_wildcard_queries(main_art_q, raw_alb) if raw_alb else []
+        target_wildcards = (
+            build_album_wildcard_queries(main_art_q, target_alb)
+            if target_alb and target_alb.lower() != raw_alb.lower()
+            else []
+        )
+
+        if raw_wildcards:
+            queries.append((raw_wildcards[0], False))
+        if target_wildcards:
+            queries.append((target_wildcards[0], False))
+        for wq in raw_wildcards[1:4]:
+            queries.append((wq, False))
+        for wq in target_wildcards[1:4]:
+            queries.append((wq, False))
+
+        if raw_alb and raw_alb.lower() != target_alb.lower():
+            queries.append((f"{raw_alb} {main_art_q}", False))
+        queries.append((f"{target_alb} {main_art_q}", False))
+        queries.append((f"{main_art_q} {target_alb}", False))
         if album_year:
-            queries.append((f"{clean_art} - {album_year} - {target_alb}", False))
-            queries.append((f"{clean_art} - {target_alb} ({album_year})", False))
-            queries.append((f"{clean_art} - {target_alb} {album_year}", False))
-        queries.append((f"{clean_art} {target_alb}", False))
-        
-        if stripped_alb and stripped_alb.lower() != clean_alb.lower():
-            if art_wildcard != clean_art:
-                queries.append((f"{art_wildcard} - {clean_alb}", False))
-            queries.append((f"{clean_art} - {clean_alb}", False))
-        
-        queries.append((clean_alb, True))
-        
-    # Deduplicate queries
+            queries.append((f"{target_alb} {art_wildcard} {album_year}", False))
+            queries.append((f"{main_art_q} {album_year} {target_alb}", False))
+
+        if stripped_alb and stripped_alb.lower() != clean_alb_q.lower():
+            queries.append((f"{clean_alb_q} {main_art_q}", False))
+
+        queries.append((target_alb or clean_alb_q, True))
+
+    # Deduplicate queries and strip any accidental hyphens
     seen = set()
     deduped_queries = []
     for q_str, req_art in queries:
-        if q_str not in seen:
-            seen.add(q_str)
-            deduped_queries.append((q_str, req_art))
+        norm_q = re.sub(r'\s+', ' ', (q_str or '').replace(' - ', ' ').replace('-', ' ')).strip()
+        if norm_q and norm_q not in seen:
+            seen.add(norm_q)
+            deduped_queries.append((norm_q, req_art))
             
     logger.info(f"Manual search queries generated: {deduped_queries}")
     

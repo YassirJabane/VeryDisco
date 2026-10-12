@@ -70,5 +70,15 @@ def test_wildcard_title_variants_expand_each_title_word():
 def test_album_wildcard_queries_cover_blocked_title_and_artist_terms():
     queries = build_album_wildcard_queries("Prince", "Purple Rain")
 
-    assert "*urple *ain *rince" in queries
-    assert all(" - " not in query for query in queries)
+    assert queries[0] == "*urple *ain *rince"
+    assert "Purple Rain *rince" in queries
+    assert all(" - " not in query and "-" not in query for query in queries)
+
+
+def test_album_wildcard_queries_strip_hyphens_and_start_with_full_wildcard():
+    queries = build_album_wildcard_queries("Kanye West", "BULLY - DELUXE")
+
+    assert queries[0] == "*ULLY *ELUXE *anye *est"
+    assert "BULLY DELUXE *anye West" in queries
+    assert all("-" not in query for query in queries)
+

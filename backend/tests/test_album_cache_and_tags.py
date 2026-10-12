@@ -134,3 +134,70 @@ async def test_fix_directory_tags_relocates_tribute_folder_to_canonical_artist(t
     assert tags.getall("TPE2")[0].text[0] == "ABBA"
     assert tags.getall("TALB")[0].text[0] == "ABBA Gold"
 
+
+@pytest.mark.asyncio
+async def test_inspect_album_releases_prefers_full_deluxe_over_single_via_alias_and_deezer_count(monkeypatch):
+    import backend.app.clients.musicbrainz as mb_mod
+    from backend.app.clients.deezer import deezer_client
+
+    captured_queries = []
+
+    async def fake_mb_get(path, params=None):
+        if path == "/release":
+            captured_queries.append((params or {}).get("query", ""))
+            return {
+                "releases": [
+                    {
+                        "id": "c59fae72-f604-4953-981e-3b0f42a122b0",
+                        "title": "BULLY",
+                        "status": "Pseudo-Release",
+                        "disambiguation": "V1, altered",
+                        "track-count": 1,
+                        "artist-credit": [{"name": "Kanye West"}],
+                        "release-group": {"id": "rg-1", "primary-type": "Album"},
+                        "media": [{"format": "Digital Media", "track-count": 1}],
+                    },
+                    {
+                        "id": "e398f34d-7f63-4b23-80d6-2d14942ea1b1",
+                        "title": "BULLY",
+                        "status": "Official",
+                        "disambiguation": "deluxe",
+                        "track-count": 20,
+                        "artist-credit": [{"name": "Ye"}],
+                        "release-group": {"id": "rg-1", "primary-type": "Album"},
+                        "media": [{"format": "Digital Media", "track-count": 13}, {"format": "Digital Media", "track-count": 7}],
+                    },
+                ]
+            }
+        if path == "/release/e398f34d-7f63-4b23-80d6-2d14942ea1b1":
+            return {
+                "id": "e398f34d-7f63-4b23-80d6-2d14942ea1b1",
+                "title": "BULLY",
+                "date": "2026-03-27",
+                "artist-credit": [{"name": "Ye"}],
+                "media": [
+                    {
+                        "position": 1,
+                        "format": "Digital Media",
+                        "tracks": [{"position": i, "title": f"Track {i}", "recording": {"id": f"rec-{i}", "title": f"Track {i}"}} for i in range(1, 21)],
+                    }
+                ],
+            }
+        return None
+
+    async def fake_search_album(artist, album):
+        return {"id": 936785561, "title": "BULLY - DELUXE", "nb_tracks": 20, "artist": {"name": "Kanye West"}}
+
+    monkeypatch.setattr(mb_mod, "_mb_get", fake_mb_get)
+    monkeypatch.setattr(deezer_client, "search_album", fake_search_album)
+
+    res = await mb_mod.inspect_album_releases("Kanye West", "BULLY - DELUXE", force_refresh=True)
+    winner = res.get("winner")
+
+    assert captured_queries
+    assert 'artist:"Kanye West" OR artist:"Ye"' in captured_queries[0]
+    assert winner is not None
+    assert winner["id"] == "e398f34d-7f63-4b23-80d6-2d14942ea1b1"
+    assert winner["discs"][0]["track_count"] == 20
+
+

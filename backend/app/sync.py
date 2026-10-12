@@ -1477,16 +1477,39 @@ def wildcard_text_variants(text: str) -> list[str]:
 
 
 def build_album_wildcard_queries(artist: str, album: str) -> list[str]:
-    """Build title+artist wildcard queries for album-directory searches."""
-    clean_album = re.sub(r"\s+", " ", album or "").strip()
-    artist_variants = wildcard_artist_variants(extract_main_artist(artist))[1:]
+    """Build title+artist wildcard queries for album-directory searches, starting with full wildcard."""
+    clean_album = re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", album or "")).strip()
+    clean_artist = re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", extract_main_artist(artist) or "")).strip()
+    artist_variants = wildcard_artist_variants(clean_artist)[1:]
     album_variants = wildcard_text_variants(clean_album)[1:]
-    queries = []
-    for album_variant in album_variants:
-        for artist_variant in artist_variants:
-            query = re.sub(r"\s+", " ", f"{album_variant} {artist_variant}").strip()
-            if query and query not in queries:
-                queries.append(query)
+    full_wild_album = album_variants[-1] if album_variants else clean_album
+    full_wild_artist = artist_variants[-1] if artist_variants else clean_artist
+
+    queries: list[str] = []
+
+    def add(q: str) -> None:
+        normalized = re.sub(r"\s+", " ", q).strip()
+        if normalized and normalized not in queries:
+            queries.append(normalized)
+
+    # 1. Start with full wildcard album + full wildcard artist (e.g. "*ULLY *ELUXE *anye *est" or "*urple *ain *rince")
+    if full_wild_album and full_wild_artist:
+        add(f"{full_wild_album} {full_wild_artist}")
+
+    # 2. Clean album + wildcard artist variants (e.g. "BULLY DELUXE *anye West", "BULLY DELUXE *anye *est")
+    for artist_variant in artist_variants:
+        add(f"{clean_album} {artist_variant}")
+
+    # 3. Wildcard album variants + wildcard artist variants
+    for album_variant in reversed(album_variants):
+        for artist_variant in reversed(artist_variants):
+            add(f"{album_variant} {artist_variant}")
+
+    # 4. Wildcard album variants + clean artist
+    if clean_artist:
+        for album_variant in album_variants:
+            add(f"{album_variant} {clean_artist}")
+
     return queries
 
 
