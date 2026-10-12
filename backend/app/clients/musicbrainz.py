@@ -16,12 +16,12 @@ logger = get_logger()
 
 _MB_BASE = "https://musicbrainz.org/ws/2"
 _CAA_BASE = "https://coverartarchive.org"
-_USER_AGENT = "VeryDisco/1.0 (homelab music manager)"
+_USER_AGENT = "VeryDisco/1.0 ( https://github.com/YassirJabane/VeryDisco )"
 
 # MusicBrainz ToS: max 1 request per second for unauthenticated clients
 _rate_lock = asyncio.Lock()
 _last_request_time: float = 0.0
-_MIN_INTERVAL = 1.05  # seconds between requests
+_MIN_INTERVAL = 1.25  # seconds between requests to ensure safe margin
 
 # In-memory caches with 1-hour TTL
 _album_releases_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
@@ -41,24 +41,36 @@ async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional
             wait = _MIN_INTERVAL - (now - _last_request_time)
             if wait > 0:
                 await asyncio.sleep(wait)
-            _last_request_time = time.monotonic()
 
-        try:
-            from backend.app.clients.http_client import get_http_client
-            client = await get_http_client()
-            resp = await client.get(url, params=params, headers=headers)
-            if resp.status_code == 404:
-                return None
-            if resp.status_code in (503, 429):
-                logger.warning(f"MusicBrainz rate-limited ({resp.status_code}). Sleeping 3s before retry {attempt+1}/3.")
-                await asyncio.sleep(3)
-                continue
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            logger.warning(f"MusicBrainz request failed ({path}, attempt {attempt+1}/3): {e}")
-            if attempt < 2:
-                await asyncio.sleep(2)
+            try:
+                from backend.app.clients.http_client import get_http_client
+                client = await get_http_client()
+                resp = await client.get(url, params=params, headers=headers)
+                _last_request_time = time.monotonic()
+
+                if resp.status_code == 404:
+                    return None
+                if resp.status_code in (503, 429):
+                    logger.warning(f"MusicBrainz rate-limited ({resp.status_code}). Sleeping 3.5s before retry {attempt+1}/3.")
+                    await asyncio.sleep(3.5)
+                    _last_request_time = time.monotonic()
+                    continue
+                resp.raise_for_status()
+                return resp.json()
+            except httpx.HTTPStatusError as e:
+                _last_request_time = time.monotonic()
+                if e.response.status_code in (503, 429):
+                    logger.warning(f"MusicBrainz rate-limited ({e.response.status_code}). Sleeping 3.5s before retry {attempt+1}/3.")
+                    await asyncio.sleep(3.5)
+                    _last_request_time = time.monotonic()
+                    continue
+                logger.warning(f"MusicBrainz HTTP error ({path}, attempt {attempt+1}/3): {e}")
+            except Exception as e:
+                _last_request_time = time.monotonic()
+                logger.warning(f"MusicBrainz request failed ({path}, attempt {attempt+1}/3): {e}")
+
+        if attempt < 2:
+            await asyncio.sleep(2)
     return None
 
 
