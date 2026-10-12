@@ -1368,6 +1368,22 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     if " and the " in clean_artist.lower():
         queries_to_add.append(query_part(f"{clean_title} {re.sub(r'(?i)\s+and\s+the\s+', ' ', clean_artist)}"))
 
+    artist_variants = wildcard_artist_variants(main_artist)[1:]
+    lead_variants = (
+        wildcard_artist_variants(lead_artist)[1:]
+        if lead_artist and lead_artist != main_artist
+        else []
+    )
+
+    queries_to_add.extend(
+        query_part(f"{clean_title} {artist_variant}")
+        for artist_variant in artist_variants
+    )
+    queries_to_add.extend(
+        query_part(f"{clean_title} {artist_variant}")
+        for artist_variant in lead_variants
+    )
+
     queries_to_add.extend([
         *(query_part(f"{title_variant} {main_artist}") for title_variant in title_variants[1:]),
         # Search by title alone as a deliberate fallback. slskd may return
@@ -1377,15 +1393,6 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
         query_part(clean_title),
         *(query_part(title_variant) for title_variant in title_variants[1:]),
     ])
-    queries_to_add.extend(
-        query_part(f"{clean_title} {artist_variant}")
-        for artist_variant in wildcard_artist_variants(main_artist)[1:]
-    )
-    if lead_artist and lead_artist != main_artist:
-        queries_to_add.extend(
-            query_part(f"{clean_title} {artist_variant}")
-            for artist_variant in wildcard_artist_variants(lead_artist)[1:]
-        )
     for query in queries_to_add:
         if query and query not in queries:
             queries.append(query)

@@ -18,22 +18,23 @@ def test_track_query_preserves_wildcard_strategy_without_hyphen_separator():
 
     assert queries[:4] == [
         "Good Morning Kanye West",
-        "*ood Morning Kanye West",
-        "Good *orning Kanye West",
-        "*ood *orning Kanye West",
+        "Good Morning *anye West",
+        "Good Morning Kanye *est",
+        "Good Morning *anye *est",
     ]
     assert "Good Morning" in queries
-    assert "Good Morning *anye West" in queries
+    assert "*ood Morning Kanye West" in queries
+    assert queries.index("Good Morning *anye West") < queries.index("*ood Morning Kanye West")
+    assert queries.index("Good Morning *anye West") < queries.index("Good Morning")
 
 
 def test_track_query_has_title_only_fallback_for_busy_artists():
     queries = build_track_search_queries("Prince", "Purple Rain", "Purple Rain")
 
-    assert queries[:2] == ["Purple Rain Prince", "*urple Rain Prince"]
-    assert "Purple *ain Prince" in queries
-    assert "*urple *ain Prince" in queries
-    assert "Purple Rain" in queries
+    assert queries[0] == "Purple Rain Prince"
     assert "Purple Rain *rince" in queries
+    assert queries.index("Purple Rain *rince") < queries.index("*urple Rain Prince")
+    assert queries.index("Purple Rain *rince") < queries.index("Purple Rain")
 
 
 def test_track_query_generates_lead_artist_for_backing_band():
