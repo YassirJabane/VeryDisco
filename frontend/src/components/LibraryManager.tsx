@@ -44,6 +44,7 @@ function qualityChipColor(q: string): 'default' | 'success' | 'warning' | 'info'
 export const AlbumCard: React.FC<{
   album: AlbumItem;
   onDelete: (album: AlbumItem) => void;
+  onEditAlbum?: (album: AlbumItem) => void;
   expanded: boolean;
   onToggle: () => void;
   tracks: LibraryTrackItem[] | undefined;
@@ -53,7 +54,7 @@ export const AlbumCard: React.FC<{
   onEditLyrics: (track: LibraryTrackItem) => void;
   onReplace?: (track: LibraryTrackItem) => void;
   onPlayPreview: (track: LibraryTrackItem) => void;
-}> = ({ album, onDelete, expanded, onToggle, tracks, tracksLoading, onDownloadMissing, onEditTags, onEditLyrics, onReplace, onPlayPreview }) => {
+}> = ({ album, onDelete, onEditAlbum, expanded, onToggle, tracks, tracksLoading, onDownloadMissing, onEditTags, onEditLyrics, onReplace, onPlayPreview }) => {
   const officialTracks = tracks?.length && tracks.every(track => track.verified === true) ? tracks : undefined;
   const presentCount = officialTracks ? officialTracks.filter(track => track.exists).length : album.track_count;
   const totalCount = officialTracks ? officialTracks.length : album.total_tracks;
@@ -93,7 +94,7 @@ export const AlbumCard: React.FC<{
           userSelect: 'none',
         }}
       >
-        {/* Top Row: Title/Artist on Left, Cover Art & Trash on Right */}
+        {/* Top Row: Title/Artist on Left, Cover Art & Actions on Right */}
         <Box display="flex" justifyContent="space-between" alignItems="flex-start" gap={2}>
           <Box flex={1} minWidth={0}>
             <Typography variant="subtitle1" fontWeight={800} noWrap sx={{ lineHeight: 1.2 }}>
@@ -104,7 +105,7 @@ export const AlbumCard: React.FC<{
             </Typography>
           </Box>
 
-          <Stack direction="row" alignItems="center" spacing={1.5} flexShrink={0}>
+          <Stack direction="row" alignItems="center" spacing={1} flexShrink={0}>
             <Avatar
               src={`/api/library/albums/cover?folder_path=${encodeURIComponent(album.folder_path)}`}
               variant="rounded"
@@ -118,6 +119,23 @@ export const AlbumCard: React.FC<{
             >
               <FolderIcon />
             </Avatar>
+
+            {onEditAlbum && (
+              <Tooltip title="Edit album artist / title & re-tag tracks">
+                <IconButton
+                  size="small"
+                  color="primary"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEditAlbum(album);
+                  }}
+                  sx={{ flexShrink: 0 }}
+                  aria-label="Edit album"
+                >
+                  <EditIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            )}
 
             <Tooltip title="Delete album from disk">
               <IconButton
@@ -311,6 +329,12 @@ const LibraryManager: React.FC = () => {
   const [savingTags, setSavingTags] = useState(false);
   const [replacingTrack, setReplacingTrack] = useState(false);
 
+  // Album-level Editor state
+  const [editingAlbum, setEditingAlbum] = useState<AlbumItem | null>(null);
+  const [editAlbumArtist, setEditAlbumArtist] = useState('');
+  const [editAlbumTitle, setEditAlbumTitle] = useState('');
+  const [savingAlbumTags, setSavingAlbumTags] = useState(false);
+
   // Inline Lyrics Editor state
   const [lyricsEditorOpen, setLyricsEditorOpen] = useState(false);
   const [lyricsTrack, setLyricsTrack] = useState<LibraryTrackItem | null>(null);
@@ -494,6 +518,34 @@ const LibraryManager: React.FC = () => {
       showToast(error?.response?.data?.detail || 'Failed to queue track replacement.', 'error');
     } finally {
       setReplacingTrack(false);
+    }
+  };
+
+  // ── Album Editor actions ──────────────────────────────────────────────────
+  const handleOpenAlbumEditor = (album: AlbumItem) => {
+    setEditingAlbum(album);
+    setEditAlbumArtist(album.artist || '');
+    setEditAlbumTitle(album.album || '');
+  };
+
+  const handleSaveAlbumTags = async () => {
+    if (!editingAlbum || !editAlbumArtist.trim() || !editAlbumTitle.trim()) return;
+    setSavingAlbumTags(true);
+    try {
+      const res = await apiService.fixAlbumFolderTags(
+        editingAlbum.folder_path,
+        editAlbumArtist.trim(),
+        editAlbumTitle.trim()
+      );
+      showToast(
+        `Updated ${res.updated_files} tracks to "${editAlbumArtist.trim()} - ${editAlbumTitle.trim()}" and triggered Navidrome rescan.`
+      );
+      setEditingAlbum(null);
+      await loadAlbums(false);
+    } catch (error: any) {
+      showToast(error?.response?.data?.detail || 'Failed to update album tags.', 'error');
+    } finally {
+      setSavingAlbumTags(false);
     }
   };
 
@@ -739,6 +791,7 @@ const LibraryManager: React.FC = () => {
                   key={a.folder_path}
                   album={a}
                   onDelete={setDeleteTarget}
+                  onEditAlbum={handleOpenAlbumEditor}
                   expanded={expandedPath === a.folder_path}
                   onToggle={() => handleToggleAlbum(a.folder_path)}
                   tracks={tracksMap[a.folder_path]}
@@ -809,6 +862,48 @@ const LibraryManager: React.FC = () => {
             sx={{ borderRadius: 2 }}
           >
             Apply Changes
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Edit Album Metadata Dialog */}
+      <Dialog
+        open={!!editingAlbum}
+        onClose={() => !savingAlbumTags && setEditingAlbum(null)}
+        PaperProps={{ sx: { borderRadius: 3, width: 440 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 800 }}>Edit Album Metadata</DialogTitle>
+        <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1.5 }}>
+          <DialogContentText variant="body2">
+            Update the <strong>Artist</strong> and <strong>Album</strong> for all tracks in this release. Files will be re-tagged with canonical MusicBrainz metadata and moved to the matching artist/album folder.
+          </DialogContentText>
+          <TextField
+            label="Artist / Album Artist"
+            fullWidth
+            value={editAlbumArtist}
+            onChange={e => setEditAlbumArtist(e.target.value)}
+            size="small"
+            disabled={savingAlbumTags}
+          />
+          <TextField
+            label="Album Title"
+            fullWidth
+            value={editAlbumTitle}
+            onChange={e => setEditAlbumTitle(e.target.value)}
+            size="small"
+            disabled={savingAlbumTags}
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2.5 }}>
+          <Button onClick={() => setEditingAlbum(null)} disabled={savingAlbumTags}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={handleSaveAlbumTags}
+            disabled={savingAlbumTags || !editAlbumArtist.trim() || !editAlbumTitle.trim()}
+            startIcon={savingAlbumTags ? <CircularProgress size={16} color="inherit" /> : <EditIcon />}
+            sx={{ borderRadius: 2 }}
+          >
+            {savingAlbumTags ? 'Updating…' : 'Save & Re-tag Album'}
           </Button>
         </DialogActions>
       </Dialog>

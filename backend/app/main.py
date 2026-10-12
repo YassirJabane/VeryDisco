@@ -7525,42 +7525,87 @@ class FixFolderTagsRequest(BaseModel):
 @app.post("/api/library/fix-folder-tags")
 async def fix_folder_tags_endpoint(req: FixFolderTagsRequest, request: Request):
     """
-    Scans a folder, updates embedded tags (Artist, Album Artist, Album) to match the folder structure
-    and triggers a Navidrome scan so Navidrome updates its database.
+    Scans a folder, updates embedded tags (Artist, Album Artist, Album, plus canonical
+    MusicBrainz release metadata), relocates/renames the files to the canonical
+    Artist/Album folder, updates library_index, and triggers a Navidrome scan.
     """
     if not config_manager.config:
         raise HTTPException(status_code=400, detail="App is not configured.")
 
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
-    await verify_user_access_to_path(user["id"], req.folder_path)
+
+    try:
+        folders = json.loads(req.folder_path)
+        if not isinstance(folders, list):
+            folders = [req.folder_path]
+    except Exception:
+        folders = [req.folder_path]
 
     user_row = await db.get_user_by_id(user["id"])
     music_dir = Path(
         user_row.get("music_dir") if user_row and user_row.get("music_dir")
         else config_manager.config.paths.music_dir
     ).resolve()
-    folder = Path(req.folder_path).resolve()
-    if not folder.is_relative_to(music_dir):
-        raise HTTPException(status_code=403, detail="Access denied")
-    if not folder.exists() or not folder.is_dir():
-        raise HTTPException(status_code=404, detail="Folder not found")
+
+    resolved_folders: list[Path] = []
+    for fp in folders:
+        await verify_user_access_to_path(user["id"], fp)
+        folder = Path(fp).resolve()
+        if not folder.is_relative_to(music_dir):
+            raise HTTPException(status_code=403, detail="Access denied")
+        if not folder.exists() or not folder.is_dir():
+            raise HTTPException(status_code=404, detail="Folder not found")
+        resolved_folders.append(folder)
 
     from backend.app.sync import fix_directory_tags_and_rescan
-    count = await fix_directory_tags_and_rescan(
-        dir_path=folder,
-        target_artist=req.target_artist,
-        target_album=req.target_album,
-        config=config_manager.config
-    )
+    total_updated = 0
+    all_changed_paths: list[str] = []
+    last_new_folder = req.folder_path
+    last_release_mbid = None
 
-    changed_paths = [
-        str(path) for path in folder.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".mp3", ".flac", ".m4a", ".mp4", ".ogg"}
-    ]
-    await db.refresh_library_paths(user["id"], changed_paths)
+    def _norm_key(val: str) -> str:
+        return re.sub(r"[^\w]", "", (val or "").replace("$", "s").casefold())
 
-    return {"status": "success", "updated_files": count}
+    for folder in resolved_folders:
+        details = await fix_directory_tags_and_rescan(
+            dir_path=folder,
+            target_artist=req.target_artist,
+            target_album=req.target_album,
+            config=config_manager.config,
+            music_dir=music_dir,
+            return_details=True,
+        )
+        total_updated += int(details.get("updated_count") or 0)
+        all_changed_paths.extend(details.get("old_paths") or [])
+        all_changed_paths.extend(details.get("new_paths") or [])
+        if details.get("new_folder_path"):
+            last_new_folder = details["new_folder_path"]
+        if details.get("release_mbid"):
+            last_release_mbid = details["release_mbid"]
+        if details.get("official_tracks"):
+            await db.save_album_tracklist(
+                user["id"],
+                _norm_key(details.get("artist") or req.target_artist or ""),
+                _norm_key(details.get("album") or req.target_album or ""),
+                details.get("release_mbid"),
+                details["official_tracks"],
+            )
+
+    try:
+        _extract_cover_sync.cache_clear()
+    except Exception:
+        pass
+
+    await db.refresh_library_paths(user["id"], all_changed_paths)
+    await db.invalidate_user_caches(user["id"])
+
+    return {
+        "status": "success",
+        "updated_files": total_updated,
+        "new_folder_path": last_new_folder,
+        "release_mbid": last_release_mbid,
+    }
 
 
 # ==============================================================================

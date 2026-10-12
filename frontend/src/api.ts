@@ -568,6 +568,19 @@ export const apiService = {
     return resp.data;
   },
 
+  async fixAlbumFolderTags(
+    folderPath: string,
+    targetArtist: string,
+    targetAlbum: string
+  ): Promise<{ status: string; updated_files: number; new_folder_path?: string; release_mbid?: string }> {
+    const resp = await api.post('/api/library/fix-folder-tags', {
+      folder_path: folderPath,
+      target_artist: targetArtist,
+      target_album: targetAlbum,
+    });
+    return resp.data;
+  },
+
   // ── Maintenance / Server Health ────────────────────────────────────────────
   async scanMaintenanceIssues(refresh: boolean = false): Promise<MaintenanceIssue[]> {
     const resp = await api.get<MaintenanceIssue[]>(`/api/maintenance/scan${refresh ? '?refresh=true' : ''}`);

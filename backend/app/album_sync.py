@@ -529,18 +529,27 @@ async def _download_album_task_internal(
 
         # 1. Fetch official album tracklist and release date from MusicBrainz
         try:
-            from backend.app.clients.musicbrainz import musicbrainz_client
+            from backend.app.clients.musicbrainz import musicbrainz_client, _is_matching_release_artist
             logger.info(f"Pre-fetching official tracklist for album '{artist} - {album}' from MusicBrainz...")
             mb_album = await musicbrainz_client.get_album_tracklist(
                 artist, album, release_mbid=release_mbid
             )
             if mb_album:
-                official_album_tracks = mb_album.get("tracks", [])
-                official_album_date = mb_album.get("release_date")
-                official_mb_release_mbid = mb_album.get("release_mbid")
-                target_album_artist = mb_album.get("album_artist") or artist
-                target_album_artists = mb_album.get("album_artists") or [target_album_artist]
-                logger.info(f"Fetched {len(official_album_tracks)} official tracks from MusicBrainz for '{album}' (MBID: {official_mb_release_mbid}).")
+                mb_aa = mb_album.get("album_artist") or ""
+                mb_aas = mb_album.get("album_artists") or ([mb_aa] if mb_aa else [])
+                credit_check = {"artist-credit": [{"name": a} for a in mb_aas if a]}
+                if release_mbid or _is_matching_release_artist(credit_check, artist) or mb_aa.lower() == "various artists":
+                    official_album_tracks = mb_album.get("tracks", [])
+                    official_album_date = mb_album.get("release_date")
+                    official_mb_release_mbid = mb_album.get("release_mbid")
+                    target_album_artist = mb_aa or artist
+                    target_album_artists = mb_aas or [target_album_artist]
+                    logger.info(f"Fetched {len(official_album_tracks)} official tracks from MusicBrainz for '{album}' (MBID: {official_mb_release_mbid}).")
+                else:
+                    logger.warning(
+                        f"Ignoring MusicBrainz release '{mb_album.get('title')}' by '{mb_aa}' "
+                        f"because artist credit does not match requested artist '{artist}'."
+                    )
         except Exception as e:
             logger.warning(f"Could not pre-fetch official album tracklist from MusicBrainz for '{artist} - {album}': {e}")
 

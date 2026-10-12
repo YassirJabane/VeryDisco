@@ -48,3 +48,89 @@ def test_import_replaces_advertising_tags(tmp_path):
     assert tags.getall("TIT2")[0].text[0] == "Lemon Pepper Freestyle"
     assert tags.getall("TPE1")[0].text[0] == "Drake"
     assert tags.getall("TALB")[0].text[0] == "Scary Hours 2"
+
+
+def test_musicbrainz_rejects_tribute_artist_and_scores_compilation_correctly():
+    from backend.app.clients.musicbrainz import _is_matching_release_artist, score_release
+
+    abba_release = {
+        "title": "ABBA Gold: Greatest Hits",
+        "status": "Official",
+        "artist-credit": [{"name": "ABBA"}],
+        "release-group": {
+            "primary-type": "Album",
+            "secondary-types": ["Compilation"],
+        },
+        "media": [{"format": "CD"}],
+        "date": "1992-09-21",
+    }
+    tribute_release = {
+        "title": "ABBA Gold",
+        "status": "Official",
+        "artist-credit": [{"name": "The Real ABBA Gold"}],
+        "release-group": {
+            "primary-type": "Album",
+            "secondary-types": [],
+        },
+        "media": [{"format": "Digital Media"}],
+        "date": "2010-01-01",
+    }
+
+    assert _is_matching_release_artist(abba_release, "ABBA") is True
+    assert _is_matching_release_artist(tribute_release, "ABBA") is False
+    assert score_release(abba_release, "ABBA Gold", "ABBA") > score_release(tribute_release, "ABBA Gold", "ABBA")
+    assert score_release(tribute_release, "ABBA Gold", "ABBA") < 0
+
+
+@pytest.mark.asyncio
+async def test_fix_directory_tags_relocates_tribute_folder_to_canonical_artist(tmp_path, monkeypatch):
+    from backend.app.sync import fix_directory_tags_and_rescan
+    from backend.app.clients.musicbrainz import musicbrainz_client
+
+    async def fake_get_album_tracklist(artist, album, release_mbid=None, force_refresh=False):
+        return {
+            "release_mbid": "993a3532-83ac-4e89-8596-45816806aac6",
+            "title": "ABBA Gold",
+            "album_artist": "ABBA",
+            "release_date": "1992-09-21",
+            "nb_tracks": 19,
+            "nb_discs": 1,
+            "tracks": [
+                {"title": "Dancing Queen", "track_position": 1, "disk_number": 1, "disc_num": 1, "id": "rec-1"},
+            ],
+        }
+
+    monkeypatch.setattr(musicbrainz_client, "get_album_tracklist", fake_get_album_tracklist)
+
+    tribute_dir = tmp_path / "The Real ABBA Gold" / "ABBA Gold"
+    tribute_dir.mkdir(parents=True)
+    audio_path = tribute_dir / "The Real ABBA Gold_ABBA Gold_01_Dancing Queen.mp3"
+    audio_path.write_bytes(b"")
+    embed_metadata(
+        str(audio_path),
+        artist="The Real ABBA Gold",
+        title="Dancing Queen",
+        album="ABBA Gold",
+        album_artist="The Real ABBA Gold",
+        track_num=1,
+    )
+
+    details = await fix_directory_tags_and_rescan(
+        dir_path=tribute_dir,
+        target_artist="ABBA",
+        target_album="ABBA Gold",
+        music_dir=tmp_path,
+        return_details=True,
+    )
+
+    assert details["updated_count"] == 1
+    new_file = tmp_path / "ABBA" / "ABBA Gold" / "ABBA_ABBA Gold_01_Dancing Queen.mp3"
+    assert new_file.is_file()
+    assert not tribute_dir.exists()
+    assert not (tmp_path / "The Real ABBA Gold").exists()
+
+    tags = ID3(new_file)
+    assert tags.getall("TPE1")[0].text[0] == "ABBA"
+    assert tags.getall("TPE2")[0].text[0] == "ABBA"
+    assert tags.getall("TALB")[0].text[0] == "ABBA Gold"
+

@@ -271,13 +271,18 @@ async def fix_directory_tags_and_rescan(
     dir_path: Union[str, Path],
     target_artist: Optional[str] = None,
     target_album: Optional[str] = None,
-    config: Optional[Any] = None
-) -> int:
+    config: Optional[Any] = None,
+    music_dir: Optional[Union[str, Path]] = None,
+    return_details: bool = False,
+) -> Any:
     """
-    Scans all audio files in dir_path, updates their embedded ID3/FLAC metadata 
-    (Artist, Album Artist, Album) to match folder structure / target params, 
-    and triggers a Navidrome scan.
+    Scans all audio files in dir_path, updates their embedded metadata (Artist,
+    Album Artist, Album, plus canonical MusicBrainz release/track metadata if available),
+    relocates/renames the files to the canonical Artist/Album folder when music_dir
+    is provided, cleans up empty source directories, and triggers a Navidrome scan.
     """
+    from backend.app.metadata_pipeline.tags import AUDIO_SUFFIXES, read_track, write_track
+
     path = Path(dir_path)
     logger.info(f"fix_directory_tags_and_rescan starting for path: {path}")
 
@@ -293,32 +298,172 @@ async def fix_directory_tags_and_rescan(
 
     if not path.exists() or not path.is_dir():
         logger.warning(f"fix_directory_tags_and_rescan: Directory not found: '{dir_path}'")
+        if return_details:
+            return {
+                "updated_count": 0,
+                "old_paths": [],
+                "new_paths": [],
+                "new_folder_path": str(path),
+                "release_mbid": None,
+                "official_tracks": [],
+                "artist": target_artist or "",
+                "album": target_album or "",
+            }
         return 0
 
+    folder_album = (target_album or path.name).strip()
+    folder_artist = (target_artist or path.parent.name).strip()
+
+    release_mbid = ""
+    release_date = ""
+    official_tracks: List[Dict[str, Any]] = []
+    by_disc_track: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    by_norm_title: Dict[str, Dict[str, Any]] = {}
+    disc_totals: Dict[int, int] = {}
+    max_disc = 1
+
+    try:
+        from backend.app.clients.musicbrainz import musicbrainz_client, _is_matching_release_artist
+        mb_album = await musicbrainz_client.get_album_tracklist(folder_artist, folder_album)
+        if mb_album and _is_matching_release_artist(
+            {"artist-credit": [{"name": mb_album.get("album_artist", "")}]}, folder_artist
+        ):
+            release_mbid = mb_album.get("release_mbid") or ""
+            release_date = mb_album.get("release_date") or ""
+            official_tracks = mb_album.get("tracks") or []
+            max_disc = int(mb_album.get("nb_discs") or 1)
+            for tr in official_tracks:
+                d_num = int(tr.get("disc_num") or tr.get("disk_number") or tr.get("disc_number") or 1)
+                t_num = int(tr.get("track_position") or tr.get("track_number") or 0)
+                max_disc = max(max_disc, d_num)
+                disc_totals[d_num] = max(disc_totals.get(d_num, 0), t_num)
+                if t_num > 0:
+                    by_disc_track[(d_num, t_num)] = tr
+                t_norm = re.sub(r"[^\w]", "", (tr.get("title") or "").casefold())
+                if t_norm and t_norm not in by_norm_title:
+                    by_norm_title[t_norm] = tr
+    except Exception as mb_err:
+        logger.debug(f"MusicBrainz lookup skipped/failed during folder fix for '{folder_artist} - {folder_album}': {mb_err}")
+
     updated_count = 0
-    folder_album = target_album or path.name
-    folder_artist = target_artist or path.parent.name
+    old_paths: List[str] = []
+    new_paths: List[str] = []
+    new_album_root: Optional[Path] = None
 
-    for f_path in path.rglob("*"):
-        if f_path.is_file() and f_path.suffix.lower() in [".mp3", ".flac", ".m4a"]:
-            try:
-                from backend.app.main import read_basic_tags
-                meta = read_basic_tags(f_path)
-                curr_title = meta.get("title") or f_path.stem
+    audio_files = sorted(
+        f for f in path.rglob("*")
+        if f.is_file() and f.suffix.lower() in AUDIO_SUFFIXES
+    )
 
-                await asyncio.to_thread(
-                    embed_metadata,
-                    file_path=str(f_path),
-                    artist=folder_artist,
-                    title=curr_title,
-                    album=folder_album,
+    for f_path in audio_files:
+        try:
+            old_paths.append(str(f_path))
+            current = await asyncio.to_thread(read_track, f_path)
+            curr_title = current.get("title") or f_path.stem
+            curr_track = int(current.get("track") or 0)
+            curr_disc = int(current.get("disc") or 1)
+
+            norm_title = re.sub(r"[^\w]", "", curr_title.casefold())
+            mb_track = by_norm_title.get(norm_title)
+            if not mb_track and curr_track > 0:
+                mb_track = by_disc_track.get((curr_disc, curr_track)) or by_disc_track.get((1, curr_track))
+
+            new_title = (mb_track.get("title") if mb_track and mb_track.get("title") else curr_title)
+            track_num = int(
+                (mb_track.get("track_position") or mb_track.get("track_number") if mb_track else None)
+                or curr_track
+                or 0
+            )
+            disc_num = int(
+                (mb_track.get("disc_num") or mb_track.get("disk_number") or mb_track.get("disc_number") if mb_track else None)
+                or curr_disc
+                or 1
+            )
+            disc_total = int(max_disc if official_tracks else (current.get("disc_total") or 1))
+            track_total = int(
+                disc_totals.get(disc_num, len(official_tracks))
+                if official_tracks
+                else (current.get("track_total") or 0)
+            )
+            recording_mbid = (
+                (mb_track.get("id") or mb_track.get("recording_mbid") if mb_track else "")
+                or current.get("recording_mbid")
+                or ""
+            )
+
+            values = {
+                "title": new_title,
+                "artist": folder_artist,
+                "artists": [folder_artist],
+                "album": folder_album,
+                "album_artist": folder_artist,
+                "album_artists": [folder_artist],
+                "album_artist_mbid": "",
+                "album_artist_mbids": [],
+                "date": release_date or current.get("date") or "",
+                "track": track_num,
+                "track_total": track_total,
+                "disc": disc_num,
+                "disc_total": disc_total,
+                "release_mbid": release_mbid or current.get("release_mbid") or "",
+                "recording_mbid": recording_mbid,
+                "compilation": bool(current.get("compilation", False)),
+            }
+
+            await asyncio.to_thread(write_track, f_path, values, None, False)
+
+            final_path = f_path
+            if music_dir is not None:
+                dest_dir, _, _ = resolve_album_dir(
+                    music_dir,
+                    folder_artist,
+                    folder_album,
                     album_artist=folder_artist,
-                    track_num=meta.get("track_num")
+                    disc_num=disc_num,
+                    disc_total=disc_total,
                 )
-                updated_count += 1
-                logger.info(f"Re-tagged embedded metadata for '{f_path.name}' -> Artist: '{folder_artist}', Album: '{folder_album}'")
-            except Exception as e:
-                logger.warning(f"Failed to update tags for '{f_path}': {e}")
+                album_root_candidate = dest_dir.parent if (disc_total > 1 and disc_num > 0) else dest_dir
+                new_album_root = album_root_candidate
+
+                new_filename = get_library_filename(
+                    folder_artist, folder_album, track_num if track_num > 0 else None, new_title, f_path.suffix
+                )
+                dest_path = dest_dir / new_filename
+                if dest_path.resolve() != f_path.resolve():
+                    old_lrc = f_path.with_suffix(".lrc")
+                    safe_move_file(f_path, dest_path)
+                    if old_lrc.is_file():
+                        safe_move_file(old_lrc, dest_path.with_suffix(".lrc"))
+                    final_path = dest_path
+
+            new_paths.append(str(final_path))
+            updated_count += 1
+            logger.info(
+                f"Re-tagged embedded metadata for '{final_path.name}' -> Artist: '{folder_artist}', Album: '{folder_album}'"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update tags for '{f_path}': {e}")
+
+    if music_dir is not None and new_album_root is not None and new_album_root.resolve() != path.resolve():
+        try:
+            for img in list(path.glob("*")):
+                if img.is_file() and img.suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                    dst_img = new_album_root / img.name
+                    if not dst_img.exists():
+                        safe_move_file(img, dst_img)
+                    else:
+                        img.unlink(missing_ok=True)
+            for sub in sorted(path.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+                if sub.is_dir() and not any(sub.iterdir()):
+                    sub.rmdir()
+            if path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
+            music_root = Path(music_dir).resolve()
+            parent = path.parent
+            if parent.resolve() != music_root and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except Exception as cleanup_err:
+            logger.debug(f"Could not clean up old album directory '{path}': {cleanup_err}")
 
     logger.info(f"fix_directory_tags_and_rescan completed. Updated {updated_count} files.")
 
@@ -336,6 +481,17 @@ async def fix_directory_tags_and_rescan(
         except Exception as nd_err:
             logger.warning(f"Triggering Navidrome scan failed: {nd_err}")
 
+    if return_details:
+        return {
+            "updated_count": updated_count,
+            "old_paths": old_paths,
+            "new_paths": new_paths,
+            "new_folder_path": str(new_album_root or path),
+            "release_mbid": release_mbid or None,
+            "official_tracks": official_tracks,
+            "artist": folder_artist,
+            "album": folder_album,
+        }
     return updated_count
 
 def get_clean_album_folder(album: str, artist: str = "") -> str:

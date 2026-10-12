@@ -105,10 +105,66 @@ def _parse_artist_credit(credits) -> tuple[str, list[str]]:
 
 def _fuzzy_match(a: str, b: str) -> bool:
     na, nb = _normalize(a), _normalize(b)
+    if not na or not nb:
+        return False
     return na in nb or nb in na or na == nb
 
 
-def score_release(r: dict, album: str) -> int:
+def _valid_artist_norms(artist: str) -> set[str]:
+    """Return normalized artist names/aliases that validly represent the requested artist."""
+    if not artist:
+        return set()
+    norms: set[str] = set()
+    for raw in (artist, re.sub(r"\$", "s", artist, flags=re.IGNORECASE)):
+        base = re.split(r"(?i)\s*(?:\(|\[)?\s*\b(?:feat\.?|ft\.?|featuring)\b", raw)[0].strip()
+        lead = re.split(r"(?i)\s+(?:and|&|with)\s+the\s+", base)[0].strip()
+        for candidate in (raw, base, lead):
+            n = _normalize(candidate)
+            if n:
+                norms.add(n)
+        for part in re.split(r"(?i)\s*(?:&|,|/|\band\b|\bwith\b|\bx\b)\s*", base):
+            np = _normalize(part)
+            if len(np) >= 2:
+                norms.add(np)
+    if norms & {"kanyewest", "ye", "kanye"}:
+        norms.update({"kanyewest", "ye", "kanye"})
+    if norms & {"asaprocky", "aaprocky"}:
+        norms.update({"asaprocky", "aaprocky"})
+    if "¥$" in artist or (norms & {"ys"}):
+        norms.update({"ys", "kanyewest", "tydollasign", "ye", "kanyewesttydollasign"})
+    return norms
+
+
+def _is_matching_release_artist(r: dict, requested_artist: str) -> bool:
+    """Return True if a MusicBrainz release's artist-credit matches the requested artist."""
+    if not requested_artist:
+        return True
+    credits = r.get("artist-credit")
+    if not credits:
+        return True
+    valid_norms = _valid_artist_norms(requested_artist)
+    if not valid_norms:
+        return True
+    display, credit_artists = _parse_artist_credit(credits)
+    candidate_names = [display, *credit_artists]
+    if display:
+        lead = re.split(r"(?i)\s+(?:and|&|with)\s+the\s+", display)[0].strip()
+        if lead:
+            candidate_names.append(lead)
+    for credit in credits:
+        if isinstance(credit, dict):
+            art_obj = credit.get("artist") or {}
+            for key in ("name", "sort-name"):
+                if art_obj.get(key):
+                    candidate_names.append(art_obj[key])
+    for name in candidate_names:
+        for variant in (name, re.sub(r"\$", "s", name or "", flags=re.IGNORECASE)):
+            if _normalize(variant) in valid_norms:
+                return True
+    return False
+
+
+def score_release(r: dict, album: str, artist: str = "") -> int:
     """Score a MusicBrainz release for multi-disc / official tracklist matching."""
     score = 0
     title = r.get("title", "")
@@ -119,6 +175,16 @@ def score_release(r: dict, album: str) -> int:
     formats = {(m.get("format") or "").lower() for m in media}
     rg = r.get("release-group") or {}
     secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
+
+    if artist and r.get("artist-credit"):
+        credit_display, _ = _parse_artist_credit(r.get("artist-credit"))
+        if _is_matching_release_artist(r, artist):
+            if _normalize(credit_display) == _normalize(artist):
+                score += 40
+            else:
+                score += 25
+        else:
+            score -= 100
 
     if status == "official":
         score += 20
@@ -171,8 +237,18 @@ def score_release(r: dict, album: str) -> int:
     if cand_track_count == 1:
         score -= 50
 
+    compilation_terms = (
+        "gold", "greatest hits", "best of", "essential", "collection",
+        "anthology", "singles", "hits", "compilation", "retrospective",
+        "definitive", "complete", "number ones", "1s", "icons", "classics"
+    )
+    requests_compilation = any(term in album_lower for term in compilation_terms)
     for bad_type in ("live", "compilation", "remix", "dj-mix", "spokenword", "mixtape"):
         if bad_type in secondary_types:
+            if bad_type == "compilation" and requests_compilation:
+                continue
+            if bad_type in album_lower:
+                continue
             score -= 20
 
     return score
@@ -239,18 +315,24 @@ async def inspect_album_releases(artist: str, album: str, force_refresh: bool = 
             if alt_data and alt_data.get("releases"):
                 releases = alt_data.get("releases", [])
 
-    if not releases:
+    artist_matched_releases = [r for r in releases if _is_matching_release_artist(r, artist)]
+    pool = artist_matched_releases if artist_matched_releases else [
+        r for r in releases
+        if _normalize(_parse_artist_credit(r.get("artist-credit"))[0]) == "variousartists"
+        and _normalize(r.get("title", "")) == _normalize(album)
+    ]
+    if not pool:
         empty_res = {"artist": artist, "album": album, "candidates": [], "winner": None}
         _album_releases_cache[cache_key] = (now, empty_res)
         return empty_res
 
-    candidates = [r for r in releases if _fuzzy_match(r.get("title", ""), album) or _fuzzy_match(r.get("title", ""), clean_alb)]
+    candidates = [r for r in pool if _fuzzy_match(r.get("title", ""), album) or _fuzzy_match(r.get("title", ""), clean_alb)]
     if not candidates:
-        candidates = releases
+        candidates = pool
 
     scored_candidates = []
     for r in candidates:
-        s = score_release(r, album)
+        s = score_release(r, album, artist)
         media = r.get("media") or []
         formats = [m.get("format") or "Unknown" for m in media]
         rg = r.get("release-group") or {}
@@ -546,7 +628,8 @@ class MusicBrainzClient:
         releases = data.get("releases", [])
         for r in releases:
             if _normalize(r.get("title", "")) == _normalize(album) and _normalize(album):
-                return r
+                if _is_matching_release_artist(r, artist):
+                    return r
         return None
 
     async def get_release_details(self, release_mbid: str) -> Optional[Dict[str, Any]]:
@@ -736,7 +819,7 @@ class MusicBrainzClient:
         releases = recording.get("releases", [])
         best_release = None
         if releases:
-            best_release = sorted(releases, key=lambda r: score_release(r, album or title), reverse=True)[0]
+            best_release = sorted(releases, key=lambda r: score_release(r, album or title, clean_art or artist), reverse=True)[0]
 
         release_mbid = None
         release_title = album or recording.get("title", title)
