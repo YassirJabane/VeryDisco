@@ -1511,7 +1511,7 @@ def wildcard_text_variants(text: str) -> list[str]:
 
 
 def build_album_wildcard_queries(artist: str, album: str) -> list[str]:
-    """Build title+artist wildcard queries for album-directory searches, starting with full wildcard."""
+    """Build concise title+artist wildcard queries for album-directory searches, starting with full wildcard."""
     clean_album = re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", album or "")).strip()
     clean_artist = re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", extract_main_artist(artist) or "")).strip()
     artist_variants = wildcard_artist_variants(clean_artist)[1:]
@@ -1526,29 +1526,23 @@ def build_album_wildcard_queries(artist: str, album: str) -> list[str]:
         if normalized and normalized not in queries:
             queries.append(normalized)
 
-    # 1. Start with full wildcard album + full wildcard artist (e.g. "*ULLY *ELUXE *anye *est" or "*urple *ain *rince")
+    # 1. Full wildcard album + full wildcard artist (e.g. "*ULLY *ELUXE *anye *est" or "*urple *ain *rince")
     if full_wild_album and full_wild_artist:
         add(f"{full_wild_album} {full_wild_artist}")
 
-    # 2. Clean album + wildcard artist variants (e.g. "BULLY DELUXE *anye West", "BULLY DELUXE *anye *est")
-    for artist_variant in artist_variants:
-        add(f"{clean_album} {artist_variant}")
+    # 2. Clean album + full wildcard artist (e.g. "BULLY DELUXE *anye *est" or "Purple Rain *rince")
+    if clean_album and full_wild_artist:
+        add(f"{clean_album} {full_wild_artist}")
 
-    # 3. Wildcard album variants + wildcard artist variants
-    for album_variant in reversed(album_variants):
-        for artist_variant in reversed(artist_variants):
-            add(f"{album_variant} {artist_variant}")
-
-    # 4. Wildcard album variants + clean artist
-    if clean_artist:
-        for album_variant in album_variants:
-            add(f"{album_variant} {clean_artist}")
+    # 3. Full wildcard album + clean artist (e.g. "*ULLY *ELUXE Kanye West")
+    if full_wild_album and clean_artist:
+        add(f"{full_wild_album} {clean_artist}")
 
     return queries
 
 
 def build_track_search_queries(artist: str, title: str, album: str = "") -> list[str]:
-    """Build progressive slskd queries without '-' exclusion syntax, starting with full wildcard."""
+    """Build concise slskd queries without '-' exclusion syntax, starting with full wildcard."""
     def query_part(value: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", value or "")).strip()
 
@@ -1572,55 +1566,39 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     )
 
     full_wild_title = title_variants[-1] if len(title_variants) > 1 else (title_variants[0] if title_variants else clean_title)
-    first_wild_title = title_variants[1] if len(title_variants) > 1 else full_wild_title
     full_wild_main = artist_variants[-1] if artist_variants else main_artist
     full_wild_lead = lead_variants[-1] if lead_variants else lead_artist
 
     queries: list[str] = []
     queries_to_add: list[str] = []
 
-    # 1. Start with full wildcard title + full wildcard artist (lead artist first for backing bands, then main artist)
+    # 1. Full wildcard title + full wildcard artist (lead artist first for backing bands, then main artist)
     if lead_artist and lead_artist != main_artist and full_wild_lead:
         queries_to_add.append(query_part(f"{full_wild_title} {full_wild_lead}"))
     if full_wild_main:
         queries_to_add.append(query_part(f"{full_wild_title} {full_wild_main}"))
 
-    # 2. Clean title + wildcard artist variants
-    queries_to_add.extend(
-        query_part(f"{clean_title} {artist_variant}")
-        for artist_variant in lead_variants
-    )
-    queries_to_add.extend(
-        query_part(f"{clean_title} {artist_variant}")
-        for artist_variant in artist_variants
-    )
+    # 2. Clean title + full wildcard artist (covers Soulseek artist blocks when peer requires exact title)
+    if lead_artist and lead_artist != main_artist and full_wild_lead:
+        queries_to_add.append(query_part(f"{clean_title} {full_wild_lead}"))
+    if full_wild_main and full_wild_main != main_artist:
+        queries_to_add.append(query_part(f"{clean_title} {full_wild_main}"))
 
-    # 3. Clean title + clean artist + album (if distinct)
-    if clean_album and clean_album.casefold() not in {
-        clean_title.casefold(), clean_artist.casefold(), "unknown album", "single", "ep"
-    }:
-        if lead_artist and lead_artist != main_artist:
-            queries_to_add.append(query_part(f"{clean_title} {lead_artist} {clean_album}"))
-        queries_to_add.append(query_part(f"{clean_title} {main_artist} {clean_album}"))
-
-    # 4. Clean title + clean artist
+    # 3. Clean title + clean artist
     if lead_artist and lead_artist not in (main_artist, clean_artist):
         queries_to_add.append(query_part(f"{clean_title} {lead_artist}"))
     queries_to_add.append(query_part(f"{clean_title} {main_artist}"))
     if "," not in clean_artist and clean_artist != main_artist:
         queries_to_add.append(query_part(f"{clean_title} {clean_artist}"))
-    if " and the " in clean_artist.lower():
-        queries_to_add.append(query_part(f"{clean_title} {re.sub(r'(?i)\s+and\s+the\s+', ' ', clean_artist)}"))
 
-    # 5. Concise title wildcard + clean artist, followed immediately by title-only fallbacks
-    if first_wild_title and first_wild_title != clean_title:
-        queries_to_add.append(query_part(f"{first_wild_title} {main_artist}"))
-    if full_wild_title and full_wild_title not in (clean_title, first_wild_title):
-        queries_to_add.append(query_part(f"{full_wild_title} {main_artist}"))
+    # 4. Clean title + clean artist + album (if distinct)
+    if clean_album and clean_album.casefold() not in {
+        clean_title.casefold(), clean_artist.casefold(), "unknown album", "single", "ep"
+    }:
+        queries_to_add.append(query_part(f"{clean_title} {main_artist} {clean_album}"))
 
+    # 5. Clean title only fallback
     queries_to_add.append(query_part(clean_title))
-    if full_wild_title and full_wild_title != clean_title:
-        queries_to_add.append(query_part(full_wild_title))
 
     for query in queries_to_add:
         if query and query not in queries:

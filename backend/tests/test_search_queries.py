@@ -17,27 +17,23 @@ def test_track_queries_do_not_turn_artist_into_negative_search_term():
 def test_track_query_preserves_wildcard_strategy_without_hyphen_separator():
     queries = build_track_search_queries("Kanye West", "Good Morning")
 
-    assert queries[:4] == [
+    assert queries == [
         "*ood *orning *anye *est",
-        "Good Morning *anye West",
-        "Good Morning Kanye *est",
         "Good Morning *anye *est",
+        "Good Morning Kanye West",
+        "Good Morning",
     ]
-    assert "Good Morning Kanye West" in queries
-    assert "Good Morning" in queries
-    assert "*ood Morning Kanye West" in queries
-    assert queries.index("Good Morning *anye West") < queries.index("*ood Morning Kanye West")
-    assert queries.index("Good Morning *anye West") < queries.index("Good Morning")
 
 
 def test_track_query_has_title_only_fallback_for_busy_artists():
     queries = build_track_search_queries("Prince", "Purple Rain", "Purple Rain")
 
-    assert queries[0] == "*urple *ain *rince"
-    assert "Purple Rain *rince" in queries
-    assert "Purple Rain Prince" in queries
-    assert queries.index("Purple Rain *rince") < queries.index("*urple Rain Prince")
-    assert queries.index("Purple Rain *rince") < queries.index("Purple Rain")
+    assert queries == [
+        "*urple *ain *rince",
+        "Purple Rain *rince",
+        "Purple Rain Prince",
+        "Purple Rain",
+    ]
 
 
 def test_track_query_generates_lead_artist_for_backing_band():
@@ -70,16 +66,22 @@ def test_wildcard_title_variants_expand_each_title_word():
 def test_album_wildcard_queries_cover_blocked_title_and_artist_terms():
     queries = build_album_wildcard_queries("Prince", "Purple Rain")
 
-    assert queries[0] == "*urple *ain *rince"
-    assert "Purple Rain *rince" in queries
+    assert queries == [
+        "*urple *ain *rince",
+        "Purple Rain *rince",
+        "*urple *ain Prince",
+    ]
     assert all(" - " not in query and "-" not in query for query in queries)
 
 
 def test_album_wildcard_queries_strip_hyphens_and_start_with_full_wildcard():
     queries = build_album_wildcard_queries("Kanye West", "BULLY - DELUXE")
 
-    assert queries[0] == "*ULLY *ELUXE *anye *est"
-    assert "BULLY DELUXE *anye West" in queries
+    assert queries == [
+        "*ULLY *ELUXE *anye *est",
+        "BULLY DELUXE *anye *est",
+        "*ULLY *ELUXE Kanye West",
+    ]
     assert all("-" not in query for query in queries)
 
 
@@ -89,11 +91,13 @@ def test_track_queries_strip_italian_con_collaborations_and_comma_artists():
         "La Pioggia Alla Domenica (con Marracash)",
     )
 
-    assert queries[0] == "La *ioggia *lla *omenica *asco *ossi"
-    assert "La Pioggia Alla Domenica Vasco Rossi" in queries
-    assert "La Pioggia Alla Domenica" in queries
+    assert queries == [
+        "La *ioggia *lla *omenica *asco *ossi",
+        "La Pioggia Alla Domenica *asco *ossi",
+        "La Pioggia Alla Domenica Vasco Rossi",
+        "La Pioggia Alla Domenica",
+    ]
     assert all("Marracash" not in q and "*arracash" not in q for q in queries)
-    assert len(queries) <= 9
 
 
 def test_track_queries_and_slskd_candidates_accept_normal_version_for_live_suffix():

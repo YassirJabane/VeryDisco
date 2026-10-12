@@ -717,36 +717,26 @@ async def _download_album_task_internal(
                     for wildcard_query in build_album_wildcard_queries(main_art_q, clean_alb_q):
                         add_query(wildcard_query, False)
 
-                # 2. Clean album + artist / artist + album (space-separated)
+                # 2. Clean album + artist (space-separated)
                 if raw_alb and raw_alb.lower() != stripped_alb.lower():
                     add_query(f"{raw_alb} {main_art_q}", False)
-                    add_query(f"{main_art_q} {raw_alb}", False)
                 if stripped_alb:
                     add_query(f"{stripped_alb} {main_art_q}", False)
-                    add_query(f"{main_art_q} {stripped_alb}", False)
 
                 # 3. Year-based directory patterns (space-separated, no '-')
                 if album_year:
                     target_a = raw_alb if raw_alb else stripped_alb
                     if main_art_wildcard != main_art_q:
                         add_query(f"{target_a} {main_art_wildcard} {album_year}", False)
-                        add_query(f"{main_art_wildcard} {album_year} {target_a}", False)
                     add_query(f"{target_a} {main_art_q} {album_year}", False)
-                    add_query(f"{main_art_q} {album_year} {target_a}", False)
-                    if stripped_alb and stripped_alb.lower() != target_a.lower():
-                        if main_art_wildcard != main_art_q:
-                            add_query(f"{stripped_alb} {main_art_wildcard} {album_year}", False)
-                        add_query(f"{stripped_alb} {main_art_q} {album_year}", False)
 
                 if stripped_alb != clean_alb_q and clean_alb_q:
                     add_query(f"{clean_alb_q} {main_art_q}", False)
-                    add_query(f"{main_art_q} {clean_alb_q}", False)
 
                 if main_art_q != clean_art_q and clean_art_q:
                     for wildcard_query in build_album_wildcard_queries(clean_art_q, stripped_alb or clean_alb_q):
                         add_query(wildcard_query, False)
                     add_query(f"{stripped_alb or clean_alb_q} {clean_art_q}", False)
-                    add_query(f"{clean_art_q} {stripped_alb or clean_alb_q}", False)
 
                 # 4. Alternate MusicBrainz album artist (e.g. 'Ye' when requested artist was 'Kanye West')
                 if target_album_artist:
