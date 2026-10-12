@@ -10,7 +10,20 @@ from backend.app.clients.musicbrainz import _parse_artist_credit, MusicBrainzCli
 import backend.app.clients.musicbrainz as musicbrainz_module
 from backend.app.sync import find_downloaded_file, safe_copy_file, safe_move_file, extract_main_artist, embed_metadata
 from backend.app.clients.deezer import DeezerClient, _result_matches
-from backend.app.album_sync import match_file_to_official_track, official_position_for_file
+from backend.app.album_sync import (
+    _is_instrumental_track, match_file_to_official_track, official_position_for_file,
+)
+
+
+@pytest.mark.parametrize(("title", "album", "lyrics_type", "expected"), [
+    ("Overture", "Original Score", "instrumental", True),
+    ("Song (Instrumental)", "Album", "missing", True),
+    ("Instrumental Interlude", "Album", "missing", True),
+    ("Instrumentality", "Album", "missing", False),
+    ("Ordinary Song", "Album", "missing", False),
+])
+def test_instrumental_detection_requires_provider_or_explicit_metadata(title, album, lyrics_type, expected):
+    assert _is_instrumental_track(title, album, lyrics_type) is expected
 
 
 def test_musicbrainz_artist_credits_preserve_joinphrases():

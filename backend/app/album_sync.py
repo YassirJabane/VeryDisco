@@ -834,6 +834,7 @@ async def _download_album_task_internal(
         max_attempts = getattr(config.schedule, "max_candidate_attempts", 3) or 3
         overall_downloaded = []
         overall_copied = []
+        instrumental_paths: set[str] = set()
         album_complete = False
 
         for attempt, (dir_key, best_files) in enumerate(candidates[:max_attempts]):
@@ -922,6 +923,8 @@ async def _download_album_task_internal(
                         if Path(existing_path).resolve().parent == Path(final_dir).resolve():
                             logger.debug(f"Existing file already in destination folder, no copy needed for '{clean_title}'")
                             copied_files.append((f, existing_path))
+                            if _is_instrumental_track(clean_title, album):
+                                instrumental_paths.add(str(Path(existing_path)))
                             continue
                         
                         # 1. Fetch metadata (MusicBrainz primary, Deezer fallback)
@@ -998,6 +1001,7 @@ async def _download_album_task_internal(
                             
                             # Fetch lyrics and embed metadata
                             lyrics_text = None
+                            l_type = "missing"
                             try:
                                 lyrics_text, l_type = await lrclib_client.get_lyrics(artist, title_tag)
                             except Exception:
@@ -1036,6 +1040,8 @@ async def _download_album_task_internal(
                                 logger.error(f"Failed to update M3U references on sync: {e}")
 
                             copied_files.append((f, dest_path))
+                            if _is_instrumental_track(title_tag, album, l_type):
+                                instrumental_paths.add(str(dest_path))
                         except Exception as e:
                             logger.error(f"Failed to copy and link existing track {clean_title}: {e}")
                             # The source is only copied in this path. If canonical tagging
@@ -1391,6 +1397,7 @@ async def _download_album_task_internal(
  
                     # 5. Embed metadata & lyrics
                     try:
+                        l_type = "missing"
                         lyrics_text, l_type = await lrclib_client.get_lyrics(artist, title_tag)
                         if lyrics_text:
                             lrc_path = dest_path.with_suffix(".lrc")
@@ -1426,6 +1433,8 @@ async def _download_album_task_internal(
                         continue
 
                     overall_downloaded.append((f, dest_path))
+                    if _is_instrumental_track(title_tag, album, l_type):
+                        instrumental_paths.add(str(dest_path))
 
                     # 5. Delete successful download from slskd tab
                     fid = f.get("file_id")
@@ -1501,6 +1510,8 @@ async def _download_album_task_internal(
             await db.refresh_library_paths(
                 user_id, [str(path) for _, path in overall_downloaded + overall_copied]
             )
+            for instrumental_path in instrumental_paths:
+                await db.mark_instrumental(instrumental_path, user_id)
         if config.navidrome.url and config.navidrome.username and config.navidrome.password:
             try:
                 from backend.app.clients.navidrome import NavidromeClient

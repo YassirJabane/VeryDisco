@@ -387,6 +387,44 @@ class Database:
                     await db.commit()
                 except Exception:
                     pass
+            # Artist identity is MBID-based. Display names and historical
+            # credits are attributes, not separate pinned artists.
+            async with db.execute("PRAGMA table_info(pinned_artists)") as cursor:
+                pinned_columns = {row[1] for row in await cursor.fetchall()}
+            if "canonical_name" not in pinned_columns:
+                await db.execute("ALTER TABLE pinned_artists ADD COLUMN canonical_name TEXT DEFAULT ''")
+            if "aliases_json" not in pinned_columns:
+                await db.execute("ALTER TABLE pinned_artists ADD COLUMN aliases_json TEXT DEFAULT '[]'")
+            await db.execute(
+                "UPDATE pinned_artists SET canonical_name = artist_name "
+                "WHERE canonical_name IS NULL OR canonical_name = ''"
+            )
+            async with db.execute(
+                "SELECT * FROM pinned_artists WHERE mbid IS NOT NULL AND mbid <> '' ORDER BY id"
+            ) as cursor:
+                identity_rows = [dict(row) for row in await cursor.fetchall()]
+            identities: dict[tuple[str, str], dict[str, Any]] = {}
+            for row in identity_rows:
+                key = (row.get("user_id") or "", row["mbid"].casefold())
+                keeper = identities.get(key)
+                if keeper is None:
+                    identities[key] = row
+                    continue
+                aliases = set(json.loads(keeper.get("aliases_json") or "[]"))
+                aliases.update(json.loads(row.get("aliases_json") or "[]"))
+                aliases.update({keeper["artist_name"], row["artist_name"]})
+                picture = keeper.get("picture_url") or row.get("picture_url") or ""
+                deezer_id = keeper.get("deezer_id") or row.get("deezer_id") or 0
+                await db.execute(
+                    "UPDATE pinned_artists SET picture_url = ?, deezer_id = ?, aliases_json = ? WHERE id = ?",
+                    (picture, deezer_id, json.dumps(sorted(aliases), ensure_ascii=False), keeper["id"]),
+                )
+                await db.execute("DELETE FROM pinned_artists WHERE id = ?", (row["id"],))
+            await db.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_pinned_user_mbid "
+                "ON pinned_artists(user_id, mbid) WHERE mbid IS NOT NULL AND mbid <> ''"
+            )
+            await db.commit()
             try:
                 await db.execute("SELECT playlist_dir FROM users LIMIT 1")
             except Exception:
@@ -680,20 +718,79 @@ class Database:
             if user_id:
                 async with db.execute("SELECT * FROM pinned_artists WHERE user_id = ? ORDER BY artist_name ASC", (user_id,)) as cursor:
                     rows = await cursor.fetchall()
-                    return [dict(r) for r in rows]
             else:
                 async with db.execute("SELECT * FROM pinned_artists WHERE user_id IS NULL ORDER BY artist_name ASC") as cursor:
                     rows = await cursor.fetchall()
-                    return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["aliases"] = json.loads(item.pop("aliases_json", "[]") or "[]")
+            except (TypeError, json.JSONDecodeError):
+                item["aliases"] = []
+            result.append(item)
+        return result
 
-    async def add_pinned_artist(self, artist_name: str, deezer_id: Optional[int] = 0, picture_url: Optional[str] = None, user_id: Optional[str] = None, mbid: Optional[str] = None) -> int:
+    async def add_pinned_artist(
+        self, artist_name: str, deezer_id: Optional[int] = 0,
+        picture_url: Optional[str] = None, user_id: Optional[str] = None,
+        mbid: Optional[str] = None, canonical_name: Optional[str] = None,
+        aliases: Optional[List[str]] = None,
+    ) -> int:
+        """Upsert a pinned artist by stable MBID and merge renamed aliases."""
+        canonical = (canonical_name or artist_name).strip()
+        identity_mbid = (mbid or "").strip()
+        identity_names = sorted({
+            name.strip().casefold()
+            for name in [artist_name, canonical, *(aliases or [])]
+            if name and name.strip()
+        })
+        name_placeholders = ", ".join("?" for _ in identity_names) or "?"
         async with self.get_db() as db:
-            cursor = await db.execute(
-                "INSERT OR REPLACE INTO pinned_artists (artist_name, deezer_id, picture_url, user_id, mbid) VALUES (?, ?, ?, ?, ?)",
-                (artist_name, deezer_id or 0, picture_url, user_id, mbid)
-            )
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT * FROM pinned_artists WHERE COALESCE(user_id, '') = COALESCE(?, '') "
+                f"AND ((? <> '' AND mbid = ?) OR lower(artist_name) IN ({name_placeholders})) ORDER BY id",
+                (user_id, identity_mbid, identity_mbid, *(identity_names or [canonical.casefold()])),
+            ) as cursor:
+                matches = [dict(row) for row in await cursor.fetchall()]
+
+            if matches:
+                keeper = next((row for row in matches if identity_mbid and row.get("mbid") == identity_mbid), matches[0])
+                all_aliases = set(aliases or [])
+                all_aliases.update({artist_name, canonical})
+                for row in matches:
+                    all_aliases.add(row["artist_name"])
+                    try:
+                        all_aliases.update(json.loads(row.get("aliases_json") or "[]"))
+                    except (TypeError, json.JSONDecodeError):
+                        pass
+                    if row["id"] != keeper["id"]:
+                        await db.execute("DELETE FROM pinned_artists WHERE id = ?", (row["id"],))
+                await db.execute(
+                    "UPDATE pinned_artists SET artist_name = ?, canonical_name = ?, mbid = ?, "
+                    "deezer_id = ?, picture_url = ?, aliases_json = ? WHERE id = ?",
+                    (
+                        canonical, canonical, identity_mbid or keeper.get("mbid"),
+                        deezer_id or keeper.get("deezer_id") or 0,
+                        picture_url or keeper.get("picture_url") or "",
+                        json.dumps(sorted(name for name in all_aliases if name), ensure_ascii=False),
+                        keeper["id"],
+                    ),
+                )
+                artist_id = int(keeper["id"])
+            else:
+                all_aliases = sorted({name for name in (aliases or []) + [artist_name, canonical] if name})
+                cursor = await db.execute(
+                    "INSERT INTO pinned_artists "
+                    "(artist_name, canonical_name, deezer_id, picture_url, user_id, mbid, aliases_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (canonical, canonical, deezer_id or 0, picture_url or "", user_id,
+                     identity_mbid or None, json.dumps(all_aliases, ensure_ascii=False)),
+                )
+                artist_id = int(cursor.lastrowid)
             await db.commit()
-            return cursor.lastrowid
+            return artist_id
 
     async def delete_pinned_artist(self, id: int):
         async with self.get_db() as db:
@@ -1452,7 +1549,7 @@ class Database:
             if artist_norm:
                 async with db.execute(
                     "SELECT filepath, artist, album, title, artist_norm, album_norm, title_norm, "
-                    "track_mbid, album_mbid, bitrate, bit_depth, ext "
+                    "track_num, disc_num, total_tracks, track_mbid, album_mbid, bitrate, bit_depth, ext "
                     "FROM library_index WHERE user_id = ? AND (artist_norm = ? OR artist_norm LIKE ?)",
                     (user_id, artist_norm, f"%{artist_norm}%")
                 ) as cursor:
@@ -1461,7 +1558,7 @@ class Database:
             else:
                 async with db.execute(
                     "SELECT filepath, artist, album, title, artist_norm, album_norm, title_norm, "
-                    "track_mbid, album_mbid, bitrate, bit_depth, ext "
+                    "track_num, disc_num, total_tracks, track_mbid, album_mbid, bitrate, bit_depth, ext "
                     "FROM library_index WHERE user_id = ?",
                     (user_id,)
                 ) as cursor:

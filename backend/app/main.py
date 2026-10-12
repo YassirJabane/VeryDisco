@@ -1505,7 +1505,14 @@ async def deezer_search(query: str, type: str = "track"):
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            return resp.json()
+            payload = resp.json()
+            if type == "artist" and isinstance(payload.get("data"), list):
+                payload["data"] = sorted(
+                    payload["data"],
+                    key=lambda item: _deezer_artist_rank(query, item),
+                    reverse=True,
+                )
+            return payload
     except Exception as e:
         logger.error(f"Deezer API search failed: {e}")
         raise HTTPException(status_code=502, detail=f"Deezer search failed: {e}")
@@ -1520,6 +1527,26 @@ def _album_completion_status(track_count: int, expected_tracks: Optional[int] = 
     """Only an external release total can certify completion; local tags may be 6/6 of 9."""
     expected = expected_tracks or 0
     return "full" if expected > 0 and track_count >= expected else "partial"
+
+def _matching_album_rows(
+    album_norm_map: Dict[Tuple[str, str], List[Dict[str, Any]]],
+    album_title_map: Dict[str, List[Dict[str, Any]]],
+    artist_norm: str,
+    album_norm: str,
+) -> List[Dict[str, Any]]:
+    """Match a local album without losing collaborative album artists.
+
+    The index stores the complete album-artist credit (for example
+    ``21 Savage & Metro Boomin``).  An artist discography page asks using one
+    member of that credit, so an exact ``artist + album`` lookup alone cannot
+    find the album.  The database query is already scoped to credits containing
+    the requested artist; an exact normalized-title fallback is therefore both
+    safe and able to recognize collaborations.
+    """
+    return (
+        album_norm_map.get((artist_norm, album_norm), [])
+        or album_title_map.get(album_norm, [])
+    )
 
 @app.post("/api/search/check/batch")
 async def batch_check_existence(items: List[BatchCheckItem], request: Request):
@@ -1557,6 +1584,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
     # 2. Build O(1) hash maps for lightning fast matching
     album_mbid_map: Dict[str, List[Dict[str, Any]]] = {}
     album_norm_map: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    album_title_map: Dict[str, List[Dict[str, Any]]] = {}
     track_title_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
     
     for row in db_rows:
@@ -1568,6 +1596,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
         art_norm = row.get("artist_norm")
         if a_norm and art_norm:
             album_norm_map.setdefault((art_norm, a_norm), []).append(row)
+            album_title_map.setdefault(a_norm, []).append(row)
             
         t_norm = row.get("title_norm")
         if t_norm and art_norm:
@@ -1608,9 +1637,13 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
         # 2. Match album by artist_norm + album_norm
         if item.album_id:
             album_clean = _norm_album(item.title)
-            matched_tracks = album_norm_map.get((artist_clean, album_clean), [])
+            matched_tracks = _matching_album_rows(
+                album_norm_map, album_title_map, artist_clean, album_clean,
+            )
             if not matched_tracks and clean_art and clean_art != artist_clean:
-                matched_tracks = album_norm_map.get((clean_art, album_clean), [])
+                matched_tracks = _matching_album_rows(
+                    album_norm_map, album_title_map, clean_art, album_clean,
+                )
                 
             if matched_tracks:
                 cnt = len(matched_tracks)
@@ -2393,7 +2426,47 @@ class PinArtistRequest(BaseModel):
     deezer_id: Optional[int] = None
     picture_url: Optional[str] = None
 
+def _musicbrainz_artist_names(artist: Optional[Dict[str, Any]], original_name: str) -> list[str]:
+    """Collect names belonging to one MusicBrainz identity without merging other MBIDs."""
+    names = {original_name.strip()} if original_name.strip() else set()
+    if artist:
+        for value in (artist.get("name"), artist.get("sort-name")):
+            if value:
+                names.add(value.strip())
+        for alias in artist.get("aliases") or []:
+            value = alias.get("name") if isinstance(alias, dict) else str(alias)
+            if value:
+                names.add(value.strip())
+    return sorted(name for name in names if name)
+
 _artist_pic_semaphore = asyncio.Semaphore(2)
+
+def _artist_name_key(value: str) -> str:
+    return re.sub(r"[^\w]", "", (value or "").casefold())
+
+def _deezer_artist_rank(requested_name: str, candidate: Dict[str, Any]) -> tuple[int, int, int, int]:
+    """Rank exact-name Deezer matches by identity quality, not API order.
+
+    Deezer may return many distinct artists named "Abba".  The first result can
+    be a tiny unrelated profile; fan and catalogue counts are much stronger
+    signals for the established artist the user means.
+    """
+    name = candidate.get("name") or ""
+    exact_normalized = int(_artist_name_key(name) == _artist_name_key(requested_name))
+    exact_spelling = int(name == requested_name)
+    return (
+        exact_normalized,
+        int(candidate.get("nb_fan") or 0),
+        int(candidate.get("nb_album") or 0),
+        exact_spelling,
+    )
+
+def _select_deezer_artist(requested_name: str, candidates: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    exact = [
+        candidate for candidate in candidates
+        if _artist_name_key(candidate.get("name") or "") == _artist_name_key(requested_name)
+    ]
+    return max(exact, key=lambda item: _deezer_artist_rank(requested_name, item), default=None)
 
 async def fetch_deezer_artist_picture(artist_name: str, deezer_id: int = None) -> str:
     """Fetch official artist picture_medium directly from Deezer using standard HTTP client."""
@@ -2406,9 +2479,8 @@ async def fetch_deezer_artist_picture(artist_name: str, deezer_id: int = None) -
                 if resp.status_code == 200:
                     data = resp.json()
                     remote_name = data.get("name") or ""
-                    norm = lambda value: re.sub(r"[^\w]", "", (value or "").casefold())
                     pic = data.get("picture_xl") or data.get("picture_big") or data.get("picture_medium") or data.get("picture")
-                    if pic and norm(remote_name) == norm(artist_name):
+                    if pic and _artist_name_key(remote_name) == _artist_name_key(artist_name):
                         return pic
 
             clean_name = artist_name.split('feat')[0].split('ft.')[0].strip()
@@ -2416,8 +2488,7 @@ async def fetch_deezer_artist_picture(artist_name: str, deezer_id: int = None) -
             resp = await client.get(url)
             if resp.status_code == 200:
                 data = resp.json().get("data", [])
-                norm = lambda value: re.sub(r"[^\w]", "", (value or "").casefold())
-                exact = next((item for item in data if norm(item.get("name")) == norm(clean_name)), None)
+                exact = _select_deezer_artist(clean_name, data)
                 if exact:
                     return exact.get("picture_xl") or exact.get("picture_big") or exact.get("picture_medium") or exact.get("picture") or ""
     except Exception as e:
@@ -2473,7 +2544,12 @@ async def get_pinned_artists(request: Request, refresh: bool = False):
             client = NavidromeClient(url=cfg.navidrome.url, username=cfg.navidrome.username, password=cfg.navidrome.password)
             nd_artists = await client.get_artists_list()
             
-            pinned_names = {a["artist_name"].lower() for a in artists}
+            pinned_names = {
+                name.casefold()
+                for pinned in artists
+                for name in [pinned["artist_name"], *(pinned.get("aliases") or [])]
+                if name
+            }
             new_artists_set = set()
             for art in nd_artists:
                 art = art.strip()
@@ -2490,15 +2566,21 @@ async def get_pinned_artists(request: Request, refresh: bool = False):
                 async def resolve_and_save(art_name):
                     mbid = None
                     pic_url = ""
+                    original_name = art_name
+                    aliases = [art_name]
                     try:
                         mb_art = await musicbrainz_client.search_artist(art_name)
                         if mb_art:
                             mbid = mb_art.get("id")
                             art_name = mb_art.get("name", art_name)
+                            aliases = _musicbrainz_artist_names(mb_art, original_name)
                         pic_url = await fetch_deezer_artist_picture(art_name)
                     except Exception as mbe:
                         logger.warning(f"Failed to query MusicBrainz metadata for artist {art_name}: {mbe}")
-                    await db.add_pinned_artist(art_name, mbid=mbid, picture_url=pic_url, user_id=user_id)
+                    await db.add_pinned_artist(
+                        art_name, mbid=mbid, picture_url=pic_url, user_id=user_id,
+                        canonical_name=art_name, aliases=aliases,
+                    )
                 
                 await asyncio.gather(*(resolve_and_save(a) for a in new_artists))
                 artists = await db.get_pinned_artists(user_id)
@@ -2512,7 +2594,12 @@ async def get_pinned_artists(request: Request, refresh: bool = False):
                 
             music_dir = Path(music_dir_path)
             if music_dir.exists() and music_dir.is_dir():
-                pinned_names = {a["artist_name"].lower() for a in artists}
+                pinned_names = {
+                    name.casefold()
+                    for pinned in artists
+                    for name in [pinned["artist_name"], *(pinned.get("aliases") or [])]
+                    if name
+                }
                 local_artists_set = set()
                 for item in music_dir.iterdir():
                     if item.is_dir() and item.name.lower() not in ["playlists", "staging", "explore", "current"]:
@@ -2526,15 +2613,21 @@ async def get_pinned_artists(request: Request, refresh: bool = False):
                     async def resolve_and_save(art_name):
                         mbid = None
                         pic_url = ""
+                        original_name = art_name
+                        aliases = [art_name]
                         try:
                             mb_art = await musicbrainz_client.search_artist(art_name)
                             if mb_art:
                                 mbid = mb_art.get("id")
                                 art_name = mb_art.get("name", art_name)
+                                aliases = _musicbrainz_artist_names(mb_art, original_name)
                             pic_url = await fetch_deezer_artist_picture(art_name)
                         except Exception as mbe:
                             logger.warning(f"Failed to query MusicBrainz metadata for artist {art_name}: {mbe}")
-                        await db.add_pinned_artist(art_name, mbid=mbid, picture_url=pic_url, user_id=user_id)
+                        await db.add_pinned_artist(
+                            art_name, mbid=mbid, picture_url=pic_url, user_id=user_id,
+                            canonical_name=art_name, aliases=aliases,
+                        )
                     
                     await asyncio.gather(*(resolve_and_save(a) for a in local_artists))
         
@@ -2566,7 +2659,10 @@ async def refresh_pinned_artist_image(artist_id: int, request: Request):
             artist = await cursor.fetchone()
         if not artist:
             raise HTTPException(status_code=404, detail="Pinned artist not found.")
-        picture = await fetch_deezer_artist_picture(artist["artist_name"], artist["deezer_id"])
+        # A refresh must re-resolve the artist.  Legacy rows may contain a
+        # Deezer ID selected from the provider's first same-name result, which
+        # is exactly the stale/wrong identity this action is meant to repair.
+        picture = await fetch_deezer_artist_picture(artist["artist_name"])
         if not picture:
             raise HTTPException(status_code=404, detail="No exact artist image match was found.")
         await conn.execute("UPDATE pinned_artists SET picture_url = ? WHERE id = ?", (picture, artist_id))
@@ -2587,6 +2683,7 @@ async def pin_artist(req: PinArtistRequest, request: Request):
         
     mbid = req.mbid
     picture_url = req.picture_url
+    aliases = [artist_name]
     
     # Resolve metadata via MusicBrainz if MBID not provided
     if not mbid:
@@ -2596,6 +2693,7 @@ async def pin_artist(req: PinArtistRequest, request: Request):
                 raise HTTPException(status_code=404, detail=f"Artist '{artist_name}' not found on MusicBrainz.")
             artist_name = mb_art.get("name", artist_name)
             mbid = mb_art.get("id")
+            aliases = _musicbrainz_artist_names(mb_art, req.artist_name)
         except Exception as e:
             logger.error(f"MusicBrainz search for artist '{artist_name}' failed: {e}")
             raise HTTPException(status_code=502, detail=f"Failed to verify artist on MusicBrainz: {e}")
@@ -2604,7 +2702,10 @@ async def pin_artist(req: PinArtistRequest, request: Request):
         picture_url = await fetch_deezer_artist_picture(artist_name, req.deezer_id)
             
     try:
-        artist_id = await db.add_pinned_artist(artist_name, deezer_id=req.deezer_id, picture_url=picture_url, user_id=user_id, mbid=mbid)
+        artist_id = await db.add_pinned_artist(
+            artist_name, deezer_id=req.deezer_id, picture_url=picture_url,
+            user_id=user_id, mbid=mbid, canonical_name=artist_name, aliases=aliases,
+        )
         return {"status": "success", "id": artist_id, "artist_name": artist_name, "mbid": mbid, "picture_url": picture_url}
     except Exception as e:
         logger.error(f"Failed to pin artist '{artist_name}': {e}")
@@ -2686,7 +2787,7 @@ async def unpin_artist(id: int, request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to delete artist: {e}")
 
 @app.get("/api/artist/{artist_identifier}/releases")
-async def get_artist_releases_mb(artist_identifier: str):
+async def get_artist_releases_mb(artist_identifier: str, request: Request):
     """Fetch official release groups (albums, EPs, singles) for an artist from MusicBrainz."""
     from backend.app.clients.musicbrainz import musicbrainz_client
     mbid = artist_identifier
@@ -2695,19 +2796,29 @@ async def get_artist_releases_mb(artist_identifier: str):
 
     # Check if artist_identifier is a database ID or name
     if not re.match(mbid_pattern, artist_identifier, re.IGNORECASE):
+        from backend.app.auth import get_current_user
+        user = await get_current_user(request)
         async with db.get_db() as conn:
-            cursor = await conn.execute("SELECT mbid, artist_name FROM pinned_artists WHERE id = ? OR deezer_id = ?", (artist_identifier, artist_identifier))
-            row = await cursor.fetchone()
-            if row:
-                resolved_artist_name = row["artist_name"] or ""
-            if row and row["mbid"] and re.match(mbid_pattern, row["mbid"], re.IGNORECASE):
-                mbid = row["mbid"]
-            elif resolved_artist_name:
-                mb_art = await musicbrainz_client.search_artist(resolved_artist_name)
-                if mb_art:
-                    mbid = mb_art.get("id")
-                    await conn.execute("UPDATE pinned_artists SET mbid = ? WHERE id = ?", (mbid, artist_identifier))
-                    await conn.commit()
+            async with conn.execute(
+                "SELECT mbid, artist_name FROM pinned_artists "
+                "WHERE user_id = ? AND (id = ? OR deezer_id = ?)",
+                (user["id"], artist_identifier, artist_identifier),
+            ) as cursor:
+                row = await cursor.fetchone()
+        if row:
+            resolved_artist_name = row["artist_name"] or ""
+        if row and row["mbid"] and re.match(mbid_pattern, row["mbid"], re.IGNORECASE):
+            mbid = row["mbid"]
+        elif resolved_artist_name:
+            mb_art = await musicbrainz_client.search_artist(resolved_artist_name)
+            if mb_art:
+                mbid = mb_art.get("id")
+                await db.add_pinned_artist(
+                    mb_art.get("name") or resolved_artist_name,
+                    user_id=user["id"], mbid=mbid,
+                    canonical_name=mb_art.get("name") or resolved_artist_name,
+                    aliases=_musicbrainz_artist_names(mb_art, resolved_artist_name),
+                )
 
     if not mbid or not re.match(mbid_pattern, mbid, re.IGNORECASE):
         mb_art = await musicbrainz_client.search_artist(resolved_artist_name or artist_identifier)
@@ -2725,9 +2836,9 @@ async def get_artist_releases_mb(artist_identifier: str):
     return releases
 
 @app.get("/api/deezer/artist/{artist_id}/releases")
-async def get_deezer_artist_releases_legacy(artist_id: str):
+async def get_deezer_artist_releases_legacy(artist_id: str, request: Request):
     """Legacy alias redirecting to MusicBrainz artist release groups endpoint."""
-    return await get_artist_releases_mb(artist_id)
+    return await get_artist_releases_mb(artist_id, request)
 
 @app.get("/api/release-group/{release_group_mbid}/releases")
 async def get_release_group_releases(release_group_mbid: str):

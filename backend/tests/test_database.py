@@ -91,6 +91,31 @@ async def test_starred_track_status_is_per_user(test_db: Database):
 
 
 @pytest.mark.asyncio
+async def test_pinned_artists_merge_renames_by_mbid_but_keep_separate_projects(test_db: Database):
+    ye_mbid = "164f0d73-1234-4e2c-8743-d77bf2191051"
+    first_id = await test_db.add_pinned_artist(
+        "Kanye West", user_id="user", mbid=ye_mbid,
+        canonical_name="Ye", aliases=["Kanye West", "Ye"],
+    )
+    second_id = await test_db.add_pinned_artist(
+        "Ye", user_id="user", mbid=ye_mbid,
+        canonical_name="Ye", aliases=["Kanye West", "Ye", "Yeezy"],
+    )
+    await test_db.add_pinned_artist(
+        "¥$", user_id="user", mbid="separate-project-mbid",
+        canonical_name="¥$", aliases=["¥$"],
+    )
+
+    artists = await test_db.get_pinned_artists("user")
+    assert first_id == second_id
+    assert len(artists) == 2
+    ye = next(item for item in artists if item["mbid"] == ye_mbid)
+    assert ye["artist_name"] == "Ye"
+    assert {"Kanye West", "Ye", "Yeezy"}.issubset(set(ye["aliases"]))
+    assert next(item for item in artists if item["artist_name"] == "¥$")["mbid"] == "separate-project-mbid"
+
+
+@pytest.mark.asyncio
 async def test_provider_cache_and_incremental_acoustid_candidates(test_db: Database):
     await test_db.set_provider_cache("musicbrainz:test", {"ok": True}, 60)
     assert await test_db.get_provider_cache("musicbrainz:test") == {"ok": True}

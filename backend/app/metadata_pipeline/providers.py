@@ -24,20 +24,27 @@ def normalize(value: str) -> str:
 
 
 def artist_credit(credits: list[dict[str, Any]] | None) -> tuple[str, list[dict[str, str]]]:
+    """Return release display credits while retaining the stable artist identity.
+
+    MusicBrainz keeps an artist MBID stable across renames, while ``credit.name``
+    records how that artist was actually billed on this release.  Both values
+    matter: tags should use the historical credit, grouping should use the MBID.
+    """
     display: list[str] = []
     entities: list[dict[str, str]] = []
     for credit in credits or []:
         artist = credit.get("artist") or {}
-        # Use the current canonical MusicBrainz artist name, not a historical
-        # credited-as alias (for example "Travi$ Scott"). Join phrases still
-        # come from the authoritative artist-credit relation.
-        name = artist.get("name") or credit.get("name") or ""
-        canonical = artist.get("name") or name
-        if name:
-            display.append(name)
+        credited_name = credit.get("name") or artist.get("name") or ""
+        canonical_name = artist.get("name") or credited_name
+        if credited_name:
+            display.append(credited_name)
             display.append(credit.get("joinphrase") or "")
-        if canonical:
-            entities.append({"name": canonical, "mbid": artist.get("id") or ""})
+        if credited_name or canonical_name:
+            entities.append({
+                "name": credited_name or canonical_name,
+                "canonical_name": canonical_name or credited_name,
+                "mbid": artist.get("id") or "",
+            })
     return "".join(display).strip(), entities
 
 
@@ -138,7 +145,11 @@ class MusicBrainzReleaseProvider:
     def _search_score(item: dict[str, Any], album: str, album_artist: str) -> float:
         title = SequenceMatcher(None, normalize(album), normalize(item.get("title", ""))).ratio()
         display, entities = artist_credit(item.get("artist-credit"))
-        names = [display, *(entity["name"] for entity in entities)]
+        names = [
+            display,
+            *(entity["name"] for entity in entities),
+            *(entity.get("canonical_name", "") for entity in entities),
+        ]
         artist = max(
             (SequenceMatcher(None, normalize(album_artist), normalize(name)).ratio() for name in names if name),
             default=0.0,
@@ -204,7 +215,11 @@ class MusicBrainzReleaseProvider:
         local_tracks: list[dict[str, Any]],
     ) -> float:
         title_score = SequenceMatcher(None, normalize(album), normalize(release["album"])).ratio()
-        artist_names = [release["album_artist"], *(a["name"] for a in release["album_artists"])]
+        artist_names = [
+            release["album_artist"],
+            *(a["name"] for a in release["album_artists"]),
+            *(a.get("canonical_name", "") for a in release["album_artists"]),
+        ]
         artist_score = max(
             (SequenceMatcher(None, normalize(album_artist), normalize(name)).ratio() for name in artist_names if name),
             default=0.0,

@@ -31,6 +31,8 @@ interface PinnedArtist {
   mbid?: string;
   deezer_id?: number;
   picture_url: string;
+  canonical_name?: string;
+  aliases?: string[];
 }
 
 interface Release {
@@ -575,7 +577,10 @@ export const MyArtists: React.FC = () => {
                       event.stopPropagation();
                       try {
                         const result = await apiService.refreshPinnedArtistImage(artist.id);
-                        setArtists(current => current.map(item => item.id === artist.id ? { ...item, picture_url: result.picture_url } : item));
+                        const separator = result.picture_url.includes('?') ? '&' : '?';
+                        const refreshedUrl = `${result.picture_url}${separator}v=${Date.now()}`;
+                        setArtists(current => current.map(item => item.id === artist.id ? { ...item, picture_url: refreshedUrl } : item));
+                        setDetailArtist(current => current?.id === artist.id ? { ...current, picture_url: refreshedUrl } : current);
                         notify(`Updated image for ${artist.artist_name}.`, 'success');
                       } catch (error) {
                         notify(getErrorMessage(error, 'No exact artist image found.'), 'error');
@@ -675,7 +680,14 @@ export const MyArtists: React.FC = () => {
             <DialogTitle sx={{ m: 0, p: { xs: 2, sm: 3 }, display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid', borderColor: 'divider' }}>
               <Box display="flex" alignItems="center" gap={2}>
                 <Avatar src={detailArtist.picture_url} sx={{ width: 48, height: 48, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }} />
-                <Typography variant="h5" sx={{ fontWeight: 800 }}>{detailArtist.artist_name}</Typography>
+                <Box>
+                  <Typography variant="h5" sx={{ fontWeight: 800 }}>{detailArtist.artist_name}</Typography>
+                  {(detailArtist.aliases || []).filter(name => name !== detailArtist.artist_name).length > 0 && (
+                    <Typography variant="caption" color="text.secondary">
+                      Also known as {(detailArtist.aliases || []).filter(name => name !== detailArtist.artist_name).join(', ')}
+                    </Typography>
+                  )}
+                </Box>
               </Box>
               <IconButton onClick={() => setDetailArtist(null)}>
                 <CloseIcon />
@@ -822,7 +834,8 @@ export const MyArtists: React.FC = () => {
                                     <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1, color: 'text.secondary' }}>Tracklist</Typography>
                                     <List disablePadding>
                                       {release.tracks.map((track: any, tidx: number) => {
-                                        const trackDlKey = `track-${detailArtist.artist_name}-${track.title}`;
+                                        const creditedArtist = track.artist || detailArtist.artist_name;
+                                        const trackDlKey = `track-${creditedArtist}-${track.title}`;
                                         const isTrackDl = downloadingKeys.has(trackDlKey);
                                         return (
                                           <ListItem 
@@ -839,9 +852,10 @@ export const MyArtists: React.FC = () => {
                                               <Typography variant="body2" sx={{ color: 'text.secondary', width: 24, textAlign: 'right' }}>
                                                 {tidx + 1}
                                               </Typography>
-                                              <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                                {track.title}
-                                              </Typography>
+                                              <Box>
+                                                <Typography variant="body2" sx={{ fontWeight: 600 }}>{track.title}</Typography>
+                                                {creditedArtist !== detailArtist.artist_name && <Typography variant="caption" color="text.secondary">{creditedArtist}</Typography>}
+                                              </Box>
                                             </Box>
                                             <Box display="flex" alignItems="center" gap={1}>
                                               {track.exists ? (
@@ -868,7 +882,7 @@ export const MyArtists: React.FC = () => {
                                                   sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
                                                   onClick={async () => {
                                                     try {
-                                                      await apiService.likeTrack(detailArtist.artist_name, track.title, release.title, 1);
+                                                      await apiService.likeTrack(creditedArtist, track.title, release.title, 1);
                                                       notify("Loved on ListenBrainz!", "success");
                                                     } catch (de: any) {
                                                       notify(de.response?.data?.detail || "Failed to submit love feedback.", "error");
@@ -885,7 +899,7 @@ export const MyArtists: React.FC = () => {
                                                   sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
                                                   onClick={async () => {
                                                     try {
-                                                      await apiService.likeTrack(detailArtist.artist_name, track.title, release.title, -1);
+                                                      await apiService.likeTrack(creditedArtist, track.title, release.title, -1);
                                                       notify("Hated on ListenBrainz!", "info");
                                                     } catch (de: any) {
                                                       notify(de.response?.data?.detail || "Failed to submit hate feedback.", "error");
@@ -902,8 +916,8 @@ export const MyArtists: React.FC = () => {
                                                 onClick={async () => {
                                                   setDownloadingKeys(prev => new Set(prev).add(trackDlKey));
                                                   try {
-                                                      await apiService.downloadTrack(detailArtist.artist_name, track.title, downloadTitle, false);
-                                                    notify(`Download queued for track "${detailArtist.artist_name} - ${track.title}".`, "success");
+                                                      await apiService.downloadTrack(creditedArtist, track.title, downloadTitle, false);
+                                                    notify(`Download queued for track "${creditedArtist} - ${track.title}".`, "success");
                                                   } catch (de: any) {
                                                     notify(de.response?.data?.detail || "Failed to download track.", "error");
                                                   } finally {
@@ -1167,7 +1181,8 @@ export const MyArtists: React.FC = () => {
                                   <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 1, color: 'text.secondary' }}>Tracklist</Typography>
                                   <List disablePadding>
                                     {release.tracks.map((track: any, tidx: number) => {
-                                        const trackDlKey = `track-${detailArtist?.artist_name || ''}-${track.title}`;
+                                      const creditedArtist = track.artist || detailArtist?.artist_name || '';
+                                      const trackDlKey = `track-${creditedArtist}-${track.title}`;
                                       const isTrackDl = downloadingKeys.has(trackDlKey);
                                       return (
                                         <ListItem 
@@ -1184,9 +1199,10 @@ export const MyArtists: React.FC = () => {
                                             <Typography variant="body2" sx={{ color: 'text.secondary', width: 24, textAlign: 'right' }}>
                                               {tidx + 1}
                                             </Typography>
-                                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                                              {track.title}
-                                            </Typography>
+                                            <Box>
+                                              <Typography variant="body2" sx={{ fontWeight: 600 }}>{track.title}</Typography>
+                                              {creditedArtist !== detailArtist?.artist_name && <Typography variant="caption" color="text.secondary">{creditedArtist}</Typography>}
+                                            </Box>
                                           </Box>
                                           <Box display="flex" alignItems="center" gap={1}>
                                             {track.exists ? (
@@ -1213,7 +1229,7 @@ export const MyArtists: React.FC = () => {
                                                   sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
                                                   onClick={async () => {
                                                     try {
-                                                      await apiService.likeTrack(detailArtist?.artist_name || '', track.title, release.title, 1);
+                                                      await apiService.likeTrack(creditedArtist, track.title, release.title, 1);
                                                       notify("Loved on ListenBrainz!", "success");
                                                     } catch (de: any) {
                                                       notify(de.response?.data?.detail || "Failed to submit love feedback.", "error");
@@ -1230,7 +1246,7 @@ export const MyArtists: React.FC = () => {
                                                   sx={{ display: { xs: 'none', sm: 'inline-flex' } }}
                                                   onClick={async () => {
                                                     try {
-                                                      await apiService.likeTrack(detailArtist?.artist_name || '', track.title, release.title, -1);
+                                                      await apiService.likeTrack(creditedArtist, track.title, release.title, -1);
                                                       notify("Hated on ListenBrainz!", "info");
                                                     } catch (de: any) {
                                                       notify(de.response?.data?.detail || "Failed to submit hate feedback.", "error");
@@ -1247,8 +1263,8 @@ export const MyArtists: React.FC = () => {
                                                 onClick={async () => {
                                                   setDownloadingKeys(prev => new Set(prev).add(trackDlKey));
                                                   try {
-                                                    await apiService.downloadTrack(detailArtist?.artist_name || '', track.title, track.title, false);
-                                                    notify(`Download queued for track "${detailArtist?.artist_name || ''} - ${track.title}".`, "success");
+                                                    await apiService.downloadTrack(creditedArtist, track.title, track.title, false);
+                                                    notify(`Download queued for track "${creditedArtist} - ${track.title}".`, "success");
                                                   } catch (de: any) {
                                                     notify(de.response?.data?.detail || "Failed to download track.", "error");
                                                   } finally {

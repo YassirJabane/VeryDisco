@@ -374,6 +374,8 @@ class MusicBrainzClient:
         sort_name = artist.get("sort-name")
         if sort_name:
             names.add(sort_name)
+        return sorted(name for name in names if name)
+
     async def get_artist_release_groups(self, artist_mbid: str) -> List[Dict[str, Any]]:
         """
         Fetch all release groups for a MusicBrainz artist and strictly categorize

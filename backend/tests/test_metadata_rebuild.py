@@ -31,6 +31,12 @@ def test_cosmetic_spelling_is_preserved_for_multi_artist_credits():
     ) == ["Beyonce", "JAY-Z", "Kanye West"]
 
 
+def test_joint_release_credit_preserves_local_jay_z_typography():
+    assert _preserve_cosmetic_spelling(
+        "Jay‐Z & Kanye West", "JAY-Z & Kanye West"
+    ) == "Jay‐Z & Kanye West"
+
+
 def _make_tagged_mp3(
     path: Path,
     *,
@@ -175,14 +181,86 @@ class SlowProvider:
         await asyncio.Event().wait()
 
 
-def test_artist_credit_preserves_join_phrase_and_canonical_entities():
+def test_artist_credit_preserves_release_credit_and_stable_identity():
     display, entities = artist_credit([
         {"name": "Travi$ Scott", "artist": {"id": "a", "name": "Travis Scott"}, "joinphrase": " feat. "},
         {"name": "Kendrick Lamar", "artist": {"id": "b", "name": "Kendrick Lamar"}},
     ])
-    assert display == "Travis Scott feat. Kendrick Lamar"
-    assert [artist["name"] for artist in entities] == ["Travis Scott", "Kendrick Lamar"]
+    assert display == "Travi$ Scott feat. Kendrick Lamar"
+    assert [artist["name"] for artist in entities] == ["Travi$ Scott", "Kendrick Lamar"]
+    assert [artist["canonical_name"] for artist in entities] == ["Travis Scott", "Kendrick Lamar"]
+    assert [artist["mbid"] for artist in entities] == ["a", "b"]
     assert normalize("Travi$ Scott") == normalize("Travis Scott")
+
+
+def test_renamed_artist_keeps_historical_release_credit_with_same_mbid():
+    display, entities = artist_credit([{
+        "name": "Kanye West",
+        "artist": {"id": "164f0d73-1234-4e2c-8743-d77bf2191051", "name": "Ye"},
+    }])
+
+    assert display == "Kanye West"
+    assert entities == [{
+        "name": "Kanye West",
+        "canonical_name": "Ye",
+        "mbid": "164f0d73-1234-4e2c-8743-d77bf2191051",
+    }]
+
+
+def test_joint_historical_credit_keeps_jay_z_and_kanye_release_names():
+    display, entities = artist_credit([
+        {
+            "name": "JAY-Z",
+            "artist": {"id": "jay-z-mbid", "name": "JAŸ-Z"},
+            "joinphrase": " & ",
+        },
+        {
+            "name": "Kanye West",
+            "artist": {"id": "ye-mbid", "name": "Ye"},
+        },
+    ])
+
+    assert display == "JAY-Z & Kanye West"
+    assert [artist["mbid"] for artist in entities] == ["jay-z-mbid", "ye-mbid"]
+    assert [artist["canonical_name"] for artist in entities] == ["JAŸ-Z", "Ye"]
+
+
+@pytest.mark.asyncio
+async def test_rebuild_uses_historical_credit_and_stable_artist_mbid(tmp_path):
+    ye_mbid = "164f0d73-1234-4e2c-8743-d77bf2191051"
+    release = {
+        "release_mbid": "graduation-release", "release_group_mbid": "graduation-group",
+        "album": "Graduation", "album_artist": "Kanye West",
+        "album_artists": [{"name": "Kanye West", "canonical_name": "Ye", "mbid": ye_mbid}],
+        "date": "2007-09-11", "country": "US", "status": "Official",
+        "barcode": "", "labels": [], "disc_total": 1, "track_total": 1,
+        "confidence": 0.99, "artwork_url": "",
+        "tracks": [{
+            "title": "Stronger", "artist": "Kanye West",
+            "artists": [{"name": "Kanye West", "canonical_name": "Ye", "mbid": ye_mbid}],
+            "recording_mbid": "stronger-recording", "track": 1, "disc": 1, "duration": 0,
+        }],
+    }
+
+    class RenamedArtistProvider:
+        async def match_release(self, album, album_artist, local_tracks):
+            return [release]
+
+    album_dir = tmp_path / "Kanye West" / "Graduation"
+    album_dir.mkdir(parents=True)
+    track = album_dir / "01-Stronger.mp3"
+    _make_tagged_mp3(
+        track, title="Stronger", artist="Kanye West", album="Graduation",
+        album_artist="Kanye West", track=1,
+    )
+
+    service = MetadataRebuildService(tmp_path / "state", provider=RenamedArtistProvider(), artwork=NoArtwork())
+    plan = (await service.scan("user", tmp_path))[0]
+    proposed = plan["tracks"][0]["proposed"]
+
+    assert proposed["artist"] == "Kanye West"
+    assert proposed["album_artist"] == "Kanye West"
+    assert proposed["album_artist_mbid"] == ye_mbid
 
 
 def test_writer_preserves_editorial_punctuation_and_joint_album_artists(tmp_path):
