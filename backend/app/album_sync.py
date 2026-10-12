@@ -1666,11 +1666,18 @@ async def _download_single_track_internal(
             if candidates:
                 if search_id:
                     await slskd_client.delete_search(search_id)
-                # Sort candidates by cleanliness first, keeping existing order (quality) as tie-breaker
+                # Sort candidates keeping artist/quality/album priority first, using cleanliness and free slots as tie-breakers
                 candidates = sorted(
                     candidates,
-                    key=lambda c: filename_cleanliness_score([c]),
-                    reverse=True
+                    key=lambda c: (
+                        not c.get("full_artist_matched", False),
+                        c.get("priority", 999),
+                        not c.get("album_matched", False),
+                        -filename_cleanliness_score([c]),
+                        not c.get("hasFreeUploadSlot", True),
+                        c.get("queueLength", 0),
+                        -c.get("speed", 0),
+                    )
                 )
                 break
             if search_id:
@@ -1680,18 +1687,28 @@ async def _download_single_track_internal(
             logger.warning(f"No candidates found for single track '{artist} - {title}'")
             return False
 
-        # Try downloading the best candidate
-        attempts = min(len(candidates), config.schedule.max_candidate_attempts)
+        # Try downloading the best candidate, skipping peers that already refused/timed out
+        max_attempts = min(len(candidates), config.schedule.max_candidate_attempts)
         acoustid_retry_count = 0
-        for idx in range(attempts):
-            candidate = candidates[idx]
+        failed_usernames = set()
+        candidate_idx = 0
+        attempt_count = 0
+
+        while attempt_count < max_attempts and candidate_idx < len(candidates):
+            candidate = candidates[candidate_idx]
+            candidate_idx += 1
             username = candidate["username"]
+            if username in failed_usernames:
+                continue
+
             remote_filename = candidate["filename"]
             size = candidate["size"]
+            attempt_count += 1
             
-            logger.info(f"Trying candidate {idx+1}/{attempts} ({username}) for '{artist} - {title}'")
+            logger.info(f"Trying candidate {attempt_count}/{max_attempts} ({username}) for '{artist} - {title}'")
             success = await slskd_client.request_download(username, remote_filename, size)
             if not success:
+                failed_usernames.add(username)
                 continue
 
             # Poll status
@@ -1731,6 +1748,7 @@ async def _download_single_track_internal(
                 await slskd_client.delete_download(username, file_id)
 
             if status != "succeeded":
+                failed_usernames.add(username)
                 continue
 
             # Find downloaded file

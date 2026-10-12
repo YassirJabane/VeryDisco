@@ -1296,8 +1296,8 @@ def wildcard_artist_variants(artist: str) -> list[str]:
                 wildcard_words = words.copy()
                 wildcard_words[index] = "*" + word[1:]
                 variants.append(" ".join(wildcard_words))
-        if all(len(word) >= 3 for word in words):
-            variants.append(" ".join("*" + word[1:] for word in words))
+        if any(len(word) >= 3 for word in words):
+            variants.append(" ".join("*" + word[1:] if len(word) >= 3 else word for word in words))
 
     return list(dict.fromkeys(variants))
 
@@ -1315,8 +1315,8 @@ def wildcard_text_variants(text: str) -> list[str]:
             wildcard_words = words.copy()
             wildcard_words[index] = "*" + word[1:]
             variants.append(" ".join(wildcard_words))
-    if len(words) > 1 and all(len(word) >= 3 for word in words):
-        variants.append(" ".join("*" + word[1:] for word in words))
+    if len(words) > 1 and any(len(word) >= 3 for word in words):
+        variants.append(" ".join("*" + word[1:] if len(word) >= 3 else word for word in words))
     return list(dict.fromkeys(variants))
 
 
@@ -1335,7 +1335,7 @@ def build_album_wildcard_queries(artist: str, album: str) -> list[str]:
 
 
 def build_track_search_queries(artist: str, title: str, album: str = "") -> list[str]:
-    """Build progressive slskd queries without '-' exclusion syntax."""
+    """Build progressive slskd queries without '-' exclusion syntax, starting with full wildcard."""
     def query_part(value: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", value or "")).strip()
 
@@ -1350,24 +1350,7 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     if backing_match:
         lead_artist = backing_match.group(1).strip()
 
-    queries: list[str] = []
-    if clean_album and clean_album.casefold() not in {
-        clean_title.casefold(), clean_artist.casefold(), "unknown album", "single", "ep"
-    }:
-        queries.append(query_part(f"{clean_title} {main_artist} {clean_album}"))
-        if lead_artist and lead_artist != main_artist:
-            queries.append(query_part(f"{clean_title} {lead_artist} {clean_album}"))
-
     title_variants = wildcard_text_variants(clean_title)
-    queries_to_add = [
-        query_part(f"{clean_title} {main_artist}"),
-        query_part(f"{clean_title} {clean_artist}"),
-    ]
-    if lead_artist and lead_artist not in (main_artist, clean_artist):
-        queries_to_add.append(query_part(f"{clean_title} {lead_artist}"))
-    if " and the " in clean_artist.lower():
-        queries_to_add.append(query_part(f"{clean_title} {re.sub(r'(?i)\s+and\s+the\s+', ' ', clean_artist)}"))
-
     artist_variants = wildcard_artist_variants(main_artist)[1:]
     lead_variants = (
         wildcard_artist_variants(lead_artist)[1:]
@@ -1375,15 +1358,48 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
         else []
     )
 
-    queries_to_add.extend(
-        query_part(f"{clean_title} {artist_variant}")
-        for artist_variant in artist_variants
-    )
+    full_wild_title = title_variants[-1] if len(title_variants) > 1 else (title_variants[0] if title_variants else clean_title)
+    full_wild_main = artist_variants[-1] if artist_variants else main_artist
+    full_wild_lead = lead_variants[-1] if lead_variants else lead_artist
+
+    queries: list[str] = []
+    queries_to_add: list[str] = []
+
+    # 1. Start with full wildcard title + full wildcard artist (lead artist first for backing bands, then main artist)
+    if lead_artist and lead_artist != main_artist and full_wild_lead:
+        queries_to_add.append(query_part(f"{full_wild_title} {full_wild_lead}"))
+    if full_wild_main:
+        queries_to_add.append(query_part(f"{full_wild_title} {full_wild_main}"))
+
+    # 2. Clean title + wildcard artist variants
     queries_to_add.extend(
         query_part(f"{clean_title} {artist_variant}")
         for artist_variant in lead_variants
     )
+    queries_to_add.extend(
+        query_part(f"{clean_title} {artist_variant}")
+        for artist_variant in artist_variants
+    )
 
+    # 3. Clean title + clean artist + album (if distinct)
+    if clean_album and clean_album.casefold() not in {
+        clean_title.casefold(), clean_artist.casefold(), "unknown album", "single", "ep"
+    }:
+        if lead_artist and lead_artist != main_artist:
+            queries_to_add.append(query_part(f"{clean_title} {lead_artist} {clean_album}"))
+        queries_to_add.append(query_part(f"{clean_title} {main_artist} {clean_album}"))
+
+    # 4. Clean title + clean artist
+    if lead_artist and lead_artist not in (main_artist, clean_artist):
+        queries_to_add.append(query_part(f"{clean_title} {lead_artist}"))
+    queries_to_add.extend([
+        query_part(f"{clean_title} {main_artist}"),
+        query_part(f"{clean_title} {clean_artist}"),
+    ])
+    if " and the " in clean_artist.lower():
+        queries_to_add.append(query_part(f"{clean_title} {re.sub(r'(?i)\s+and\s+the\s+', ' ', clean_artist)}"))
+
+    # 5. Title wildcard variants + clean artist, followed by title-only fallback
     queries_to_add.extend([
         *(query_part(f"{title_variant} {main_artist}") for title_variant in title_variants[1:]),
         # Search by title alone as a deliberate fallback. slskd may return
