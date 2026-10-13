@@ -1396,16 +1396,44 @@ async def get_acoustid_stats(request: Request = None):
         "failures": failures,
     }
 
+def _itunes_track_matches(result: Dict[str, Any], artist: str, title: str) -> bool:
+    """Accept iTunes metadata only for the requested recording, never a variant.
+
+    iTunes frequently ranks a remix or a similarly titled single first.  Album
+    art enrichment must not turn that ranking accident into a changed Explore
+    album/title.
+    """
+    def key(value: str) -> str:
+        return re.sub(r"[^\w]", "", (value or "").casefold())
+
+    def main_artist(value: str) -> str:
+        return re.split(r"(?i)\s*(?:feat\.?|ft\.?|featuring)\s+", value or "", maxsplit=1)[0].strip()
+
+    candidate_title = result.get("trackName") or result.get("trackCensoredName") or ""
+    candidate_artist = result.get("artistName") or ""
+    return bool(
+        key(title)
+        and key(title) == key(candidate_title)
+        and key(main_artist(artist)) == key(main_artist(candidate_artist))
+    )
+
+
 async def fetch_itunes_metadata(artist: str, title: str) -> dict:
     url = "https://itunes.apple.com/search"
-    params = {"term": f"{artist} {title}", "entity": "song", "limit": 1}
+    params = {"term": f"{artist} {title}", "entity": "song", "limit": 10}
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(url, params=params)
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("resultCount", 0) > 0:
-                    res = data["results"][0]
+                    res = next(
+                        (item for item in data.get("results", []) if _itunes_track_matches(item, artist, title)),
+                        None,
+                    )
+                    if not res:
+                        logger.info("Ignoring non-exact iTunes result for %s - %s", artist, title)
+                        return {"album": "", "artwork": ""}
                     # Get highest res artwork
                     artwork = res.get("artworkUrl100", "").replace("100x100bb", "300x300bb")
                     return {
@@ -1508,7 +1536,9 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
 
     # Use cache if valid (< 12 hours) (include username in cache key to avoid collisions)
     current_time = time.time()
-    cache_key = f"{lb_username}:{source}"
+    # Version the cache when record-identity rules change so an old iTunes
+    # remix association cannot remain visible for its previous 12-hour TTL.
+    cache_key = f"{lb_username}:{source}:exact-recording-v2"
     cached = _cached_playlists.get(cache_key)
     if cached and (current_time - cached["time"]) < 43200:
         tracks_copy = [dict(t) for t in cached["tracks"]]
@@ -1572,7 +1602,10 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
     # Enrich metadata in parallel
     async def enrich_track(t):
         meta = await fetch_itunes_metadata(t['artist'], t['title'])
-        t['album'] = meta['album']
+        # ListenBrainz supplies the release when available.  iTunes only
+        # enriches it after an exact recording+primary-artist match, so a
+        # top-ranked remix cannot replace a valid playlist album.
+        t['album'] = meta['album'] or t.get('album') or ''
         t['artwork'] = meta['artwork']
         key = f"{t['artist'].lower()}-{t['title'].lower()}"
         info = db_tracks_map.get(key, {"status": "pending", "error_reason": ""})
