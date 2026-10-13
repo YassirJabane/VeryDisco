@@ -1768,7 +1768,11 @@ async def _download_single_track_internal(
                 q_status = check_quality_status(ext, bitrate, bit_depth, sample_rate, config)
                 if q_status in ["same", "better"]:
                     if album and not is_explore and not dest_dir_override and not replace_path_override:
-                        from backend.app.sync import resolve_album_dir, get_library_filename, safe_move_file, embed_metadata, update_m3u_references
+                        # ``safe_move_file`` is intentionally resolved through the
+                        # module-level wrapper above.  Importing it here makes it a
+                        # local for this whole function, including the force=True
+                        # download path below, where it was never assigned.
+                        from backend.app.sync import resolve_album_dir, get_library_filename, embed_metadata, update_m3u_references
                         dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, artist, album)
                         if Path(found_path).parent.resolve() != dest_dir.resolve():
                             clean_filename = get_library_filename(artist, safe_album, None, title, Path(found_path).suffix)

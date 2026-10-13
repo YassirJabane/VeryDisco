@@ -9,7 +9,7 @@ from backend.app.sync import (
 def test_track_queries_do_not_turn_artist_into_negative_search_term():
     queries = build_track_search_queries("Kanye West", "Good Morning", "Graduation")
 
-    assert queries[0] == "*ood *orning *anye *est"
+    assert queries[0] == "Graduation *anye *est"
     assert "Good Morning Kanye West Graduation" in queries
     assert all(" - " not in query for query in queries)
 
@@ -201,14 +201,16 @@ def test_acoustid_accepts_secondary_result_matching_expected_artist_and_title(mo
     assert "Sally" in reason
 
 
-def test_track_query_falls_back_to_album_queries():
+def test_track_query_prefers_album_and_wildcard_artist_queries():
     queries = build_track_search_queries("Drake", "Solar Eclipse", "HABIBTI (FOMO)")
 
+    assert queries[0] == "HABIBTI FOMO *rake"
     assert "HABIBTI FOMO Drake" in queries
     assert "HABIBTI FOMO" in queries
     assert "HABIBTI Drake" in queries
     assert "HABIBTI" in queries
-    # Standard track queries must appear before album fallback queries
-    assert queries.index("*olar *clipse *rake") < queries.index("HABIBTI FOMO Drake")
-    assert queries.index("Solar Eclipse") < queries.index("HABIBTI FOMO Drake")
+    # The release + wildcard artist is the preferred search. Track terms remain
+    # available as later fallbacks for peers without a useful folder name.
+    assert queries.index("HABIBTI FOMO Drake") < queries.index("*olar *clipse *rake")
+    assert queries.index("HABIBTI FOMO Drake") < queries.index("Solar Eclipse")
 

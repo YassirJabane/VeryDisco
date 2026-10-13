@@ -2106,7 +2106,7 @@ def build_album_wildcard_queries(artist: str, album: str) -> list[str]:
 
 
 def build_track_search_queries(artist: str, title: str, album: str = "") -> list[str]:
-    """Build concise slskd queries without '-' exclusion syntax, starting with full wildcard."""
+    """Build precise Soulseek queries, preferring release + artist before track fallbacks."""
     def query_part(value: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", value or "")).strip()
 
@@ -2136,7 +2136,36 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     queries: list[str] = []
     queries_to_add: list[str] = []
 
-    # 1. Full wildcard title + full wildcard artist (lead artist first for backing bands, then main artist)
+    # Album folders are substantially more reliable than a track-title search:
+    # peers commonly preserve an album name but abbreviate, add a prefix to, or
+    # otherwise alter individual filenames.  Keep the complete edition marker
+    # (e.g. ``HABIBTI (FOMO)``) and loosen only the artist tokens first.
+    generic_albums = {"unknown album", "single", "singles", "ep", "album", "lp", "greatest hits", "the best of", "best of"}
+    album_with_edition = query_part(re.sub(r"[^\w\s*]", " ", album or ""))
+    album_base = query_part(clean_album)
+
+    def add_album_queries(album_query: str) -> None:
+        if not album_query or album_query.casefold() in generic_albums:
+            return
+        if album_query.casefold() in {clean_title.casefold(), clean_artist.casefold()}:
+            return
+        if lead_artist and lead_artist != main_artist and full_wild_lead:
+            queries_to_add.append(query_part(f"{album_query} {full_wild_lead}"))
+        if full_wild_main:
+            queries_to_add.append(query_part(f"{album_query} {full_wild_main}"))
+        if lead_artist and lead_artist not in (main_artist, clean_artist):
+            queries_to_add.append(query_part(f"{album_query} {lead_artist}"))
+        if main_artist:
+            queries_to_add.append(query_part(f"{album_query} {main_artist}"))
+        queries_to_add.append(album_query)
+
+    # The release name with its edition is the first search strategy.  A base
+    # album is useful next only if it differs (Deluxe/FOMO/etc. stripped).
+    add_album_queries(album_with_edition)
+    if album_base.casefold() != album_with_edition.casefold():
+        add_album_queries(album_base)
+
+    # Full wildcard title + full wildcard artist (lead artist first for backing bands, then main artist)
     if lead_artist and lead_artist != main_artist and full_wild_lead:
         queries_to_add.append(query_part(f"{full_wild_title} {full_wild_lead}"))
     if full_wild_main:
@@ -2163,22 +2192,6 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
 
     # 5. Clean title only fallback
     queries_to_add.append(query_part(clean_title))
-
-    # 6. Fallback to album queries when individual track title searches yield 0 results
-    # (Enables finding single tracks inside shared album folders on Soulseek)
-    generic_albums = {"unknown album", "single", "singles", "ep", "album", "lp", "greatest hits", "the best of", "best of"}
-    album_with_edition = query_part(re.sub(r"[^\w\s*]", " ", album or ""))
-    album_base = query_part(clean_album)
-    if album_with_edition and album_with_edition.casefold() not in generic_albums:
-        if album_with_edition.casefold() not in {clean_title.casefold(), clean_artist.casefold()}:
-            if main_artist:
-                queries_to_add.append(query_part(f"{album_with_edition} {main_artist}"))
-            queries_to_add.append(query_part(album_with_edition))
-    if album_base and album_base.casefold() != album_with_edition.casefold() and album_base.casefold() not in generic_albums:
-        if album_base.casefold() not in {clean_title.casefold(), clean_artist.casefold()}:
-            if main_artist:
-                queries_to_add.append(query_part(f"{album_base} {main_artist}"))
-            queries_to_add.append(query_part(album_base))
 
     for query in queries_to_add:
         if query and query not in queries:
