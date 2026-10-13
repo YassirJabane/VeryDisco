@@ -332,7 +332,7 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
         s = re.sub(r'\bparts?\s+6[-–—]9\b', 'parts 6 9', s)
         return re.sub(r'[^\w]', '', s)
 
-    # Match an explicit disc/track pair before the generic position: track 01
+    # 1. Match an explicit disc/track pair before the generic position: track 01
     # exists on multiple discs and must not silently select disc one.
     m_disc_tr = re.search(r'^(?:cd|disc)?\s*(\d{1,2})[-_\.](\d{1,2})\b', filename_lower)
     if m_disc_tr:
@@ -346,15 +346,8 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
             pass
         return None
 
-    # A bare position is safe only if it is unique across all discs.
-    m_tr_num = re.match(r'^(\d{1,3})\b', filename_lower)
-    if m_tr_num:
-        num = int(m_tr_num.group(1))
-        matches = [track for track in official_tracks if str(track.get("track_position") or track.get("position") or track.get("track_num") or "") == str(num)]
-        if len(matches) == 1:
-            return matches[0]
-
-    # 3. Match by normalized title (stripping leading artist/album self-titled prefixes to prevent false positive collisions)
+    # 2. Match by normalized title (stripping leading artist/album self-titled prefixes to prevent false positive collisions)
+    # Longest title first to avoid substring collisions
     clean_filename = _norm(filename_lower)
     sorted_official = sorted(official_tracks, key=lambda t: len(t.get("title", "")), reverse=True)
     for track in sorted_official:
@@ -377,6 +370,20 @@ def match_file_to_official_track(filename: str, official_tracks: list) -> Option
 
         if clean_t_title in check_target:
             return track
+
+    # 3. Fallback: bare track position (only if safe and not conflicting with an unrelated title)
+    m_tr_num = re.match(r'^(\d{1,3})\b', filename_lower)
+    if m_tr_num:
+        num = int(m_tr_num.group(1))
+        matches = [track for track in official_tracks if str(track.get("track_position") or track.get("position") or track.get("track_num") or "") == str(num)]
+        if len(matches) == 1:
+            target_track = matches[0]
+            clean_target_title = _norm(target_track.get("title", ""))
+            letters_in_name = re.sub(r'[\d_\-\s\.]', '', filename_lower)
+            # Only match if filename doesn't contain a distinct title from another song,
+            # or if the target title is actually present
+            if len(letters_in_name) <= 6 or clean_target_title in clean_filename:
+                return target_track
 
     return None
 
@@ -922,8 +929,26 @@ async def _download_album_task_internal(
             # active_playlists is resolved from outer scope
             from backend.app.sync import find_existing_track_file, get_file_audio_info, check_quality_status
 
-            # Consider official_album_tracks reliable for skipping extra files ONLY if it contains at least 4 tracks AND covers at least 40% of candidate files
-            is_official_reliable = bool(official_album_tracks and len(official_album_tracks) >= 4 and len(official_album_tracks) >= (len(best_files) * 0.4))
+            # Consider official_album_tracks reliable for skipping extra files if:
+            # 1. An explicit release MBID was requested
+            # 2. Or the official tracklist has >= 4 tracks and EITHER covers >= 40% of folder files,
+            #    OR the folder matches a major portion of the official album (handles multi-disc box sets/anniversary editions)
+            # 3. Or requested as a single
+            matched_official_count = count_matching_official_tracks(best_files)
+            is_official_reliable = bool(
+                official_album_tracks
+                and (
+                    bool(release_mbid)
+                    or (
+                        len(official_album_tracks) >= 4
+                        and (
+                            len(official_album_tracks) >= (len(best_files) * 0.4)
+                            or matched_official_count >= max(4, int(len(official_album_tracks) * 0.5))
+                        )
+                    )
+                    or ((record_type or "").lower() == "single" and len(official_album_tracks) >= 1)
+                )
+            )
 
             for f in best_files:
                 filename_part = os.path.basename(f["filename"].replace("\\", "/"))

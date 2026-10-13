@@ -376,3 +376,23 @@ async def test_explore_promotion_uses_metadata_fetched_on_app_event_loop(monkeyp
     assert destination == destination_dir / "01 - Song.mp3"
     assert destination.read_bytes() == b"audio"
     assert tagged[0]["artist"] == "Drake"
+
+
+def test_multidisc_box_set_skips_extra_discs():
+    """Verify that a single-disc album (e.g. ABBA Gold with 19 tracks) only matches its tracks
+    and does not match or queue bonus disc files (e.g. from a 59-track 3-CD box set)."""
+    official_19 = [
+        {"title": f"Song {i}", "disk_number": 1, "track_position": i}
+        for i in range(1, 20)
+    ]
+    # Disc 1: 01 - Song 1.mp3 ... 19 - Song 19.mp3
+    disc1_files = [f"{i:02d} - Song {i}.mp3" for i in range(1, 20)]
+    for f in disc1_files:
+        assert match_file_to_official_track(f, official_19) is not None
+
+    # Disc 2 & 3: extra tracks with unrelated titles should NOT match official_19
+    disc2_files = [f"CD2 - {i:02d} - Bonus Track {i}.mp3" for i in range(1, 21)]
+    disc3_files = [f"{i:02d} - Live Track {i}.mp3" for i in range(1, 21)]
+    for f in disc2_files + disc3_files:
+        assert match_file_to_official_track(f, official_19) is None
+
