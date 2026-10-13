@@ -2443,13 +2443,17 @@ def invalidate_library_index_cache():
     _library_index_cache = {"timestamp": 0.0, "music_dir": "", "data": None}
 
 async def enrich_library_index_mbids(user_id: str, db: "Database") -> None:
-    """Background task: look up MusicBrainz for library_index rows missing track_mbid.
+    """Background task: look up and persist MusicBrainz IDs for untagged tracks.
 
-    Runs entirely in the background after the disk scan completes.
+    The SQLite index is rebuilt from disk on every Library Scan, therefore an
+    index-only enrichment would be lost at the following scan.  IDs are written
+    back into the managed tags first, then mirrored in SQLite for immediate UI
+    updates.
     Respects the MusicBrainz 1-req/sec rate limit via the shared _rate_lock.
     Never raises — errors are logged and skipped.
     """
     from backend.app.clients.musicbrainz import musicbrainz_client
+    from backend.app.metadata_pipeline.tags import read_track, write_track
     try:
         rows = await db.get_library_rows_missing_mbid(user_id)
     except Exception as e:
@@ -2469,6 +2473,15 @@ async def enrich_library_index_mbids(user_id: str, db: "Database") -> None:
                 releases = rec.get("releases") or []
                 album_mbid = releases[0].get("id") if releases else None
                 if track_mbid:
+                    filepath = Path(row["filepath"])
+                    current_tags = await asyncio.to_thread(read_track, filepath)
+                    current_tags["recording_mbid"] = track_mbid
+                    # Never replace a release ID already embedded for this exact
+                    # file with the first (and potentially different) recording
+                    # release returned by MusicBrainz.
+                    if not current_tags.get("release_mbid") and album_mbid:
+                        current_tags["release_mbid"] = album_mbid
+                    await asyncio.to_thread(write_track, filepath, current_tags)
                     await db.mark_track_mbid(row["filepath"], track_mbid, album_mbid)
                     enriched += 1
                     logger.info(f"✨ [MBID Enrichment] ({idx}/{total_to_check}) Matched '{row['artist']} - {row['title']}' -> Track MBID: {track_mbid}")

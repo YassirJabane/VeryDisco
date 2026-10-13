@@ -8,7 +8,10 @@ import pytest
 from backend.app.clients.acoustid import AcoustIDClient
 from backend.app.clients.musicbrainz import _parse_artist_credit, MusicBrainzClient
 import backend.app.clients.musicbrainz as musicbrainz_module
-from backend.app.sync import find_downloaded_file, safe_copy_file, safe_move_file, extract_main_artist, embed_metadata
+from backend.app.sync import (
+    find_downloaded_file, safe_copy_file, safe_move_file, extract_main_artist,
+    embed_metadata, enrich_library_index_mbids,
+)
 from backend.app.clients.deezer import DeezerClient, _result_matches
 from backend.app.album_sync import (
     _is_instrumental_track, match_file_to_official_track, official_position_for_file,
@@ -110,6 +113,38 @@ def test_joint_album_artists_are_separate_clickable_entities(tmp_path):
     assert tags["TXXX:artists"].text == ["Drake", "21 Savage"]
     assert tags["TXXX:albumartists"].text == ["Drake", "21 Savage"]
     assert tags["TXXX:musicbrainz album artist id"].text == ["drake-mbid", "21-mbid"]
+
+
+@pytest.mark.asyncio
+async def test_mbid_enrichment_writes_ids_to_audio_tags(tmp_path, monkeypatch):
+    """A subsequent disk scan must find the enriched IDs without another lookup."""
+    from backend.app.metadata_pipeline.tags import read_track
+    from backend.app.clients.musicbrainz import musicbrainz_client
+
+    track = tmp_path / "song.mp3"
+    track.write_bytes(b"")
+    embed_metadata(str(track), "Artist", "Song", "Album", album_artist="Artist")
+
+    class FakeDatabase:
+        marked = []
+
+        async def get_library_rows_missing_mbid(self, user_id):
+            return [{"filepath": str(track), "artist": "Artist", "title": "Song", "album": "Album"}]
+
+        async def mark_track_mbid(self, filepath, track_mbid, album_mbid):
+            self.marked.append((filepath, track_mbid, album_mbid))
+
+    async def fake_search_recording(artist, title, album):
+        return {"id": "recording-1", "releases": [{"id": "release-1"}]}
+
+    monkeypatch.setattr(musicbrainz_client, "search_recording", fake_search_recording)
+    db = FakeDatabase()
+    await enrich_library_index_mbids("user-1", db)
+
+    persisted = read_track(track)
+    assert persisted["recording_mbid"] == "recording-1"
+    assert persisted["release_mbid"] == "release-1"
+    assert db.marked == [(str(track), "recording-1", "release-1")]
 
 
 def test_explicit_title_feature_is_added_without_splitting_band_name(tmp_path):
