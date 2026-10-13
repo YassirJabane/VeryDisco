@@ -1,4 +1,5 @@
 from backend.app.clients.spotify import _parse_embed_tracks
+import pytest
 
 
 def test_spotify_explicit_badge_is_not_part_of_artist_name():
@@ -50,4 +51,43 @@ def test_spotify_embed_next_data_extracts_playlist_name_and_artwork():
         {"artist": "Vasco Rossi", "title": "Una Canzone D'Amore Buttata Via", "album": "", "duration": 271376},
         {"artist": "Vasco Rossi, Marracash", "title": "La Pioggia Alla Domenica (con Marracash)", "album": "", "duration": 212828},
     ]
+
+
+@pytest.mark.asyncio
+async def test_spotify_oembed_overrides_stale_embed_name_and_artwork(monkeypatch):
+    import json
+    from backend.app.clients.spotify import SpotifyClient
+
+    playlist_id = "1234567890123456789012"
+    next_data = {
+        "props": {"pageProps": {"state": {"data": {"entity": {
+            "name": "Wrong page title",
+            "coverArt": {"sources": [{"url": "https://old/image.jpg"}]},
+            "trackList": [{"title": "Track", "subtitle": "Artist"}],
+        }}}}}
+    }
+
+    class Response:
+        status_code = 200
+        def __init__(self, payload=None, text=""):
+            self._payload = payload
+            self.text = text
+        def json(self):
+            return self._payload
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        async def get(self, url, **kwargs):
+            if "/oembed?" in url:
+                return Response({"title": "Correct &amp; Current", "thumbnail_url": "https://new/image.jpg?a=1&amp;b=2"})
+            return Response(text=f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script>')
+
+    async def get_client():
+        return Client()
+
+    monkeypatch.setattr("backend.app.clients.spotify.get_http_client", get_client)
+    result = await SpotifyClient("", "").get_playlist(playlist_id)
+    assert result["name"] == "Correct & Current"
+    assert result["artwork_url"] == "https://new/image.jpg?a=1&b=2"
 

@@ -832,6 +832,8 @@ class ImportedPlaylistUpdate(BaseModel):
     artwork_url: str = ""
     tracks: List[Dict[str, Any]]
 
+_spotify_playlist_metadata_checked: set[tuple[str, str]] = set()
+
 def _spotify_source_name(name: str, playlist_id: str) -> str:
     clean_name = name.strip()
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", clean_name.lower()).strip("-")[:60]
@@ -893,10 +895,18 @@ async def list_imported_playlists(request: Request):
     playlists = await db.list_imported_playlists(user["id"])
     cfg = config_manager.config
     for item in playlists:
+        provider_key = (user["id"], item.get("provider_id"))
+        provider_managed = (
+            not item.get("name")
+            or item.get("name") == "Spotify playlist"
+            or not item.get("artwork_url")
+            or item.get("source") == _spotify_source_name(item.get("name") or "", item.get("provider_id") or "")
+        )
         if (
             item.get("provider") == "spotify"
             and item.get("provider_id")
-            and (not item.get("name") or item.get("name") == "Spotify playlist" or not item.get("artwork_url"))
+            and provider_managed
+            and provider_key not in _spotify_playlist_metadata_checked
         ):
             try:
                 client = SpotifyClient(
@@ -905,18 +915,22 @@ async def list_imported_playlists(request: Request):
                     cfg.timeouts.http_seconds if cfg else 20,
                 )
                 fresh = await client.get_playlist(item["provider_id"])
-                new_name = (
-                    fresh.get("name")
-                    if (not item.get("name") or item.get("name") == "Spotify playlist") and fresh.get("name")
-                    else item.get("name")
-                )
-                new_art = item.get("artwork_url") or fresh.get("artwork_url") or ""
-                new_desc = item.get("description") or fresh.get("description") or ""
-                if new_name != item.get("name") or new_art != (item.get("artwork_url") or ""):
+                new_name = fresh.get("name") or item.get("name") or "Spotify playlist"
+                new_art = fresh.get("artwork_url") or item.get("artwork_url") or ""
+                new_desc = fresh.get("description") or item.get("description") or ""
+                new_tracks = fresh.get("tracks") or item.get("tracks") or []
+                if (
+                    new_name != item.get("name")
+                    or new_art != (item.get("artwork_url") or "")
+                    or new_desc != (item.get("description") or "")
+                    or new_tracks != (item.get("tracks") or [])
+                ):
                     item["name"] = new_name
                     item["artwork_url"] = new_art
                     item["description"] = new_desc
+                    item["tracks"] = new_tracks
                     await db.update_imported_playlist(item["id"], user["id"], item)
+                _spotify_playlist_metadata_checked.add(provider_key)
             except Exception as exc:
                 logger.debug("Could not backfill metadata for Spotify playlist %s: %s", item.get("provider_id"), exc)
 
@@ -7496,15 +7510,46 @@ async def scan_naming_conventions(request: Request):
     user = await get_current_user(request)
     user_id = user["id"]
 
-    rows = await db.query_library_naming_issues(user_id)
+    user_row = await db.get_user_by_id(user_id)
+    fn_cfg = config_manager.config.filename
+    pattern = user_row.get("renaming_pattern") if user_row else ""
+    if not pattern:
+        pattern = f"{fn_cfg.folder_pattern}/{fn_cfg.file_pattern}"
+    music_dir = Path(config_manager.config.paths.music_dir)
+    if user_row and user_row.get("music_dir"):
+        music_dir = Path(user_row["music_dir"])
+
+    # Re-evaluate every indexed audio file against the current pattern.  The
+    # stored issue flag belongs to the previous library scan and becomes stale
+    # immediately when a user edits their naming template or a path changes.
+    rows = await db.query_library_index_complete(user_id)
+    try:
+        mismatches = _collect_naming_mismatches(rows, music_dir, pattern)
+    except (KeyError, ValueError, TypeError):
+        # A malformed template is a configuration error, not evidence that
+        # every track has a bad path.
+        raise HTTPException(status_code=400, detail="Invalid naming pattern.")
+    return {"mismatches": mismatches, "total_scanned": len(rows)}
+
+
+def _collect_naming_mismatches(rows: list[dict], music_dir: Path, pattern: str) -> list[dict]:
+    """Compare every indexed track with the active complete relative-path template."""
     mismatches = []
     for r in rows:
         f_path = r.get("filepath", "")
-        expected = r.get("issue_naming_expected", "")
+        if not f_path:
+            continue
+        expected = format_rename_pattern(pattern, r, Path(f_path).suffix.lower())
+        try:
+            current = str(Path(f_path).resolve().relative_to(music_dir.resolve()))
+        except ValueError:
+            current = f_path
+        if current.replace("\\", "/") == expected.replace("\\", "/"):
+            continue
         expected_p = Path(expected)
         mismatches.append({
             "current_path": f_path,
-            "current_relative": f_path,
+            "current_relative": current,
             "expected_folder": str(expected_p.parent) if str(expected_p.parent) != "." else "",
             "expected_filename": expected_p.name,
             "expected_relative": expected,
@@ -7513,7 +7558,7 @@ async def scan_naming_conventions(request: Request):
             "title": r.get("title") or "",
             "track_num": r.get("track_num") or 0,
         })
-    return {"mismatches": mismatches, "total_scanned": len(mismatches)}
+    return mismatches
 
 
 

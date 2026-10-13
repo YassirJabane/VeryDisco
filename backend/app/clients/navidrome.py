@@ -108,26 +108,46 @@ class NavidromeClient:
                 if resp.status_code == 200:
                     data = resp.json().get("subsonic-response", {})
                     if data.get("status") == "ok":
-                        for idx in data.get("artists", {}).get("index", []):
-                            artists_count += len(idx.get("artist", []))
+                        indexes = data.get("artists", {}).get("index", [])
+                        if isinstance(indexes, dict):
+                            indexes = [indexes]
+                        for idx in indexes:
+                            artists = idx.get("artist", [])
+                            if isinstance(artists, dict):
+                                artists = [artists]
+                            artists_count += len(artists)
             except Exception as e:
                 logger.debug(f"Failed to count Navidrome artists: {e}")
 
-            # 2. Count albums via getAlbumList2
+            # 2. Count every visible album and sum its real songCount.  The
+            # endpoint is paginated (500 max in Navidrome), so a single page
+            # silently under-counts large libraries.
             try:
                 url_albums = f"{self.url}/rest/getAlbumList2.view"
-                params_albums = {**params, "type": "newest", "size": 500}
-                resp = await client.get(url_albums, params=params_albums)
-                if resp.status_code == 200:
+                offset = 0
+                page_size = 500
+                while True:
+                    params_albums = {
+                        **params, "type": "alphabeticalByName",
+                        "size": page_size, "offset": offset,
+                    }
+                    resp = await client.get(url_albums, params=params_albums)
+                    resp.raise_for_status()
                     data = resp.json().get("subsonic-response", {})
-                    if data.get("status") == "ok":
-                        albums_list = data.get("albumList2", {}).get("album", [])
-                        albums_count = len(albums_list)
+                    if data.get("status") != "ok":
+                        break
+                    albums_list = data.get("albumList2", {}).get("album", [])
+                    if isinstance(albums_list, dict):
+                        albums_list = [albums_list]
+                    if not isinstance(albums_list, list):
+                        albums_list = []
+                    albums_count += len(albums_list)
+                    songs_count += sum(int(album.get("songCount") or 0) for album in albums_list)
+                    if len(albums_list) < page_size:
+                        break
+                    offset += page_size
             except Exception as e:
                 logger.debug(f"Failed to count Navidrome albums: {e}")
-
-            # 3. Fallback songs count estimate
-            songs_count = albums_count * 10
 
             return {
                 "songs": songs_count,

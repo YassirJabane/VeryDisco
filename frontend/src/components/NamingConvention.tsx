@@ -10,10 +10,29 @@ import {
 } from '@mui/icons-material';
 import apiService from '../api';
 
+interface NamingMismatch {
+  current_path: string;
+  current_relative: string;
+  expected_folder: string;
+  expected_filename: string;
+  expected_relative: string;
+  artist: string;
+  album: string;
+  title: string;
+  track_num: number;
+}
+
+const normalizePath = (value: string) => value.replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase();
+const hasFolderMismatch = (item: NamingMismatch) => {
+  const currentFolder = normalizePath(item.current_relative).replace(/\/[^/]+$/, '');
+  const expectedFolder = normalizePath(item.expected_folder);
+  return Boolean(expectedFolder) && currentFolder !== expectedFolder && !currentFolder.endsWith(`/${expectedFolder}`);
+};
+
 const NamingConvention: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
-  const [results, setResults] = useState<any[] | null>(null);
+  const [results, setResults] = useState<NamingMismatch[] | null>(null);
   const [dryRun, setDryRun] = useState(true);
 
   const showToast = (msg: string, type: 'success' | 'error' = 'success') => {
@@ -41,7 +60,14 @@ const NamingConvention: React.FC = () => {
     try {
       const paths = results.map(r => r.current_path);
       const res = await apiService.massRenameFiles(paths, dryRun);
-      showToast(`Applied renames! Successful: ${res.renamed.length}, Failed: ${res.errors.length}`);
+      const successful = res.renamed?.length || 0;
+      const failed = res.errors?.length || 0;
+      showToast(
+        dryRun
+          ? `Preview complete: ${successful} rename${successful === 1 ? '' : 's'} ready${failed ? `, ${failed} failed` : ''}.`
+          : `Rename complete: ${successful} succeeded${failed ? `, ${failed} failed` : ''}.`,
+        failed ? 'error' : 'success',
+      );
       if (!dryRun) {
         setResults(null); // Clear on actual rename
       }
@@ -55,7 +81,7 @@ const NamingConvention: React.FC = () => {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       {/* Header */}
-      <Box display="flex" justifyContent="space-between" alignItems="center" flexWrap="wrap" gap={2}>
+      <Box display="flex" justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }} flexDirection={{ xs: 'column', md: 'row' }} gap={2}>
         <Box display="flex" alignItems="center" gap={1.5}>
           <RuleIcon sx={{ color: 'primary.main', fontSize: 36 }} />
           <Box>
@@ -65,10 +91,11 @@ const NamingConvention: React.FC = () => {
             </Typography>
           </Box>
         </Box>
-        <Stack direction="row" spacing={2} alignItems="center">
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ xs: 'stretch', sm: 'center' }}>
           <FormControlLabel
             control={<Switch checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} color="primary" />}
-            label="Dry Run (Test Only)"
+            label="Preview changes only"
+            sx={{ m: 0 }}
           />
           <Button
             variant="contained"
@@ -83,18 +110,21 @@ const NamingConvention: React.FC = () => {
       </Box>
 
       {toast && (
-        <Alert severity={toast.type} onClose={() => setToast(null)} sx={{ borderRadius: 2 }}>
+        <Alert severity={toast.type} onClose={() => setToast(null)} sx={{ borderRadius: 2 }} role="status">
           {toast.msg}
         </Alert>
       )}
 
       {/* Results Card */}
       {results !== null && (
-        <Paper sx={{ p: 3, borderRadius: 4, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
-          <Stack direction="row" justifyContent="space-between" alignItems="center" mb={2}>
-            <Typography variant="h6" fontWeight={700}>
-              Found {results.length} files to rename
-            </Typography>
+        <Paper sx={{ p: { xs: 2, sm: 3 }, borderRadius: 4, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
+          <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1.5} mb={2}>
+            <Box>
+              <Typography variant="h6" fontWeight={700}>
+                {results.length === 0 ? 'Naming check complete' : `${results.length} file${results.length === 1 ? '' : 's'} need attention`}
+              </Typography>
+              {results.length > 0 && <Typography variant="body2" color="text.secondary">Every mismatched folder and filename is listed below before anything is changed.</Typography>}
+            </Box>
             {results.length > 0 && (
               <Button
                 variant="contained"
@@ -104,7 +134,7 @@ const NamingConvention: React.FC = () => {
                 disabled={loading}
                 sx={{ borderRadius: 2, fontWeight: 700, textTransform: 'none' }}
               >
-                {dryRun ? 'Test Rename' : 'Apply Renames'}
+                {dryRun ? 'Preview renames' : 'Rename files'}
               </Button>
             )}
           </Stack>
@@ -116,24 +146,31 @@ const NamingConvention: React.FC = () => {
               Your library perfectly matches the naming convention!
             </Typography>
           ) : (
-            <List sx={{ maxHeight: 600, overflow: 'auto' }}>
+            <List sx={{ maxHeight: 600, overflow: 'auto' }} aria-label="Files with naming mismatches">
               {results.map((item, idx) => (
-                <ListItem key={idx} divider={idx < results.length - 1} sx={{ px: 0 }}>
+                <ListItem key={item.current_path || `${item.expected_relative}-${idx}`} divider={idx < results.length - 1} sx={{ px: 0, alignItems: 'flex-start' }}>
                   <ListItemText
                     primary={
-                      <Stack direction="row" spacing={1} alignItems="center">
-                        <Chip label="NEW" size="small" color="success" sx={{ height: 20, fontSize: '0.7rem', fontWeight: 700 }} />
-                        <Typography variant="body2" fontWeight={700} sx={{ wordBreak: 'break-all' }}>
-                          {item.expected_relative}
-                        </Typography>
+                      <Stack spacing={0.75}>
+                        <Stack direction="row" spacing={1} alignItems="flex-start">
+                          <Chip label="CURRENT" size="small" color="error" variant="outlined" sx={{ height: 20, fontSize: '0.65rem', fontWeight: 700, mt: 0.1 }} />
+                          <Typography variant="body2" color="text.secondary" sx={{ wordBreak: 'break-all', fontFamily: 'monospace' }}>
+                            {item.current_relative}
+                          </Typography>
+                        </Stack>
+                        <Stack direction="row" spacing={1} alignItems="flex-start">
+                          <Chip label="EXPECTED" size="small" color="success" sx={{ height: 20, fontSize: '0.65rem', fontWeight: 700, mt: 0.1 }} />
+                          <Typography variant="body2" fontWeight={700} sx={{ wordBreak: 'break-all', fontFamily: 'monospace' }}>
+                            {item.expected_relative}
+                          </Typography>
+                        </Stack>
                       </Stack>
                     }
                     secondary={
-                      <Stack direction="row" spacing={1} alignItems="center" mt={0.5}>
-                        <Chip label="OLD" size="small" color="error" variant="outlined" sx={{ height: 20, fontSize: '0.7rem', fontWeight: 700 }} />
-                        <Typography variant="caption" color="text.secondary" sx={{ wordBreak: 'break-all' }}>
-                          {item.current_relative}
-                        </Typography>
+                      <Stack direction="row" spacing={0.75} mt={1} flexWrap="wrap" useFlexGap>
+                        {hasFolderMismatch(item) && <Chip label="Folder path" size="small" variant="outlined" />}
+                        {item.current_relative.split(/[\\/]/).pop() !== item.expected_filename && <Chip label="Filename" size="small" variant="outlined" />}
+                        {(item.artist || item.title) && <Typography variant="caption" color="text.secondary" sx={{ alignSelf: 'center' }}>{item.artist}{item.artist && item.title ? ' — ' : ''}{item.title}</Typography>}
                       </Stack>
                     }
                   />

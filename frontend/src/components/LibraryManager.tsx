@@ -84,6 +84,16 @@ export const AlbumCard: React.FC<{
       {/* Clickable Header Row */}
       <Box
         onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle();
+          }
+        }}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${album.album} by ${album.artist}`}
         sx={{
           px: 2.5,
           py: 2,
@@ -92,6 +102,7 @@ export const AlbumCard: React.FC<{
           gap: 1.5,
           cursor: 'pointer',
           userSelect: 'none',
+          '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: -2 },
         }}
       >
         {/* Top Row: Title/Artist on Left, Cover Art & Actions on Right */}
@@ -130,7 +141,7 @@ export const AlbumCard: React.FC<{
                     onEditAlbum(album);
                   }}
                   sx={{ flexShrink: 0 }}
-                  aria-label="Edit album"
+                  aria-label={`Edit ${album.album}`}
                 >
                   <EditIcon fontSize="small" />
                 </IconButton>
@@ -146,7 +157,7 @@ export const AlbumCard: React.FC<{
                   onDelete(album);
                 }}
                 sx={{ flexShrink: 0 }}
-                aria-label="Delete album"
+                aria-label={`Delete ${album.album}`}
               >
                 <DeleteIcon fontSize="small" />
               </IconButton>
@@ -229,6 +240,9 @@ export const AlbumCard: React.FC<{
                   justifyContent="space-between"
                   sx={{
                     py: 1,
+                    gap: 1,
+                    flexDirection: { xs: 'column', sm: 'row' },
+                    alignItems: { xs: 'stretch', sm: 'center' },
                     borderBottom: '1px solid rgba(255, 255, 255, 0.03)',
                     '&:last-child': { borderBottom: 'none' }
                   }}
@@ -244,7 +258,7 @@ export const AlbumCard: React.FC<{
                   >
                     {t.track_num.toString().padStart(2, '0')}. {t.title}
                   </Typography>
-                  <Box display="flex" alignItems="center" gap={1.5}>
+                  <Box display="flex" alignItems="center" gap={{ xs: 0.5, sm: 1.5 }} justifyContent={{ xs: 'flex-end', sm: 'initial' }}>
                     {!t.exists ? (
                       <Chip
                         label="MISSING"
@@ -731,7 +745,7 @@ const LibraryManager: React.FC = () => {
       )}
 
       {toast && (
-        <Alert severity={toast.type} sx={{ mb: 2, borderRadius: 2 }} onClose={() => setToast(null)}>
+        <Alert severity={toast.type} sx={{ mb: 2, borderRadius: 2 }} onClose={() => setToast(null)} role="status">
           {toast.msg}
         </Alert>
       )}
@@ -740,6 +754,7 @@ const LibraryManager: React.FC = () => {
       <TextField
         fullWidth
         size="small"
+        label="Search library"
         placeholder="Search artist or album…"
         value={query}
         onChange={e => setQuery(e.target.value)}
@@ -757,7 +772,7 @@ const LibraryManager: React.FC = () => {
       {!loading && albums.length === 0 && (
         <Paper
           elevation={0}
-          sx={{ p: 8, textAlign: 'center', border: '1px dashed', borderColor: 'divider', borderRadius: 3 }}
+          sx={{ p: { xs: 4, sm: 8 }, textAlign: 'center', border: '1px dashed', borderColor: 'divider', borderRadius: 3 }}
         >
           <LibraryIcon sx={{ fontSize: 64, color: 'text.disabled', mb: 2 }} />
           <Typography variant="h6" color="text.secondary" fontWeight={600}>Library is empty</Typography>

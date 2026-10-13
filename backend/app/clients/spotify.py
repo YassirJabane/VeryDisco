@@ -1,4 +1,5 @@
 import base64
+import html as html_lib
 import json
 import re
 from html.parser import HTMLParser
@@ -73,7 +74,7 @@ def _parse_embed_playlist(html: str) -> Dict[str, Any]:
                 .get("entity")
                 or {}
             )
-            name = re.sub(r"\s+", " ", (entity.get("name") or entity.get("title") or "")).strip()
+            name = html_lib.unescape(re.sub(r"\s+", " ", (entity.get("name") or entity.get("title") or "")).strip())
             raw_desc = re.sub(r"\s+", " ", (entity.get("description") or "")).strip()
             if raw_desc:
                 description = raw_desc
@@ -126,7 +127,7 @@ def _parse_embed_playlist(html: str) -> Dict[str, Any]:
             re.IGNORECASE,
         )
         if og_title:
-            name = re.sub(r"\s+", " ", og_title.group(1)).strip()
+            name = html_lib.unescape(re.sub(r"\s+", " ", og_title.group(1)).strip())
 
     if not artwork_url:
         image_match = re.search(
@@ -139,7 +140,7 @@ def _parse_embed_playlist(html: str) -> Dict[str, Any]:
             re.IGNORECASE,
         )
         if image_match:
-            artwork_url = image_match.group(1).strip()
+            artwork_url = html_lib.unescape(image_match.group(1).strip())
 
     return {
         "name": name,
@@ -197,20 +198,26 @@ class SpotifyClient:
             artwork_url = parsed_embed["artwork_url"]
             description = parsed_embed["description"]
 
-            if not title or not artwork_url:
-                try:
-                    oembed_resp = await client.get(
-                        f"https://open.spotify.com/oembed?url=https://open.spotify.com/playlist/{playlist_id}",
-                        timeout=self.timeout,
+            # oEmbed is the authoritative public source for the playlist's
+            # display name and current image.  Embed HTML has changed shape a
+            # few times and can expose the owner/page title or a stale image.
+            try:
+                oembed_resp = await client.get(
+                    f"https://open.spotify.com/oembed?url=https://open.spotify.com/playlist/{playlist_id}",
+                    timeout=self.timeout,
+                )
+                if oembed_resp.status_code == 200:
+                    oembed_data = oembed_resp.json()
+                    oembed_title = html_lib.unescape(
+                        re.sub(r"\s+", " ", (oembed_data.get("title") or "")).strip()
                     )
-                    if oembed_resp.status_code == 200:
-                        oembed_data = oembed_resp.json()
-                        if not title:
-                            title = re.sub(r"\s+", " ", (oembed_data.get("title") or "")).strip()
-                        if not artwork_url:
-                            artwork_url = (oembed_data.get("thumbnail_url") or "").strip()
-                except Exception:
-                    pass
+                    oembed_art = html_lib.unescape((oembed_data.get("thumbnail_url") or "").strip())
+                    if oembed_title:
+                        title = oembed_title
+                    if oembed_art:
+                        artwork_url = oembed_art
+            except Exception:
+                pass
 
             return {
                 "id": playlist_id,
