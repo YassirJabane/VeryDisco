@@ -3525,17 +3525,10 @@ def get_primary_artist(artist: str) -> str:
         if primary:
             raw_artist = primary
 
-    # Apply artist alias map from config (e.g. Kanye West -> Ye)
-    try:
-        if config_manager.config and config_manager.config.artist_aliases:
-            aliases = config_manager.config.artist_aliases.aliases
-            # Case-insensitive match
-            raw_lower = raw_artist.lower()
-            for alias, canonical in aliases.items():
-                if alias.lower() == raw_lower:
-                    return canonical
-    except Exception:
-        pass
+    # Do not canonicalize names here.  This function is used while discovering
+    # local credits, so rewriting ``Kanye West`` to ``Ye`` would retroactively
+    # alter historical release credits.  Artist-page grouping uses the stable
+    # MusicBrainz ID stored in pinned_artists instead.
     return raw_artist
 
 class DeleteAlbumRequest(BaseModel):

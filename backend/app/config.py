@@ -128,13 +128,15 @@ class FilenameConfig(BaseModel):
     )
 
 class ArtistAliasesConfig(BaseModel):
-    """Map of artist name aliases for library grouping."""
+    """Legacy explicit aliases kept only for migrations/import compatibility.
+
+    New artist grouping is driven by MusicBrainz artist IDs.  A spelling alias
+    must never be used as a reason to rewrite credits or to merge a separate
+    project such as ¥$ into Ye.
+    """
     aliases: Dict[str, str] = Field(
-        default_factory=lambda: {
-            "Kanye West": "Ye",
-            "Ye (formerly known as Kanye West)": "Ye",
-        },
-        description="Map of alias → canonical name (e.g. 'Kanye West' → 'Ye')"
+        default_factory=dict,
+        description="Legacy alias → display-name overrides; MBID identity takes precedence"
     )
 
 class AppConfig(BaseModel):
