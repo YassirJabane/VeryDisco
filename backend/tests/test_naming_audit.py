@@ -29,9 +29,16 @@ def test_naming_audit_rechecks_filename_folder_and_case():
     mismatches = _collect_naming_mismatches(
         rows, music_dir, "{artist}/{year} - {album}/{track:02d} - {title}"
     )
-    assert [item["current_relative"] for item in mismatches] == [
-        "Wrong Artist\\2024 - Album\\01 - Good.mp3",
-        "Artist\\2024 - Album\\bad.mp3",
-        "artist\\2024 - Album\\01 - Good.mp3",
+    # Paths are represented with the host separator.  Assertions must remain
+    # portable because CI runs on Ubuntu while the application is also used
+    # on Windows.
+    assert [item["current_relative"].replace("\\", "/") for item in mismatches] == [
+        "Wrong Artist/2024 - Album/01 - Good.mp3",
+        "Artist/2024 - Album/bad.mp3",
+        "artist/2024 - Album/01 - Good.mp3",
     ]
-    assert all(item["expected_relative"] == "Artist\\2024 - Album\\01 - Good.mp3" for item in mismatches)
+    assert all(
+        item["expected_relative"].replace("\\", "/")
+        == "Artist/2024 - Album/01 - Good.mp3"
+        for item in mismatches
+    )
