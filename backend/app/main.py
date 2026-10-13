@@ -833,8 +833,11 @@ class ImportedPlaylistUpdate(BaseModel):
     tracks: List[Dict[str, Any]]
 
 def _spotify_source_name(name: str, playlist_id: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip().lower()).strip("-")[:60]
-    return f"spotify-{slug or playlist_id}"
+    clean_name = name.strip()
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", clean_name.lower()).strip("-")[:60]
+    if not slug or slug in ["spotify-playlist", "spotify"]:
+        return f"spotify-{playlist_id}"
+    return f"spotify-{slug}"
 
 async def _spotify_playlist(request: Request, body: SpotifyPlaylistRequest) -> tuple[dict, dict]:
     if not config_manager.is_configured or not config_manager.config:
@@ -877,7 +880,8 @@ async def import_spotify_playlist(body: SpotifyPlaylistRequest, request: Request
     playlist_id = await db.save_imported_playlist(user["id"], playlist)
     _create_tracked_task(
         run_sync(db, config_manager.config, source, user_id=user["id"],
-                 tracks_override=playlist["tracks"], album_override="Playlist Tracks"),
+                 tracks_override=playlist["tracks"], album_override="Playlist Tracks",
+                 playlist_name=playlist["name"], artwork_url=playlist.get("artwork_url")),
         task_id=f"sync:{source}", task_type="spotify-import",
         metadata={"source": source, "playlist_name": playlist["name"], "user_id": user["id"]})
     return {"status": "success", "id": playlist_id, "source": source, "name": playlist["name"], "artwork_url": playlist["artwork_url"], "track_count": len(playlist["tracks"])}
@@ -915,16 +919,108 @@ async def list_imported_playlists(request: Request):
                     await db.update_imported_playlist(item["id"], user["id"], item)
             except Exception as exc:
                 logger.debug("Could not backfill metadata for Spotify playlist %s: %s", item.get("provider_id"), exc)
+
+        # Auto-heal on disk: ensure M3U has #PLAYLIST: directive and sidecar artwork
+        if item.get("source") and item.get("name") and item.get("name") != "Spotify playlist":
+            try:
+                p_dir = cfg.paths.navidrome_playlists_dir if cfg else "/playlists"
+                m_dir = cfg.paths.music_dir if cfg else "/music"
+                user_row = await db.get_user_by_id(user["id"])
+                if user_row and user_row.get("playlist_dir"):
+                    p_dir = user_row["playlist_dir"]
+                if user_row and user_row.get("music_dir"):
+                    m_dir = user_row["music_dir"]
+                m3u_file = Path(p_dir) / item["source"] / f"{item['source']}.m3u"
+                sidecar_img = Path(p_dir) / item["source"] / f"{item['source']}.jpg"
+                needs_heal = False
+                if not m3u_file.exists() or (item.get("artwork_url") and not sidecar_img.exists()):
+                    needs_heal = True
+                elif m3u_file.exists():
+                    content = m3u_file.read_text(encoding="utf-8", errors="ignore")
+                    if f"#PLAYLIST:{item['name']}" not in content:
+                        needs_heal = True
+                if needs_heal:
+                    from backend.app.sync import save_playlist_artwork_and_m3u
+                    await save_playlist_artwork_and_m3u(
+                        playlists_dir=p_dir,
+                        music_dir=m_dir,
+                        playlist_source=item["source"],
+                        playlist_name=item["name"],
+                        artwork_url=item.get("artwork_url"),
+                        tracks=item.get("tracks", []),
+                    )
+                    await trigger_navidrome_scan_debounced()
+            except Exception as heal_err:
+                logger.debug("Could not auto-heal M3U for playlist %s: %s", item.get("source"), heal_err)
+
     return playlists
 
 @app.put("/api/playlists/imported/{playlist_id}")
 async def update_imported_playlist(playlist_id: int, body: ImportedPlaylistUpdate, request: Request):
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
+    playlists = await db.list_imported_playlists(user["id"])
+    target = next((item for item in playlists if item["id"] == playlist_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Imported playlist not found.")
     updated = await db.update_imported_playlist(playlist_id, user["id"], body.model_dump())
     if not updated:
         raise HTTPException(status_code=404, detail="Imported playlist not found.")
-    return {"status": "success", "message": "Playlist saved. Use Sync to fetch newly added tracks."}
+
+    # Update M3U and sidecar artwork immediately on disk and scan Navidrome
+    if target.get("source"):
+        try:
+            cfg = config_manager.config
+            p_dir = cfg.paths.navidrome_playlists_dir if cfg else "/playlists"
+            m_dir = cfg.paths.music_dir if cfg else "/music"
+            user_row = await db.get_user_by_id(user["id"])
+            if user_row and user_row.get("playlist_dir"):
+                p_dir = user_row["playlist_dir"]
+            if user_row and user_row.get("music_dir"):
+                m_dir = user_row["music_dir"]
+            from backend.app.sync import save_playlist_artwork_and_m3u
+            await save_playlist_artwork_and_m3u(
+                playlists_dir=p_dir,
+                music_dir=m_dir,
+                playlist_source=target["source"],
+                playlist_name=body.name,
+                artwork_url=body.artwork_url,
+                tracks=body.tracks,
+            )
+            await trigger_navidrome_scan_debounced()
+        except Exception as write_err:
+            logger.warning("Failed to update playlist files on disk: %s", write_err)
+
+    return {"status": "success", "message": "Playlist salvata. Use Sync to fetch newly added tracks."}
+
+@app.delete("/api/playlists/imported/{playlist_id}")
+async def delete_imported_playlist(playlist_id: int, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    playlists = await db.list_imported_playlists(user["id"])
+    target = next((item for item in playlists if item["id"] == playlist_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="Playlist non trovata.")
+    deleted = await db.delete_imported_playlist(playlist_id, user["id"])
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Playlist non trovata.")
+
+    if target.get("source"):
+        try:
+            cfg = config_manager.config
+            p_dir = cfg.paths.navidrome_playlists_dir if cfg else "/playlists"
+            user_row = await db.get_user_by_id(user["id"])
+            if user_row and user_row.get("playlist_dir"):
+                p_dir = user_row["playlist_dir"]
+            out_path = Path(p_dir) / target["source"]
+            if out_path.exists():
+                await asyncio.to_thread(shutil.rmtree, out_path)
+                logger.info("Removed playlist directory %s", out_path)
+            await trigger_navidrome_scan_debounced()
+        except Exception as rm_err:
+            logger.warning("Error removing playlist directory for %s: %s", target.get("source"), rm_err)
+
+    return {"status": "success", "message": f"Playlist '{target.get('name')}' eliminata."}
 
 @app.post("/api/playlists/imported/{playlist_id}/sync")
 async def sync_imported_playlist(playlist_id: int, request: Request):
@@ -938,7 +1034,8 @@ async def sync_imported_playlist(playlist_id: int, request: Request):
         raise HTTPException(status_code=409, detail="A sync is already in progress.")
     _create_tracked_task(
         run_sync(db, config_manager.config, playlist["source"], user_id=user["id"],
-                 tracks_override=playlist["tracks"], album_override="Playlist Tracks"),
+                 tracks_override=playlist["tracks"], album_override="Playlist Tracks",
+                 playlist_name=playlist["name"], artwork_url=playlist.get("artwork_url")),
         task_id=f"sync:{playlist['source']}", task_type="playlist-import",
         metadata={"source": playlist["source"], "playlist_name": playlist["name"], "user_id": user["id"]},
     )
@@ -1603,12 +1700,27 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
         clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', clean).strip()
         return _norm(clean) or _norm(s)
 
-    first_artist = items[0].artist if items else None
-    main_art = extract_main_artist(first_artist) if first_artist else None
-    clean_art = _norm(main_art or first_artist or '')
+    artists_in_items = {_norm(extract_main_artist(it.artist) or it.artist) for it in items if it.artist}
+    clean_art = artists_in_items.pop() if len(artists_in_items) == 1 else None
     
     # 1. Fetch library_index rows in a single DB query
-    db_rows = await db.query_library_index_for_user(user_id, artist_norm=clean_art if clean_art else None)
+    db_rows = await db.query_library_index_for_user(user_id, artist_norm=clean_art)
+
+    # Explore files cache for single track lookups
+    playlists_dir = cfg.paths.navidrome_playlists_dir
+    user_row = await db.get_user_by_id(user_id)
+    if user_row and user_row.get("playlist_dir"):
+        playlists_dir = user_row["playlist_dir"]
+    explore_dir = Path(playlists_dir) / "explore"
+    explore_files = []
+    if explore_dir.exists():
+        try:
+            explore_files = [
+                f for f in explore_dir.iterdir()
+                if f.is_file() and f.suffix.lower() in [".mp3", ".flac", ".m4a"]
+            ]
+        except Exception:
+            pass
     
     # 2. Build O(1) hash maps for lightning fast matching
     album_mbid_map: Dict[str, List[Dict[str, Any]]] = {}
@@ -1656,6 +1768,8 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                     (int(row.get("total_tracks") or 0) for row in matched_tracks), default=0
                 )
                 results.append({
+                    "artist": item.artist,
+                    "title": item.title,
                     "exists": True,
                     "status": _album_completion_status(cnt, expected),
                     "upgrade_available": False,
@@ -1683,6 +1797,8 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                     (int(row.get("total_tracks") or 0) for row in matched_tracks), default=0
                 )
                 results.append({
+                    "artist": item.artist,
+                    "title": item.title,
                     "exists": True,
                     "status": _album_completion_status(cnt, expected),
                     "upgrade_available": False,
@@ -1691,6 +1807,8 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 continue
                 
             results.append({
+                "artist": item.artist,
+                "title": item.title,
                 "exists": False,
                 "status": "missing",
                 "upgrade_available": False,
@@ -1709,12 +1827,43 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 bit_depth = matched_track.get("bit_depth", 16)
                 status = check_quality_status(ext, bitrate, bit_depth, None, cfg)
                 results.append({
+                    "artist": item.artist,
+                    "title": item.title,
                     "exists": True,
                     "quality_status": status,
-                    "existing_quality": ext.upper() if ext else None
+                    "existing_quality": ext.upper() if ext else None,
+                    "path": matched_track.get("filepath", "")
                 })
             else:
-                results.append({"exists": False, "quality_status": "worse", "existing_quality": None})
+                # Fallback: check explore tracks folder
+                matched_explore = None
+                if explore_files:
+                    c_title = _norm(item.title)
+                    c_art = _norm(item.artist)
+                    for ef in explore_files:
+                        c_ef = _norm(ef.name)
+                        if c_title in c_ef and (c_art in c_ef or not c_art):
+                            matched_explore = ef
+                            break
+                if matched_explore:
+                    ext = matched_explore.suffix.lower().lstrip(".")
+                    results.append({
+                        "artist": item.artist,
+                        "title": item.title,
+                        "exists": True,
+                        "quality_status": "same",
+                        "existing_quality": ext.upper() if ext else None,
+                        "path": str(matched_explore)
+                    })
+                else:
+                    results.append({
+                        "artist": item.artist,
+                        "title": item.title,
+                        "exists": False,
+                        "quality_status": "worse",
+                        "existing_quality": None,
+                        "path": ""
+                    })
                 
     return results
 

@@ -1316,6 +1316,15 @@ class Database:
             await conn.commit()
             return cursor.rowcount == 1
 
+    async def delete_imported_playlist(self, playlist_id: int, user_id: str) -> bool:
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM imported_playlists WHERE id = ? AND user_id = ?",
+                (playlist_id, user_id),
+            )
+            await conn.commit()
+            return cursor.rowcount > 0
+
     # ── Library Index ─────────────────────────────────────────────────────────
 
     async def clear_library_index(self, user_id: str) -> None:

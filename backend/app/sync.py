@@ -1934,9 +1934,124 @@ def promote_playlist_staging(staging_path: Path, output_path: Path) -> Optional[
     return backup if backup.exists() else None
 
 
+async def save_playlist_artwork_and_m3u(
+    playlists_dir: str,
+    music_dir: str,
+    playlist_source: str,
+    playlist_name: Optional[str] = None,
+    artwork_url: Optional[str] = None,
+    tracks: Optional[List[Dict[str, Any]]] = None,
+    library_index: Optional[Dict[str, Any]] = None,
+    staging_dir: Optional[str] = None,
+) -> Path:
+    """Save playlist M3U with #PLAYLIST: and #EXTALBUMARTURL: headers, plus sidecar cover art."""
+    playlist_output_dir = os.path.join(playlists_dir, playlist_source)
+    output_path = Path(playlist_output_dir)
+    await asyncio.to_thread(output_path.mkdir, parents=True, exist_ok=True)
+
+    # 1. Download and save sidecar artwork if artwork_url provided
+    if artwork_url and str(artwork_url).startswith("http"):
+        try:
+            from backend.app.clients.http_client import get_http_client
+            client = get_http_client()
+            resp = await client.get(str(artwork_url), timeout=15)
+            if resp.status_code == 200 and resp.content:
+                sidecar_path = output_path / f"{playlist_source}.jpg"
+                cover_path = output_path / "cover.jpg"
+                folder_path = output_path / "folder.jpg"
+                await asyncio.to_thread(sidecar_path.write_bytes, resp.content)
+                await asyncio.to_thread(cover_path.write_bytes, resp.content)
+                await asyncio.to_thread(folder_path.write_bytes, resp.content)
+                logger.info(f"Saved playlist artwork sidecars to {sidecar_path}")
+        except Exception as art_err:
+            logger.warning(f"Failed to fetch/save playlist artwork for {playlist_source}: {art_err}")
+
+    # 2. Build M3U lines with display title
+    display_title = (
+        playlist_name.strip()
+        if playlist_name and playlist_name.strip()
+        else playlist_source.replace("-", " ").title()
+    )
+    lines = ["#EXTM3U\n", f"#PLAYLIST:{display_title}\n"]
+    if artwork_url:
+        lines.append(f"#EXTALBUMARTURL:{artwork_url}\n")
+
+    if tracks:
+        if library_index is None:
+            library_index = await asyncio.to_thread(_build_library_index, music_dir)
+
+        explore_dir = Path(playlists_dir) / "explore"
+        explore_files = []
+        if explore_dir.exists():
+            try:
+                explore_files = [
+                    f for f in explore_dir.iterdir()
+                    if f.is_file() and f.suffix.lower() in [".mp3", ".flac", ".m4a"]
+                ]
+            except Exception:
+                pass
+
+        for tr in tracks:
+            artist = tr.get("artist", "")
+            title = tr.get("title", "")
+            if not artist or not title:
+                continue
+
+            audio_path, _ = find_existing_track_file(
+                music_dir=music_dir,
+                playlist_dir=str(output_path),
+                staging_dir=str(staging_dir) if staging_dir else "",
+                artist=artist,
+                title=title,
+                library_index=library_index,
+            )
+
+            if audio_path:
+                rel_track = os.path.relpath(str(audio_path), str(output_path)).replace("\\", "/")
+                lines.append(f"#EXTINF:-1,{artist} - {title}\n")
+                lines.append(f"{rel_track}\n")
+            elif tr.get("filename"):
+                exp_path = explore_dir / tr["filename"]
+                if exp_path.exists():
+                    rel_track = os.path.relpath(str(exp_path), str(output_path)).replace("\\", "/")
+                    lines.append(f"#EXTINF:-1,{artist} - {title}\n")
+                    lines.append(f"{rel_track}\n")
+            elif explore_files:
+                clean_art = re.sub(r'[^\w]', '', artist).lower()
+                clean_t = re.sub(r'[^\w]', '', title).lower()
+                matched_exp = None
+                for ef in explore_files:
+                    c_ef = re.sub(r'[^\w]', '', ef.name).lower()
+                    if clean_t in c_ef and (clean_art in c_ef or not clean_art):
+                        matched_exp = ef
+                        break
+                if matched_exp:
+                    rel_track = os.path.relpath(str(matched_exp), str(output_path)).replace("\\", "/")
+                    lines.append(f"#EXTINF:-1,{artist} - {title}\n")
+                    lines.append(f"{rel_track}\n")
+
+    m3u_path = output_path / f"{playlist_source}.m3u"
+    tmp_m3u = output_path / f".{playlist_source}.m3u.tmp"
+    try:
+        with open(tmp_m3u, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        os.replace(tmp_m3u, m3u_path)
+        try:
+            os.chmod(str(m3u_path), 0o666)
+        except Exception:
+            pass
+        logger.info(f"Generated playlist M3U at {m3u_path} with title '{display_title}'")
+    except Exception as e:
+        logger.warning(f"Could not write playlist M3U {m3u_path}: {e}")
+
+    return m3u_path
+
+
 async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[str] = None, user_id: Optional[str] = None,
                    tracks_override: Optional[List[Dict[str, Any]]] = None,
-                   album_override: Optional[str] = None):
+                   album_override: Optional[str] = None,
+                   playlist_name: Optional[str] = None,
+                   artwork_url: Optional[str] = None):
     """Executes the complete synchronization run."""
     global is_syncing, current_run_id, sync_progress, current_sync_task
     if _sync_lock.locked():
@@ -2077,6 +2192,30 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           library_index = await asyncio.to_thread(_build_library_index, music_dir)
           indexed_count = len(library_index.get("filename_index", library_index)) if isinstance(library_index, dict) else len(library_index)
           logger.info(f"Library index built: {indexed_count} tracks indexed.")
+
+          # Early playlist registration: create initial M3U + sidecar artwork and trigger early Navidrome scan
+          try:
+              await save_playlist_artwork_and_m3u(
+                  playlists_dir=playlists_dir,
+                  music_dir=music_dir,
+                  playlist_source=playlist_source,
+                  playlist_name=playlist_name,
+                  artwork_url=artwork_url,
+                  tracks=tracks,
+                  library_index=library_index,
+                  staging_dir=staging_dir,
+              )
+              if config.navidrome.url and config.navidrome.username and config.navidrome.password:
+                  from backend.app.clients.navidrome import NavidromeClient
+                  nd_client = NavidromeClient(
+                      url=config.navidrome.url,
+                      username=config.navidrome.username,
+                      password=config.navidrome.password,
+                  )
+                  logger.info("Triggering early Navidrome scan so playlist appears immediately...")
+                  await nd_client.trigger_scan()
+          except Exception as early_err:
+              logger.warning(f"Early playlist registration notice: {early_err}")
 
           # --- Sequential Download Loop ---
           results = []
@@ -2423,49 +2562,30 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           backup_path = await asyncio.to_thread(promote_playlist_staging, staging_path, output_path)
           logger.info(f"Staging directory promoted to: {output_path}")
 
-          # 6. Generate M3U playlist
-          m3u_path = output_path / f"{playlist_source}.m3u"
+          # 6. Generate final M3U playlist with all downloaded tracks
           try:
-              library_index = await asyncio.to_thread(_build_library_index, music_dir)
+              run_tracks = await db.get_tracks_for_run(run_id)
+              m3u_tracks = []
+              for db_track in sorted(run_tracks, key=lambda x: x["id"]):
+                  if db_track["status"] in ["downloaded", "skipped"]:
+                      m3u_tracks.append({
+                          "artist": db_track["artist"],
+                          "title": db_track["title"],
+                          "filename": db_track.get("filename"),
+                      })
+              if not m3u_tracks and tracks:
+                  m3u_tracks = tracks
 
-              if m3u_path.exists():
-                  try:
-                      m3u_path.unlink()
-                  except Exception as e:
-                      logger.warning(f"Could not unlink existing M3U file {m3u_path} before writing: {e}")
-
-              with open(m3u_path, 'w', encoding='utf-8') as f:
-                  f.write("#EXTM3U\n")
-                  run_tracks = await db.get_tracks_for_run(run_id)
-                  for db_track in sorted(run_tracks, key=lambda x: x["id"]):
-                      if db_track["status"] in ["downloaded", "skipped"]:
-                          audio_path, _ = find_existing_track_file(
-                              music_dir=music_dir,
-                              playlist_dir=str(output_path),
-                              staging_dir=str(staging_dir),
-                              artist=db_track["artist"],
-                              title=db_track["title"],
-                              library_index=library_index
-                          )
-
-                          if audio_path:
-                              # Use relative path from the playlist directory to the library audio file
-                              # to ensure Navidrome can resolve it correctly.
-                              track_path = os.path.relpath(str(audio_path), str(output_path)).replace("\\", "/")
-                          else:
-                              # Explore tracks: relative path within the same playlists volume.
-                              explore_file = Path(playlists_dir) / "explore" / db_track["filename"]
-                              track_path = os.path.relpath(str(explore_file), str(output_path)).replace("\\", "/")
-
-                          f.write(f"#EXTINF:-1,{db_track['artist']} - {db_track['title']}\n")
-                          f.write(f"{track_path}\n")
-
-              try:
-                  os.chmod(str(m3u_path), 0o666)
-              except Exception as e:
-                  logger.debug(f"Could not set permissions on {m3u_path}: {e}")
-
-              logger.info(f"Generated playlist file at {m3u_path}")
+              await save_playlist_artwork_and_m3u(
+                  playlists_dir=playlists_dir,
+                  music_dir=music_dir,
+                  playlist_source=playlist_source,
+                  playlist_name=playlist_name,
+                  artwork_url=artwork_url,
+                  tracks=m3u_tracks,
+                  library_index=library_index,
+                  staging_dir=staging_dir,
+              )
           except Exception as e:
               logger.error(f"Failed to generate playlist: {e}")
               raise

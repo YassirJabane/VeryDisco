@@ -141,3 +141,45 @@ async def test_provider_cache_and_incremental_acoustid_candidates(test_db: Datab
     row["mtime_ns"] = 11
     await test_db.upsert_library_index_batch([row])
     assert len(await test_db.get_acoustid_candidates("user")) == 1
+
+
+@pytest.mark.asyncio
+async def test_imported_playlists_lifecycle(test_db: Database):
+    playlist = {
+        "id": "spotify-test-id",
+        "name": "This Is Vasco Rossi",
+        "description": "I grandi successi",
+        "artwork_url": "https://example.com/cover.jpg",
+        "source": "spotify-this-is-vasco-rossi",
+        "provider": "spotify",
+        "tracks": [{"artist": "Vasco Rossi", "title": "Sally"}],
+    }
+    p_id = await test_db.save_imported_playlist("user1", playlist)
+    assert p_id > 0
+
+    listed = await test_db.list_imported_playlists("user1")
+    assert len(listed) == 1
+    assert listed[0]["name"] == "This Is Vasco Rossi"
+    assert listed[0]["tracks"] == [{"artist": "Vasco Rossi", "title": "Sally"}]
+
+    # Update
+    updated = await test_db.update_imported_playlist(
+        p_id, "user1",
+        {
+            "name": "Vasco Rossi Best Of",
+            "description": "Nuova descrizione",
+            "artwork_url": "https://example.com/cover2.jpg",
+            "tracks": [{"artist": "Vasco Rossi", "title": "Albachiara"}],
+        }
+    )
+    assert updated is True
+
+    listed_after = await test_db.list_imported_playlists("user1")
+    assert listed_after[0]["name"] == "Vasco Rossi Best Of"
+    assert listed_after[0]["tracks"][0]["title"] == "Albachiara"
+
+    # Delete
+    deleted = await test_db.delete_imported_playlist(p_id, "user1")
+    assert deleted is True
+    assert await test_db.list_imported_playlists("user1") == []
+

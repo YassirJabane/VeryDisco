@@ -297,6 +297,10 @@ export const apiService = {
     const resp = await api.post(`/api/playlists/imported/${id}/sync`);
     return resp.data;
   },
+  async deleteImportedPlaylist(id: number): Promise<any> {
+    const resp = await api.delete(`/api/playlists/imported/${id}`);
+    return resp.data;
+  },
   async getConfig(): Promise<GetConfigResponse> {
     const resp = await api.get<GetConfigResponse>('/api/config');
     return resp.data;
