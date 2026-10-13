@@ -1245,6 +1245,27 @@ class Database:
             )
             return [dict(row) for row in await cursor.fetchall()]
 
+    async def mark_interrupted_download_jobs(self) -> int:
+        """Close stale in-flight work after a process restart.
+
+        We deliberately do not resume a peer transfer blindly: slskd may have
+        already removed it and the original request can have a special target
+        folder.  The retained record is retryable through a fresh, safe job.
+        """
+        active = ("queued", "running", "searching", "downloading", "committing")
+        placeholders = ", ".join("?" for _ in active)
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                f"""UPDATE download_jobs
+                    SET status = 'interrupted',
+                        error_reason = CASE WHEN error_reason = '' THEN 'Interrupted by server restart; retry creates a new transfer' ELSE error_reason END,
+                        updated_at = datetime('now'), completed_at = datetime('now')
+                    WHERE status IN ({placeholders})""",
+                active,
+            )
+            await conn.commit()
+            return cursor.rowcount
+
     async def add_music_request(self, user_id: str, kind: str, artist: str, title: str = "", album: str = "") -> int:
         async with self.get_db() as conn:
             cursor = await conn.execute(

@@ -167,6 +167,31 @@ export interface AlbumDownloadQueueItem {
   user_id?: string | null;
 }
 
+export interface TrackDownloadJobItem {
+  id: number;
+  artist: string;
+  title: string;
+  album: string;
+  status: string;
+  query_text: string;
+  query_strategy: number;
+  destination_path: string;
+  error_reason: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+}
+
+export interface TrackDownloadAttempt {
+  id: number;
+  attempt_number: number;
+  query_text: string;
+  username: string;
+  remote_filename: string;
+  status: string;
+  reason: string;
+}
+
 export interface AcoustidStats {
   total: number;
   scanned: number;
@@ -692,6 +717,21 @@ export const apiService = {
 
   async deleteAlbumDownload(downloadId: number): Promise<{ status: string; message: string }> {
     const resp = await api.delete<{ status: string; message: string }>(`/api/downloads/albums/${downloadId}`);
+    return resp.data;
+  },
+
+  async getTrackDownloads(): Promise<{ downloads: TrackDownloadJobItem[] }> {
+    const resp = await api.get<{ downloads: TrackDownloadJobItem[] }>('/api/downloads/tracks');
+    return resp.data;
+  },
+
+  async getTrackDownloadAttempts(jobId: number): Promise<{ attempts: TrackDownloadAttempt[] }> {
+    const resp = await api.get<{ attempts: TrackDownloadAttempt[] }>(`/api/downloads/tracks/${jobId}/attempts`);
+    return resp.data;
+  },
+
+  async retryTrackDownload(jobId: number): Promise<{ status: string; message: string }> {
+    const resp = await api.post<{ status: string; message: string }>(`/api/downloads/tracks/${jobId}/retry`);
     return resp.data;
   },
 

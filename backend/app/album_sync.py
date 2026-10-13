@@ -1737,7 +1737,10 @@ async def download_single_track_task(
     if job_id is not None:
         await db.update_download_job(
             job_id, "completed" if success else "failed",
-            error_reason="" if success else "No acceptable candidate completed",
+            # The inner pipeline records a precise reason (for example the
+            # search strategy produced no candidates).  Do not overwrite it
+            # with a generic wrapper outcome.
+            error_reason="" if success else None,
         )
     return success
 

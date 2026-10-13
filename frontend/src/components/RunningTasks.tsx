@@ -13,9 +13,10 @@ import {
   MusicNote as TrackIcon,
   HourglassEmpty as PendingIcon,
   CheckCircle as SuccessIcon,
-  Error as ErrorIcon
+  Error as ErrorIcon,
+  Replay as RetryIcon
 } from '@mui/icons-material';
-import { apiService, ActiveTask, AlbumDownloadQueueItem } from '../api';
+import { apiService, ActiveTask, AlbumDownloadQueueItem, TrackDownloadJobItem } from '../api';
 import { useNotification } from '../context/NotificationContext';
 
 const RunningTasks: React.FC = () => {
@@ -23,6 +24,7 @@ const RunningTasks: React.FC = () => {
   const theme = useTheme();
   const [tasks, setTasks] = useState<ActiveTask[]>([]);
   const [downloads, setDownloads] = useState<AlbumDownloadQueueItem[]>([]);
+  const [trackDownloads, setTrackDownloads] = useState<TrackDownloadJobItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -31,17 +33,32 @@ const RunningTasks: React.FC = () => {
   const fetchData = async (showLoading = false) => {
     if (showLoading) setLoading(true);
     try {
-      const [tasksData, downloadsData] = await Promise.all([
+      const [tasksData, downloadsData, trackDownloadsData] = await Promise.all([
         apiService.getActiveTasks(),
-        apiService.getAlbumDownloads()
+        apiService.getAlbumDownloads(),
+        apiService.getTrackDownloads(),
       ]);
       setTasks(tasksData.tasks);
       setDownloads(downloadsData.downloads);
+      setTrackDownloads(trackDownloadsData.downloads);
       setError(null);
     } catch (e) {
       setError("Failed to fetch running processes and downloads queue.");
     } finally {
       if (showLoading) setLoading(false);
+    }
+  };
+
+  const handleRetryTrackDownload = async (jobId: number) => {
+    setActionLoading(`track-${jobId}`);
+    try {
+      await apiService.retryTrackDownload(jobId);
+      notify('Track download queued for a clean retry.', 'info');
+      await fetchData(false);
+    } catch (e: any) {
+      notify(e.response?.data?.detail || 'Failed to retry track download.', 'error');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -419,6 +436,66 @@ const RunningTasks: React.FC = () => {
                       </List>
                     </Box>
                   </>
+                )}
+              </CardContent>
+            </Card>
+          </Grid>
+
+          <Grid item xs={12}>
+            <Card sx={{ borderRadius: 4, boxShadow: theme.shadows[2] }}>
+              <CardContent sx={{ p: 3 }}>
+                <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.5 }}>
+                  Track Download Decisions ({trackDownloads.length})
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+                  Persistent search history: selected query, final outcome, and a safe retry for failures.
+                </Typography>
+                <Divider sx={{ mb: 2 }} />
+                {trackDownloads.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary" align="center" sx={{ py: 3 }}>
+                    No individual track downloads have been recorded yet.
+                  </Typography>
+                ) : (
+                  <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
+                    <Table size="small">
+                      <TableHead sx={{ bgcolor: theme.palette.action.hover }}>
+                        <TableRow>
+                          <TableCell sx={{ fontWeight: 600 }}>Track</TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>Search</TableCell>
+                          <TableCell sx={{ fontWeight: 600 }}>Outcome</TableCell>
+                          <TableCell align="right" sx={{ fontWeight: 600 }}>Action</TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {trackDownloads.map((job) => {
+                          const canRetry = ['failed', 'interrupted'].includes(job.status.toLowerCase());
+                          return (
+                            <TableRow key={job.id} hover>
+                              <TableCell>
+                                <Typography variant="body2" fontWeight={700}>{job.artist} — {job.title}</Typography>
+                                {job.album && <Typography variant="caption" color="text.secondary">{job.album}</Typography>}
+                              </TableCell>
+                              <TableCell>
+                                <Typography variant="body2">{job.query_text || 'Preparing search…'}</Typography>
+                                {job.query_strategy > 0 && <Typography variant="caption" color="text.secondary">Strategy {job.query_strategy}</Typography>}
+                              </TableCell>
+                              <TableCell>
+                                {getStatusChip(job.status)}
+                                {job.error_reason && <Typography variant="caption" display="block" color="error.main" sx={{ mt: 0.5 }}>{job.error_reason}</Typography>}
+                              </TableCell>
+                              <TableCell align="right">
+                                {canRetry && <Tooltip title="Start a clean retry; this history is kept">
+                                  <IconButton color="primary" onClick={() => handleRetryTrackDownload(job.id)} disabled={actionLoading === `track-${job.id}`}>
+                                    {actionLoading === `track-${job.id}` ? <CircularProgress size={20} /> : <RetryIcon />}
+                                  </IconButton>
+                                </Tooltip>}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
                 )}
               </CardContent>
             </Card>

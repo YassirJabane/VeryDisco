@@ -31,3 +31,17 @@ async def test_single_track_download_journal_keeps_queries_attempts_and_outcome(
         "status": "rejected",
         "reason": "AcoustID metadata mismatch",
     }]
+
+
+@pytest.mark.asyncio
+async def test_restart_marks_only_inflight_track_jobs_interrupted(test_db):
+    active = await test_db.create_download_job("Artist", "Active", user_id="user-1")
+    finished = await test_db.create_download_job("Artist", "Done", user_id="user-1")
+    await test_db.update_download_job(active, "downloading")
+    await test_db.update_download_job(finished, "completed")
+
+    assert await test_db.mark_interrupted_download_jobs() == 1
+    jobs = {job["id"]: job for job in await test_db.list_download_jobs("user-1")}
+    assert jobs[active]["status"] == "interrupted"
+    assert "server restart" in jobs[active]["error_reason"]
+    assert jobs[finished]["status"] == "completed"

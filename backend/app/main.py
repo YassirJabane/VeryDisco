@@ -130,6 +130,12 @@ async def lifespan(app: FastAPI):
                     await conn.commit()
             
             # 2. Resume interrupted Album Downloads
+            interrupted_tracks = await db.mark_interrupted_download_jobs()
+            if interrupted_tracks:
+                logger.warning(
+                    "Marked %s interrupted single-track download job(s) retryable after restart.",
+                    interrupted_tracks,
+                )
             pending_albums = await db.get_pending_album_downloads()
             if pending_albums:
                 from backend.app.album_sync import download_album_task
@@ -1177,6 +1183,32 @@ async def get_track_download_attempts(job_id: int, request: Request):
     if not any(item["id"] == job_id for item in jobs):
         raise HTTPException(status_code=404, detail="Track download not found.")
     return {"attempts": await db.get_download_attempts(job_id)}
+
+@app.post("/api/downloads/tracks/{job_id}/retry")
+async def retry_track_download(job_id: int, request: Request):
+    """Retry a failed decision as a clean transfer, retaining its old history."""
+    from backend.app.auth import get_current_user
+    from backend.app.album_sync import download_single_track_task
+    if not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured yet.")
+    user = await get_current_user(request)
+    jobs = await db.list_download_jobs(None if user["is_admin"] else user["id"], limit=500)
+    job = next((item for item in jobs if item["id"] == job_id), None)
+    if not job:
+        raise HTTPException(status_code=404, detail="Track download not found.")
+    if job["status"] in {"queued", "running", "searching", "downloading", "committing"}:
+        raise HTTPException(status_code=409, detail="This download is already active.")
+    if f"track:retry:{job_id}" in _active_tasks:
+        raise HTTPException(status_code=409, detail="A retry for this download is already active.")
+    _create_tracked_task(
+        download_single_track_task(
+            job["artist"], job["title"], job["album"], config_manager.config, db,
+            user_id=job.get("user_id") or user["id"],
+        ),
+        task_id=f"track:retry:{job_id}", task_type="track",
+        metadata={"artist": job["artist"], "title": job["title"], "retry_of": job_id, "user_id": job.get("user_id") or user["id"]},
+    )
+    return {"status": "success", "message": "Track download retried as a new job."}
 
 async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] = None):
     """
