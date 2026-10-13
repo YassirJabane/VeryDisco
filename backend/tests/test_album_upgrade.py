@@ -7,6 +7,7 @@ from backend.app.sync import (
     find_superseded_album_folders,
     upgrade_or_merge_album_folders,
     consolidate_all_split_albums,
+    harmonize_album_directory,
 )
 
 def test_extract_base_album_name_and_normalization():
@@ -112,3 +113,52 @@ def test_consolidate_all_split_albums(tmp_path, monkeypatch):
     assert not base_folder.exists()
     assert (edition_folder / "Drake_Habibti (fomo)_01_Track 1.mp3").exists()
     assert (edition_folder / "Drake - Habibti (fomo) - 02 - Track 2.mp3").exists()
+
+
+def test_harmonize_album_directory(tmp_path, monkeypatch):
+    album_dir = tmp_path / "Drake" / "HABIBTI (FOMO)"
+    album_dir.mkdir(parents=True)
+
+    file_1 = album_dir / "01 - Track 1.mp3"
+    file_2 = album_dir / "02 - Track 2.mp3"
+    file_1.write_bytes(b"dummy 1")
+    file_2.write_bytes(b"dummy 2")
+
+    # Track 1 has MBID and cover art; Track 2 is missing them
+    fake_tags = {
+        str(file_1): {
+            "title": "Track 1", "artist": "Drake", "album": "HABIBTI (FOMO)",
+            "album_artist": "Drake", "release_mbid": "test-mbid-fomo-123",
+            "cover": b"fake-jpeg-cover-bytes", "date": "2024",
+            "track": 1, "disc": 1,
+        },
+        str(file_2): {
+            "title": "Track 2", "artist": "Drake", "album": "HABIBTI (FOMO)",
+            "album_artist": "Drake", "release_mbid": "",
+            "cover": None, "date": "",
+            "track": 2, "disc": 1,
+        },
+    }
+
+    embedded_calls = []
+    def mock_read_track(path, include_cover=False):
+        return dict(fake_tags.get(str(path), {}))
+
+    def mock_embed_metadata(**kwargs):
+        embedded_calls.append(kwargs)
+
+    monkeypatch.setattr("backend.app.metadata_pipeline.tags.read_track", mock_read_track)
+    monkeypatch.setattr("backend.app.sync.embed_metadata", mock_embed_metadata)
+
+    updated = harmonize_album_directory(album_dir)
+    assert updated == 1  # Track 2 needed update
+
+    assert len(embedded_calls) == 1
+    call = embedded_calls[0]
+    assert call["file_path"] == str(file_2)
+    assert call["mbid_album"] == "test-mbid-fomo-123"
+    assert call["cover_bytes"] == b"fake-jpeg-cover-bytes"
+    assert call["album"] == "HABIBTI (FOMO)"
+    assert (album_dir / "cover.jpg").exists()
+    assert (album_dir / "cover.jpg").read_bytes() == b"fake-jpeg-cover-bytes"
+

@@ -964,20 +964,7 @@ async def _download_album_task_internal(
             #    OR the folder matches a major portion of the official album (handles multi-disc box sets/anniversary editions)
             # 3. Or requested as a single
             matched_official_count = count_matching_official_tracks(best_files)
-            is_official_reliable = bool(
-                official_album_tracks
-                and (
-                    bool(release_mbid)
-                    or (
-                        len(official_album_tracks) >= 4
-                        and (
-                            len(official_album_tracks) >= (len(best_files) * 0.4)
-                            or matched_official_count >= max(4, int(len(official_album_tracks) * 0.5))
-                        )
-                    )
-                    or ((record_type or "").lower() == "single" and len(official_album_tracks) >= 1)
-                )
-            )
+            is_official_reliable = bool(official_album_tracks and len(official_album_tracks) >= 1)
 
             for f in best_files:
                 filename_part = os.path.basename(f["filename"].replace("\\", "/"))
@@ -1629,6 +1616,29 @@ async def _download_album_task_internal(
                         fallback_complete = False
                         logger.error(f"Single-track fallback for '{t_title}' failed: {fallback_err}")
             album_complete = album_complete or fallback_complete
+
+        # Harmonize metadata and ensure cover.jpg exists for the downloaded album
+        if os.path.isdir(final_dir):
+            if (official_album_cover_bytes or cover_bytes):
+                cover_file = Path(final_dir) / "cover.jpg"
+                if not cover_file.exists():
+                    try:
+                        cover_file.write_bytes(official_album_cover_bytes or cover_bytes)
+                    except Exception:
+                        pass
+            try:
+                from backend.app.sync import harmonize_album_directory
+                await asyncio.to_thread(
+                    harmonize_album_directory,
+                    album_dir=final_dir,
+                    target_album=album,
+                    target_album_artist=target_album_artist or artist,
+                    target_mbid=official_mb_release_mbid or mbid_album,
+                    target_cover_bytes=official_album_cover_bytes or cover_bytes,
+                    target_date=official_album_date or dz_date,
+                )
+            except Exception as harm_err:
+                logger.warning(f"Could not harmonize album directory '{final_dir}': {harm_err}")
 
         # Trigger Navidrome scan at the end of album download
         if db and user_id:

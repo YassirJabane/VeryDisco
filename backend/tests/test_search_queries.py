@@ -200,3 +200,15 @@ def test_acoustid_accepts_secondary_result_matching_expected_artist_and_title(mo
     assert is_valid is True
     assert "Sally" in reason
 
+
+def test_track_query_falls_back_to_album_queries():
+    queries = build_track_search_queries("Drake", "Solar Eclipse", "HABIBTI (FOMO)")
+
+    assert "HABIBTI FOMO Drake" in queries
+    assert "HABIBTI FOMO" in queries
+    assert "HABIBTI Drake" in queries
+    assert "HABIBTI" in queries
+    # Standard track queries must appear before album fallback queries
+    assert queries.index("*olar *clipse *rake") < queries.index("HABIBTI FOMO Drake")
+    assert queries.index("Solar Eclipse") < queries.index("HABIBTI FOMO Drake")
+

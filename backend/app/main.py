@@ -4632,6 +4632,19 @@ async def run_library_scan_task(user_id: str, music_dir: Path):
             "phase": "done",
             "percentage": 100,
         })
+        if config_manager.config.navidrome.url:
+            try:
+                from backend.app.clients.navidrome import NavidromeClient
+                nd = NavidromeClient(
+                    url=config_manager.config.navidrome.url,
+                    username=config_manager.config.navidrome.username,
+                    password=config_manager.config.navidrome.password
+                )
+                logger.info("Triggering Navidrome scan after library scan...")
+                await nd.trigger_scan()
+            except Exception as e:
+                logger.warning(f"Navidrome scan failed after library scan: {e}")
+
         logger.info(f"✅ [Library Scan] Scan complete! {len(rows)} files indexed, {issues_found} issues detected.")
     except Exception as e:
         logger.error(f"❌ [Library Scan] Scan failed for user {user_id}: {e}")

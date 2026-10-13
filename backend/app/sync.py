@@ -617,6 +617,132 @@ def find_superseded_album_folders(artist_dir: Path, target_album: str) -> List[P
 
     return superseded
 
+def harmonize_album_directory(
+    album_dir: Union[str, Path],
+    target_album: Optional[str] = None,
+    target_album_artist: Optional[str] = None,
+    target_mbid: Optional[str] = None,
+    target_cover_bytes: Optional[bytes] = None,
+    target_date: Optional[str] = None,
+) -> int:
+    """
+    Ensures all audio tracks in an album directory have unified, consistent tags:
+    - Same album name
+    - Same album artist
+    - Same MusicBrainz Release ID (mbid_album)
+    - Embedded cover art (and saves cover.jpg / folder.jpg)
+    - Same release date / year
+    Returns the number of files updated.
+    """
+    from backend.app.metadata_pipeline.tags import read_track
+    dir_path = Path(album_dir)
+    if not dir_path.exists() or not dir_path.is_dir():
+        return 0
+
+    audio_files = [
+        p for p in dir_path.rglob("*")
+        if p.is_file() and p.suffix.lower() in [".mp3", ".flac", ".m4a", ".ogg"]
+    ]
+    if not audio_files:
+        return 0
+
+    # 1. Discover metadata from cover files or existing tracks
+    if not target_cover_bytes:
+        for img_name in ("cover.jpg", "cover.png", "folder.jpg", "folder.png"):
+            img_path = dir_path / img_name
+            if img_path.exists():
+                try:
+                    target_cover_bytes = img_path.read_bytes()
+                    break
+                except Exception:
+                    pass
+
+    files_info = []
+    for f in audio_files:
+        try:
+            info = read_track(f, include_cover=True)
+            files_info.append((f, info))
+            if not target_cover_bytes and info.get("cover"):
+                target_cover_bytes = info["cover"]
+            if not target_mbid and info.get("release_mbid"):
+                target_mbid = info["release_mbid"]
+            if not target_date and info.get("date"):
+                target_date = info["date"]
+            if not target_album_artist and info.get("album_artist"):
+                target_album_artist = info["album_artist"]
+            if not target_album and info.get("album"):
+                target_album = info["album"]
+        except Exception:
+            files_info.append((f, {}))
+
+    if not target_album:
+        target_album = dir_path.name
+    if not target_album_artist:
+        target_album_artist = dir_path.parent.name
+
+    if target_cover_bytes and not (dir_path / "cover.jpg").exists():
+        try:
+            (dir_path / "cover.jpg").write_bytes(target_cover_bytes)
+        except Exception:
+            pass
+
+    updated_count = 0
+    for f, info in files_info:
+        needs_update = False
+        if info.get("album") and info.get("album") != target_album:
+            needs_update = True
+        elif not info.get("album"):
+            needs_update = True
+
+        if target_album_artist and info.get("album_artist") != target_album_artist:
+            needs_update = True
+        if target_mbid and info.get("release_mbid") != target_mbid:
+            needs_update = True
+        if target_date and not info.get("date"):
+            needs_update = True
+        if target_cover_bytes and not info.get("cover"):
+            needs_update = True
+
+        if needs_update:
+            lyrics_text = None
+            lrc_path = f.with_suffix(".lrc")
+            if lrc_path.exists():
+                try:
+                    lyrics_text = lrc_path.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    pass
+
+            track_num = info.get("track")
+            disc_num = info.get("disc") or 1
+            track_artist = info.get("artist") or target_album_artist
+            title = info.get("title") or f.stem
+
+            try:
+                embed_metadata(
+                    file_path=str(f),
+                    artist=track_artist,
+                    title=title,
+                    album=target_album,
+                    track_num=track_num,
+                    track_total=info.get("track_total"),
+                    cover_bytes=target_cover_bytes,
+                    lyrics_text=lyrics_text,
+                    album_artist=target_album_artist,
+                    date=target_date or info.get("date"),
+                    disc_num=disc_num,
+                    disc_total=info.get("disc_total") or 1,
+                    is_explore=False,
+                    mbid_album=target_mbid or info.get("release_mbid"),
+                    mbid_recording=info.get("recording_mbid"),
+                )
+                updated_count += 1
+            except Exception as e:
+                logger.warning(f"Failed to harmonize metadata for {f.name}: {e}")
+
+    if updated_count > 0:
+        logger.info(f"Harmonized metadata for {updated_count} track(s) in '{dir_path.name}'.")
+    return updated_count
+
 def upgrade_or_merge_album_folders(
     music_dir: Union[str, Path],
     artist: str,
@@ -660,6 +786,41 @@ def upgrade_or_merge_album_folders(
     safe_album = sanitize_filename(clean_album)
     target_album_dir = artist_dir / safe_album
     target_album_dir.mkdir(parents=True, exist_ok=True)
+
+    # Discover existing metadata from target_album_dir or cover files
+    if not official_album_cover_bytes:
+        for img_name in ("cover.jpg", "cover.png", "folder.jpg", "folder.png"):
+            img_path = target_album_dir / img_name
+            if img_path.exists():
+                try:
+                    official_album_cover_bytes = img_path.read_bytes()
+                    break
+                except Exception:
+                    pass
+
+    existing_target_files = [
+        p for p in target_album_dir.rglob("*")
+        if p.is_file() and p.suffix.lower() in [".mp3", ".flac", ".m4a", ".ogg"]
+    ]
+    for ef in existing_target_files:
+        try:
+            ef_info = read_track(ef, include_cover=True)
+            if not official_album_cover_bytes and ef_info.get("cover"):
+                official_album_cover_bytes = ef_info["cover"]
+            if not official_mb_release_mbid and ef_info.get("release_mbid"):
+                official_mb_release_mbid = ef_info["release_mbid"]
+            if not official_album_date and ef_info.get("date"):
+                official_album_date = ef_info["date"]
+            if not target_album_artist and ef_info.get("album_artist"):
+                target_album_artist = ef_info["album_artist"]
+        except Exception:
+            pass
+
+    if official_album_cover_bytes and not (target_album_dir / "cover.jpg").exists():
+        try:
+            (target_album_dir / "cover.jpg").write_bytes(official_album_cover_bytes)
+        except Exception:
+            pass
 
     disc_total = 1
     track_total = len(official_album_tracks) if official_album_tracks else None
@@ -823,6 +984,19 @@ def upgrade_or_merge_album_folders(
             except Exception as rm_err:
                 logger.warning(f"Failed to remove empty superseded directory '{old_dir}': {rm_err}")
 
+    # Harmonize the entire target album folder so all tracks share identical MBID, cover art, and album tags
+    try:
+        harmonize_album_directory(
+            album_dir=target_album_dir,
+            target_album=target_album,
+            target_album_artist=target_album_artist or clean_artist,
+            target_mbid=official_mb_release_mbid,
+            target_cover_bytes=official_album_cover_bytes,
+            target_date=official_album_date,
+        )
+    except Exception as harm_err:
+        logger.warning(f"Failed to harmonize album directory '{target_album_dir}': {harm_err}")
+
     return migrated_results
 
 def consolidate_all_split_albums(
@@ -832,6 +1006,7 @@ def consolidate_all_split_albums(
     """
     Scans music_dir for split album editions (e.g. 'Habibti' and 'Habibti (FOMO)' under the same artist).
     Merges tracks from the base edition into the upgraded edition and removes the empty base edition.
+    Also harmonizes album tags and artwork across all album folders.
     """
     music_path = Path(music_dir)
     if not music_path.exists() or not music_path.is_dir():
@@ -844,44 +1019,64 @@ def consolidate_all_split_albums(
                 continue
 
             album_folders = [c for c in artist_dir.iterdir() if c.is_dir()]
-            if len(album_folders) < 2:
+            if not album_folders:
                 continue
 
-            groups: Dict[str, List[Path]] = {}
-            for folder in album_folders:
-                base_norm = normalize_album_name(folder.name)
-                if not base_norm:
-                    continue
-                groups.setdefault(base_norm, []).append(folder)
+            # 1. Check for split editions across multiple folders
+            if len(album_folders) >= 2:
+                groups: Dict[str, List[Path]] = {}
+                for folder in album_folders:
+                    base_norm = normalize_album_name(folder.name)
+                    if not base_norm:
+                        continue
+                    groups.setdefault(base_norm, []).append(folder)
 
-            for base_norm, folders in groups.items():
-                if len(folders) < 2:
-                    continue
+                for base_norm, folders in groups.items():
+                    if len(folders) < 2:
+                        continue
 
-                def _edition_priority(folder: Path):
-                    has_edition = bool(EDITION_SUFFIX_RE.search(folder.name))
-                    audio_count = len([
-                        p for p in folder.rglob("*")
-                        if p.is_file() and p.suffix.lower() in [".mp3", ".flac", ".m4a"]
-                    ])
-                    return (has_edition, audio_count, len(folder.name))
+                    def _edition_priority(folder: Path):
+                        has_edition = bool(EDITION_SUFFIX_RE.search(folder.name))
+                        audio_count = len([
+                            p for p in folder.rglob("*")
+                            if p.is_file() and p.suffix.lower() in [".mp3", ".flac", ".m4a"]
+                        ])
+                        return (has_edition, audio_count, len(folder.name))
 
-                sorted_folders = sorted(folders, key=_edition_priority, reverse=True)
-                target_folder = sorted_folders[0]
-                target_album_name = target_folder.name
+                    sorted_folders = sorted(folders, key=_edition_priority, reverse=True)
+                    target_folder = sorted_folders[0]
+                    target_album_name = target_folder.name
 
-                migrated = upgrade_or_merge_album_folders(
-                    music_dir=music_path,
-                    artist=artist_dir.name,
-                    target_album=target_album_name,
-                    playlists_dir=playlists_dir,
-                )
-                if migrated:
-                    consolidated_summary.append({
-                        "artist": artist_dir.name,
-                        "target_album": target_album_name,
-                        "migrated_tracks": len(migrated),
-                    })
+                    migrated = upgrade_or_merge_album_folders(
+                        music_dir=music_path,
+                        artist=artist_dir.name,
+                        target_album=target_album_name,
+                        playlists_dir=playlists_dir,
+                    )
+                    if migrated:
+                        consolidated_summary.append({
+                            "artist": artist_dir.name,
+                            "target_album": target_album_name,
+                            "migrated_tracks": len(migrated),
+                        })
+
+            # 2. Harmonize tags inside each album folder (fixes internal tag inconsistency)
+            remaining_folders = [c for c in artist_dir.iterdir() if c.is_dir()]
+            for folder in remaining_folders:
+                harmonized_count = harmonize_album_directory(folder)
+                if harmonized_count > 0:
+                    existing_entry = next(
+                        (item for item in consolidated_summary if item["artist"] == artist_dir.name and item["target_album"] == folder.name),
+                        None
+                    )
+                    if existing_entry:
+                        existing_entry["harmonized_tracks"] = harmonized_count
+                    else:
+                        consolidated_summary.append({
+                            "artist": artist_dir.name,
+                            "target_album": folder.name,
+                            "harmonized_tracks": harmonized_count,
+                        })
     except Exception as e:
         logger.error(f"Error during consolidate_all_split_albums: {e}")
 
@@ -1931,6 +2126,22 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
 
     # 5. Clean title only fallback
     queries_to_add.append(query_part(clean_title))
+
+    # 6. Fallback to album queries when individual track title searches yield 0 results
+    # (Enables finding single tracks inside shared album folders on Soulseek)
+    generic_albums = {"unknown album", "single", "singles", "ep", "album", "lp", "greatest hits", "the best of", "best of"}
+    album_with_edition = query_part(re.sub(r"[^\w\s*]", " ", album or ""))
+    album_base = query_part(clean_album)
+    if album_with_edition and album_with_edition.casefold() not in generic_albums:
+        if album_with_edition.casefold() not in {clean_title.casefold(), clean_artist.casefold()}:
+            if main_artist:
+                queries_to_add.append(query_part(f"{album_with_edition} {main_artist}"))
+            queries_to_add.append(query_part(album_with_edition))
+    if album_base and album_base.casefold() != album_with_edition.casefold() and album_base.casefold() not in generic_albums:
+        if album_base.casefold() not in {clean_title.casefold(), clean_artist.casefold()}:
+            if main_artist:
+                queries_to_add.append(query_part(f"{album_base} {main_artist}"))
+            queries_to_add.append(query_part(album_base))
 
     for query in queries_to_add:
         if query and query not in queries:
