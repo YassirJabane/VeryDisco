@@ -646,6 +646,13 @@ def harmonize_album_directory(
     if not audio_files:
         return 0
 
+    if isinstance(target_cover_bytes, str) and target_cover_bytes:
+        import base64
+        try:
+            target_cover_bytes = base64.b64decode(target_cover_bytes)
+        except Exception:
+            target_cover_bytes = None
+
     # 1. Discover metadata from cover files or existing tracks
     if not target_cover_bytes:
         for img_name in ("cover.jpg", "cover.png", "folder.jpg", "folder.png"):
@@ -663,7 +670,15 @@ def harmonize_album_directory(
             info = read_track(f, include_cover=True)
             files_info.append((f, info))
             if not target_cover_bytes and info.get("cover"):
-                target_cover_bytes = info["cover"]
+                cov_raw = info["cover"]
+                if isinstance(cov_raw, str) and cov_raw:
+                    import base64
+                    try:
+                        target_cover_bytes = base64.b64decode(cov_raw)
+                    except Exception:
+                        pass
+                elif isinstance(cov_raw, bytes):
+                    target_cover_bytes = cov_raw
             if not target_mbid and info.get("release_mbid"):
                 target_mbid = info["release_mbid"]
             if not target_date and info.get("date"):
@@ -798,6 +813,13 @@ def upgrade_or_merge_album_folders(
                 except Exception:
                     pass
 
+    if isinstance(official_album_cover_bytes, str) and official_album_cover_bytes:
+        import base64
+        try:
+            official_album_cover_bytes = base64.b64decode(official_album_cover_bytes)
+        except Exception:
+            official_album_cover_bytes = None
+
     existing_target_files = [
         p for p in target_album_dir.rglob("*")
         if p.is_file() and p.suffix.lower() in [".mp3", ".flac", ".m4a", ".ogg"]
@@ -806,7 +828,15 @@ def upgrade_or_merge_album_folders(
         try:
             ef_info = read_track(ef, include_cover=True)
             if not official_album_cover_bytes and ef_info.get("cover"):
-                official_album_cover_bytes = ef_info["cover"]
+                cov = ef_info["cover"]
+                if isinstance(cov, str) and cov:
+                    import base64
+                    try:
+                        official_album_cover_bytes = base64.b64decode(cov)
+                    except Exception:
+                        pass
+                elif isinstance(cov, bytes):
+                    official_album_cover_bytes = cov
             if not official_mb_release_mbid and ef_info.get("release_mbid"):
                 official_mb_release_mbid = ef_info["release_mbid"]
             if not official_album_date and ef_info.get("date"):
@@ -1259,12 +1289,19 @@ def embed_metadata(
 
     cover_format = None
     if cover_bytes:
-        if cover_bytes.startswith(b'\xff\xd8\xff'):
-            cover_format = 'jpeg'
-        elif cover_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
-            cover_format = 'png'
-        else:
-            logger.warning(f"Skipping unsupported cover format for {file_path}")
+        if isinstance(cover_bytes, str):
+            import base64
+            try:
+                cover_bytes = base64.b64decode(cover_bytes)
+            except Exception:
+                cover_bytes = None
+        if cover_bytes:
+            if cover_bytes.startswith(b'\xff\xd8\xff'):
+                cover_format = 'jpeg'
+            elif cover_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+                cover_format = 'png'
+            else:
+                logger.warning(f"Skipping unsupported cover format for {file_path}")
 
     try:
         if ext == ".mp3":

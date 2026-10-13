@@ -124,12 +124,15 @@ def test_harmonize_album_directory(tmp_path, monkeypatch):
     file_1.write_bytes(b"dummy 1")
     file_2.write_bytes(b"dummy 2")
 
-    # Track 1 has MBID and cover art; Track 2 is missing them
+    import base64
+    b64_cover = base64.b64encode(b"fake-jpeg-cover-bytes").decode("ascii")
+
+    # Track 1 has MBID and cover art (as base64 string from read_track); Track 2 is missing them
     fake_tags = {
         str(file_1): {
             "title": "Track 1", "artist": "Drake", "album": "HABIBTI (FOMO)",
             "album_artist": "Drake", "release_mbid": "test-mbid-fomo-123",
-            "cover": b"fake-jpeg-cover-bytes", "date": "2024",
+            "cover": b64_cover, "date": "2024",
             "track": 1, "disc": 1,
         },
         str(file_2): {
