@@ -2282,28 +2282,32 @@ async def save_playlist_artwork_and_m3u(
     await asyncio.to_thread(output_path.mkdir, parents=True, exist_ok=True)
 
     # 1. Download and save sidecar artwork if artwork_url provided
-    if artwork_url and str(artwork_url).startswith("http"):
-        try:
-            from backend.app.clients.http_client import get_http_client
-            client = get_http_client()
-            resp = await client.get(str(artwork_url), timeout=15)
-            if resp.status_code == 200 and resp.content:
-                sidecar_path = output_path / f"{playlist_source}.jpg"
-                cover_path = output_path / "cover.jpg"
-                folder_path = output_path / "folder.jpg"
-                await asyncio.to_thread(sidecar_path.write_bytes, resp.content)
-                await asyncio.to_thread(cover_path.write_bytes, resp.content)
-                await asyncio.to_thread(folder_path.write_bytes, resp.content)
-                logger.info(f"Saved playlist artwork sidecars to {sidecar_path}")
-        except Exception as art_err:
-            logger.warning(f"Failed to fetch/save playlist artwork for {playlist_source}: {art_err}")
-
-    # 2. Build M3U lines with display title
     display_title = (
         playlist_name.strip()
         if playlist_name and playlist_name.strip()
         else playlist_source.replace("-", " ").title()
     )
+    safe_display_title = sanitize_filename(display_title)
+
+    if artwork_url and str(artwork_url).startswith("http"):
+        try:
+            from backend.app.clients.http_client import get_http_client
+            client = await get_http_client()
+            resp = await client.get(str(artwork_url), timeout=15)
+            if resp.status_code == 200 and resp.content:
+                sidecar_display = output_path / f"{safe_display_title}.jpg"
+                sidecar_source = output_path / f"{playlist_source}.jpg"
+                cover_path = output_path / "cover.jpg"
+                folder_path = output_path / "folder.jpg"
+                await asyncio.to_thread(sidecar_display.write_bytes, resp.content)
+                await asyncio.to_thread(sidecar_source.write_bytes, resp.content)
+                await asyncio.to_thread(cover_path.write_bytes, resp.content)
+                await asyncio.to_thread(folder_path.write_bytes, resp.content)
+                logger.info(f"Saved playlist artwork sidecars to {sidecar_display} and {cover_path}")
+        except Exception as art_err:
+            logger.warning(f"Failed to fetch/save playlist artwork for {playlist_source}: {art_err}")
+
+    # 2. Build M3U lines with display title
     lines = ["#EXTM3U\n", f"#PLAYLIST:{display_title}\n"]
     if artwork_url:
         lines.append(f"#EXTALBUMARTURL:{artwork_url}\n")
@@ -2362,8 +2366,8 @@ async def save_playlist_artwork_and_m3u(
                     lines.append(f"#EXTINF:-1,{artist} - {title}\n")
                     lines.append(f"{rel_track}\n")
 
-    m3u_path = output_path / f"{playlist_source}.m3u"
-    tmp_m3u = output_path / f".{playlist_source}.m3u.tmp"
+    m3u_path = output_path / f"{safe_display_title}.m3u"
+    tmp_m3u = output_path / f".{safe_display_title}.m3u.tmp"
     try:
         with open(tmp_m3u, "w", encoding="utf-8") as f:
             f.writelines(lines)
@@ -2372,6 +2376,14 @@ async def save_playlist_artwork_and_m3u(
             os.chmod(str(m3u_path), 0o666)
         except Exception:
             pass
+        # If display name differs from raw playlist_source, clean up stale source M3U
+        if safe_display_title.lower() != playlist_source.lower():
+            old_source_m3u = output_path / f"{playlist_source}.m3u"
+            if old_source_m3u.exists():
+                try:
+                    old_source_m3u.unlink()
+                except Exception:
+                    pass
         logger.info(f"Generated playlist M3U at {m3u_path} with title '{display_title}'")
     except Exception as e:
         logger.warning(f"Could not write playlist M3U {m3u_path}: {e}")

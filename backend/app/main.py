@@ -930,10 +930,13 @@ async def list_imported_playlists(request: Request):
                     p_dir = user_row["playlist_dir"]
                 if user_row and user_row.get("music_dir"):
                     m_dir = user_row["music_dir"]
-                m3u_file = Path(p_dir) / item["source"] / f"{item['source']}.m3u"
-                sidecar_img = Path(p_dir) / item["source"] / f"{item['source']}.jpg"
+                from backend.app.sync import sanitize_filename
+                safe_name = sanitize_filename(item["name"]) if item.get("name") else item["source"]
+                m3u_file = Path(p_dir) / item["source"] / f"{safe_name}.m3u"
+                sidecar_img = Path(p_dir) / item["source"] / f"{safe_name}.jpg"
+                cover_img = Path(p_dir) / item["source"] / "cover.jpg"
                 needs_heal = False
-                if not m3u_file.exists() or (item.get("artwork_url") and not sidecar_img.exists()):
+                if not m3u_file.exists() or (item.get("artwork_url") and not sidecar_img.exists() and not cover_img.exists()):
                     needs_heal = True
                 elif m3u_file.exists():
                     content = m3u_file.read_text(encoding="utf-8", errors="ignore")
