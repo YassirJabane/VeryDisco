@@ -1160,6 +1160,24 @@ async def delete_album_download(download_id: int, request: Request):
     logger.info(f"Deleted album download record {download_id} from database queue.")
     return {"status": "success", "message": f"Album download {download_id} deleted."}
 
+@app.get("/api/downloads/tracks")
+async def get_track_downloads(request: Request):
+    """Return the durable single-track search/download decision history."""
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    jobs = await db.list_download_jobs(None if user["is_admin"] else user["id"])
+    return {"downloads": jobs}
+
+@app.get("/api/downloads/tracks/{job_id}/attempts")
+async def get_track_download_attempts(job_id: int, request: Request):
+    """Expose peer/rejection reasons without requiring operators to inspect logs."""
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    jobs = await db.list_download_jobs(None if user["is_admin"] else user["id"], limit=500)
+    if not any(item["id"] == job_id for item in jobs):
+        raise HTTPException(status_code=404, detail="Track download not found.")
+    return {"attempts": await db.get_download_attempts(job_id)}
+
 async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] = None):
     """
     Scans a batch of up to `batch_size` files in the library using AcoustID.

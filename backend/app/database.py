@@ -205,6 +205,44 @@ class Database:
                 marked_at TEXT DEFAULT (datetime('now'))
             );
             """)
+            # A durable audit trail for individual Soulseek downloads.  Album
+            # downloads already have ``album_downloads``; tracks previously
+            # existed only inside a running coroutine, so an app restart lost
+            # the selected query, rejected peers, and the reason for failure.
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS download_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT,
+                kind TEXT NOT NULL DEFAULT 'track',
+                artist TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                album TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                query_text TEXT DEFAULT '',
+                query_strategy INTEGER DEFAULT 0,
+                destination_path TEXT DEFAULT '',
+                error_reason TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                completed_at TEXT
+            );
+            """)
+            await db.execute("""
+            CREATE TABLE IF NOT EXISTS download_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id INTEGER NOT NULL REFERENCES download_jobs(id) ON DELETE CASCADE,
+                attempt_number INTEGER NOT NULL,
+                query_text TEXT NOT NULL DEFAULT '',
+                username TEXT NOT NULL DEFAULT '',
+                remote_filename TEXT NOT NULL DEFAULT '',
+                remote_size INTEGER DEFAULT 0,
+                transfer_id TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'candidate',
+                reason TEXT DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            """)
             
             # Create essential indexes for fast status polling and query performance
             # Existing installations gain these columns below, but indexes must
@@ -219,6 +257,8 @@ class Database:
             await db.execute("CREATE INDEX IF NOT EXISTS idx_logs_run_id ON logs(run_id);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_file_metadata_cache_mtime ON file_metadata_cache(mtime);")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_tracks_status ON tracks(status);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_download_jobs_user_status ON download_jobs(user_id, status);")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_download_attempts_job ON download_attempts(job_id, id);")
             await db.commit()
             
             # Migrate year column to file_metadata_cache
@@ -1122,6 +1162,88 @@ class Database:
             cursor = await conn.execute("SELECT status FROM album_downloads WHERE id = ?", (download_id,))
             row = await cursor.fetchone()
             return row["status"] if row else None
+
+    # Durable single-track download journal ---------------------------------
+    async def create_download_job(
+        self, artist: str, title: str, album: str = "", user_id: Optional[str] = None,
+        kind: str = "track",
+    ) -> int:
+        """Create a resumable job; never hide a prior failed request."""
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                """INSERT INTO download_jobs (user_id, kind, artist, title, album, status)
+                   VALUES (?, ?, ?, ?, ?, 'queued')""",
+                (user_id, kind, artist, title, album),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def update_download_job(
+        self, job_id: int, status: str, *, query_text: Optional[str] = None,
+        query_strategy: Optional[int] = None, destination_path: Optional[str] = None,
+        error_reason: Optional[str] = None,
+    ) -> None:
+        """Update only supplied detail fields and timestamp every state change."""
+        fields = ["status = ?", "updated_at = datetime('now')"]
+        values: list[Any] = [status]
+        for column, value in (
+            ("query_text", query_text), ("query_strategy", query_strategy),
+            ("destination_path", destination_path), ("error_reason", error_reason),
+        ):
+            if value is not None:
+                fields.append(f"{column} = ?")
+                values.append(value)
+        if status in {"completed", "failed", "skipped"}:
+            fields.append("completed_at = datetime('now')")
+        values.append(job_id)
+        async with self.get_db() as conn:
+            await conn.execute(f"UPDATE download_jobs SET {', '.join(fields)} WHERE id = ?", values)
+            await conn.commit()
+
+    async def add_download_attempt(
+        self, job_id: int, attempt_number: int, query_text: str, username: str,
+        remote_filename: str, remote_size: int = 0, status: str = "candidate",
+        reason: str = "",
+    ) -> int:
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                """INSERT INTO download_attempts
+                   (job_id, attempt_number, query_text, username, remote_filename, remote_size, status, reason)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (job_id, attempt_number, query_text, username, remote_filename, remote_size, status, reason),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def update_download_attempt(
+        self, attempt_id: int, status: str, reason: str = "", transfer_id: Optional[str] = None,
+    ) -> None:
+        fields = ["status = ?", "reason = ?", "updated_at = datetime('now')"]
+        values: list[Any] = [status, reason]
+        if transfer_id is not None:
+            fields.append("transfer_id = ?")
+            values.append(transfer_id)
+        values.append(attempt_id)
+        async with self.get_db() as conn:
+            await conn.execute(f"UPDATE download_attempts SET {', '.join(fields)} WHERE id = ?", values)
+            await conn.commit()
+
+    async def list_download_jobs(self, user_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        async with self.get_db() as conn:
+            if user_id is None:
+                cursor = await conn.execute("SELECT * FROM download_jobs ORDER BY id DESC LIMIT ?", (limit,))
+            else:
+                cursor = await conn.execute(
+                    "SELECT * FROM download_jobs WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit)
+                )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_download_attempts(self, job_id: int) -> List[Dict[str, Any]]:
+        async with self.get_db() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM download_attempts WHERE job_id = ? ORDER BY id ASC", (job_id,)
+            )
+            return [dict(row) for row in await cursor.fetchall()]
 
     async def add_music_request(self, user_id: str, kind: str, artist: str, title: str = "", album: str = "") -> int:
         async with self.get_db() as conn:

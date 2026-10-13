@@ -1711,12 +1711,35 @@ async def download_single_track_task(
     mbid_album_override: Optional[str] = None,
     replace_path_override: Optional[str] = None,
 ):
-    """Background task to search, download and organize a single track."""
+    """Background task to search, download and organize a single track.
+
+    Persist the decision trail before entering the semaphore.  This makes a
+    failure inspectable after a restart instead of leaving only an ephemeral
+    log line behind.
+    """
+    job_id = None
+    if db and hasattr(db, "create_download_job"):
+        try:
+            job_id = await db.create_download_job(artist, title, album, user_id)
+            await db.update_download_job(job_id, "running")
+        except Exception as journal_err:
+            logger.warning(f"Could not create download journal for '{artist} - {title}': {journal_err}")
     async with _single_track_semaphore:
-        return await _download_single_track_internal(
-            artist, title, album, config, db, force, user_id, is_explore,
-            dest_dir_override, mbid_album_override, replace_path_override
+        try:
+            success = await _download_single_track_internal(
+                artist, title, album, config, db, force, user_id, is_explore,
+                dest_dir_override, mbid_album_override, replace_path_override, job_id
+            )
+        except Exception as exc:
+            if job_id is not None:
+                await db.update_download_job(job_id, "failed", error_reason=str(exc))
+            raise
+    if job_id is not None:
+        await db.update_download_job(
+            job_id, "completed" if success else "failed",
+            error_reason="" if success else "No acceptable candidate completed",
         )
+    return success
 
 
 async def _download_single_track_internal(
@@ -1731,6 +1754,7 @@ async def _download_single_track_internal(
     dest_dir_override: Optional[str] = None,
     mbid_album_override: Optional[str] = None,
     replace_path_override: Optional[str] = None,
+    download_job_id: Optional[int] = None,
 ) -> bool:
     logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
 
@@ -1823,6 +1847,8 @@ async def _download_single_track_internal(
         candidates = []
         for i, query in enumerate(search_queries):
             logger.info(f"Single track search strategy {i+1}: '{query}'")
+            if download_job_id is not None:
+                await db.update_download_job(download_job_id, "searching", query_text=query, query_strategy=i + 1)
             audio_quality_dict = config.slskd.audio_quality.model_dump() if hasattr(config.slskd.audio_quality, "model_dump") else dict(config.slskd.audio_quality)
             candidates, search_id = await slskd_client.search_candidates(
                 artist=artist,
@@ -1854,6 +1880,8 @@ async def _download_single_track_internal(
 
         if not candidates:
             logger.warning(f"No candidates found for single track '{artist} - {title}'")
+            if download_job_id is not None:
+                await db.update_download_job(download_job_id, "failed", error_reason="No candidates matched the search strategies")
             return False
 
         # Try downloading the best candidate, skipping peers that already refused/timed out
@@ -1873,11 +1901,18 @@ async def _download_single_track_internal(
             remote_filename = candidate["filename"]
             size = candidate["size"]
             attempt_count += 1
+            attempt_id = None
+            if download_job_id is not None:
+                attempt_id = await db.add_download_attempt(
+                    download_job_id, attempt_count, query, username, remote_filename, size, "requested"
+                )
             
             logger.info(f"Trying candidate {attempt_count}/{max_attempts} ({username}) for '{artist} - {title}'")
             success = await slskd_client.request_download(username, remote_filename, size)
             if not success:
                 failed_usernames.add(username)
+                if attempt_id is not None:
+                    await db.update_download_attempt(attempt_id, "rejected", "slskd rejected the transfer request")
                 continue
 
             # Poll status
@@ -1918,13 +1953,20 @@ async def _download_single_track_internal(
 
             if status != "succeeded":
                 failed_usernames.add(username)
+                if attempt_id is not None:
+                    await db.update_download_attempt(attempt_id, "failed", "transfer failed, timed out, or stalled", str(file_id or ""))
                 continue
 
             # Find downloaded file
             from backend.app.sync import find_downloaded_file, get_safe_filename
             downloaded_file = find_downloaded_file(config.slskd.downloads_dir, remote_filename, size)
             if not downloaded_file:
+                if attempt_id is not None:
+                    await db.update_download_attempt(attempt_id, "failed", "transfer succeeded but the downloaded file was not found", str(file_id or ""))
                 continue
+
+            if attempt_id is not None:
+                await db.update_download_attempt(attempt_id, "downloaded", transfer_id=str(file_id or ""))
 
             ext = os.path.splitext(remote_filename)[1] or ".mp3"
 
@@ -1980,6 +2022,8 @@ async def _download_single_track_internal(
                 logger.error(f"Error during AcoustID check for single track {downloaded_file}: {ac_err}")
 
             if acoustid_mismatch:
+                if attempt_id is not None:
+                    await db.update_download_attempt(attempt_id, "rejected", "AcoustID metadata mismatch")
                 if config and hasattr(config, 'acoustid') and acoustid_retry_count >= max(1, config.acoustid.max_retries):
                     logger.warning(f"AcoustID max retries ({config.acoustid.max_retries}) reached for single track '{title_tag}'. No mismatched file will be saved.")
                     break
@@ -2017,6 +2061,8 @@ async def _download_single_track_internal(
                 logger.info(f"Moved single track to library: '{dest_audio_path}'")
             except Exception as e:
                 logger.error(f"Failed to move single track to library: {e}")
+                if attempt_id is not None:
+                    await db.update_download_attempt(attempt_id, "failed", f"Could not move file: {e}")
                 continue
 
             # 3. Fetch lyrics and embed tags
@@ -2054,6 +2100,8 @@ async def _download_single_track_internal(
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
             except Exception as e:
                 logger.warning(f"Could not embed metadata/lyrics for single track: {e}")
+                if attempt_id is not None:
+                    await db.update_download_attempt(attempt_id, "failed", f"Metadata staging failed: {e}")
                 try:
                     await asyncio.to_thread(safe_move_file, dest_audio_path, downloaded_file)
                 except Exception as restore_error:
@@ -2098,6 +2146,10 @@ async def _download_single_track_internal(
                 await nd_client.trigger_scan()
                 
             logger.info(f"Single track download complete for {artist} - {title}")
+            if attempt_id is not None:
+                await db.update_download_attempt(attempt_id, "completed", transfer_id=str(file_id or ""))
+            if download_job_id is not None:
+                await db.update_download_job(download_job_id, "committing", destination_path=str(published_path))
             return True
             
         logger.error(f"All candidate attempts failed for single track '{artist} - {title}'")
