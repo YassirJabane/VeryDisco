@@ -62,7 +62,8 @@ async def test_get_playlist_tracks():
             "track": [
                 {
                     "creator": "Daft Punk",
-                    "title": "One More Time"
+                    "title": "One More Time",
+                    "identifier": "https://musicbrainz.org/recording/33333333-3333-3333-3333-333333333333",
                 },
                 {
                     "creator": "Justice",
@@ -80,5 +81,7 @@ async def test_get_playlist_tracks():
     assert len(tracks) == 2
     assert tracks[0]["artist"] == "Daft Punk"
     assert tracks[0]["title"] == "One More Time"
+    assert tracks[0]["recording_mbid"] == "33333333-3333-3333-3333-333333333333"
     assert tracks[1]["artist"] == "Justice"
     assert tracks[1]["title"] == "D.A.N.C.E."
+    assert tracks[1]["recording_mbid"] is None

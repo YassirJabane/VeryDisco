@@ -3044,7 +3044,11 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
                           
                           if downloaded_file:
                               from backend.app.clients.acoustid import acoustid_client
-                              expected_mbid = await lb_client.resolve_recording_mbid(artist, title)
+                              # A playlist-supplied recording MBID identifies a
+                              # specific version (not merely a title).  Only
+                              # perform the slower text lookup for legacy JSPF
+                              # entries that do not expose it.
+                              expected_mbid = track.get("recording_mbid") or await lb_client.resolve_recording_mbid(artist, title)
                               if expected_mbid:
                                   is_valid = await acoustid_client.verify_track(
                                       downloaded_file, expected_mbid, expected_artist=artist, expected_title=title

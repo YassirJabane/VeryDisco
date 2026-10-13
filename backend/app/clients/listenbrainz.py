@@ -28,6 +28,20 @@ def extract_uuid(identifier: str) -> Optional[str]:
     match = re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", identifier, re.IGNORECASE)
     return match.group(0) if match else None
 
+
+def extract_recording_mbid(track: Dict[str, Any]) -> Optional[str]:
+    """Read a recording ID from JSPF track metadata without confusing it with a playlist ID."""
+    for key in ("recording_mbid", "recording-mbid", "musicbrainz_recordingid", "recording_id"):
+        value = find_key_recursive(track, key)
+        if isinstance(value, str):
+            match = extract_uuid(value)
+            if match:
+                return match
+    identifier = track.get("identifier") or ""
+    if isinstance(identifier, str) and "/recording/" in identifier.lower():
+        return extract_uuid(identifier)
+    return None
+
 class ListenBrainzClient:
     def __init__(self, username: str, playlist_source: str, token: str = "", timeout: int = 20):
         self.username = username
@@ -136,7 +150,8 @@ class ListenBrainzClient:
                     "artist": artist.strip(),
                     "title": title.strip(),
                     "duration": duration,  # can be None
-                    "album": album.strip() if album else None
+                    "album": album.strip() if album else None,
+                    "recording_mbid": extract_recording_mbid(t),
                 })
         
         logger.info(f"Loaded {len(tracks)} tracks from playlist MBID '{mbid}'")

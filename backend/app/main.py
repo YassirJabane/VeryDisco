@@ -1602,10 +1602,10 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
     # Enrich metadata in parallel
     async def enrich_track(t):
         meta = await fetch_itunes_metadata(t['artist'], t['title'])
-        # ListenBrainz supplies the release when available.  iTunes only
-        # enriches it after an exact recording+primary-artist match, so a
-        # top-ranked remix cannot replace a valid playlist album.
-        t['album'] = meta['album'] or t.get('album') or ''
+        # The JSPF release comes from ListenBrainz and the recording MBID pins
+        # the exact musical work.  iTunes is artwork-only; it must never
+        # decide the album shown in Explore.
+        t['album'] = t.get('album') or ''
         t['artwork'] = meta['artwork']
         key = f"{t['artist'].lower()}-{t['title'].lower()}"
         info = db_tracks_map.get(key, {"status": "pending", "error_reason": ""})
