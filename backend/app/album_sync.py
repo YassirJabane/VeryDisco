@@ -1907,7 +1907,8 @@ async def _download_single_track_internal(
             attempt_id = None
             if download_job_id is not None:
                 attempt_id = await db.add_download_attempt(
-                    download_job_id, attempt_count, query, username, remote_filename, size, "requested"
+                    download_job_id, attempt_count, query, username, remote_filename, size, "requested",
+                    candidate.get("selection_reason", "selected ranked candidate"),
                 )
             
             logger.info(f"Trying candidate {attempt_count}/{max_attempts} ({username}) for '{artist} - {title}'")

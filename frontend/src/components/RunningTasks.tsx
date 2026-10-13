@@ -2,7 +2,8 @@ import React, { useEffect, useState, useRef } from 'react';
 import { 
   Box, Card, CardContent, Typography, Table, TableBody, TableCell, 
   TableContainer, TableRow, TableHead, Paper, IconButton, Chip, 
-  CircularProgress, Alert, Tooltip, Button, Grid, Divider, useTheme, List
+  CircularProgress, Alert, Tooltip, Button, Grid, Divider, useTheme, List,
+  Dialog, DialogTitle, DialogContent, DialogActions
 } from '@mui/material';
 import { 
   StopCircle as StopIcon,
@@ -14,9 +15,10 @@ import {
   HourglassEmpty as PendingIcon,
   CheckCircle as SuccessIcon,
   Error as ErrorIcon,
-  Replay as RetryIcon
+  Replay as RetryIcon,
+  InfoOutlined as DetailsIcon
 } from '@mui/icons-material';
-import { apiService, ActiveTask, AlbumDownloadQueueItem, TrackDownloadJobItem } from '../api';
+import { apiService, ActiveTask, AlbumDownloadQueueItem, TrackDownloadAttempt, TrackDownloadJobItem } from '../api';
 import { useNotification } from '../context/NotificationContext';
 
 const RunningTasks: React.FC = () => {
@@ -25,6 +27,9 @@ const RunningTasks: React.FC = () => {
   const [tasks, setTasks] = useState<ActiveTask[]>([]);
   const [downloads, setDownloads] = useState<AlbumDownloadQueueItem[]>([]);
   const [trackDownloads, setTrackDownloads] = useState<TrackDownloadJobItem[]>([]);
+  const [selectedTrackJob, setSelectedTrackJob] = useState<TrackDownloadJobItem | null>(null);
+  const [trackAttempts, setTrackAttempts] = useState<TrackDownloadAttempt[]>([]);
+  const [attemptsLoading, setAttemptsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -59,6 +64,20 @@ const RunningTasks: React.FC = () => {
       notify(e.response?.data?.detail || 'Failed to retry track download.', 'error');
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const showTrackAttempts = async (job: TrackDownloadJobItem) => {
+    setSelectedTrackJob(job);
+    setAttemptsLoading(true);
+    try {
+      const response = await apiService.getTrackDownloadAttempts(job.id);
+      setTrackAttempts(response.attempts);
+    } catch (e) {
+      setTrackAttempts([]);
+      notify('Failed to load candidate history.', 'error');
+    } finally {
+      setAttemptsLoading(false);
     }
   };
 
@@ -484,6 +503,11 @@ const RunningTasks: React.FC = () => {
                                 {job.error_reason && <Typography variant="caption" display="block" color="error.main" sx={{ mt: 0.5 }}>{job.error_reason}</Typography>}
                               </TableCell>
                               <TableCell align="right">
+                                <Tooltip title="View candidate decisions">
+                                  <IconButton color="default" onClick={() => showTrackAttempts(job)}>
+                                    <DetailsIcon />
+                                  </IconButton>
+                                </Tooltip>
                                 {canRetry && <Tooltip title="Start a clean retry; this history is kept">
                                   <IconButton color="primary" onClick={() => handleRetryTrackDownload(job.id)} disabled={actionLoading === `track-${job.id}`}>
                                     {actionLoading === `track-${job.id}` ? <CircularProgress size={20} /> : <RetryIcon />}
@@ -502,6 +526,27 @@ const RunningTasks: React.FC = () => {
           </Grid>
         </Grid>
       )}
+      <Dialog open={Boolean(selectedTrackJob)} onClose={() => setSelectedTrackJob(null)} fullWidth maxWidth="md">
+        <DialogTitle>Candidate decisions — {selectedTrackJob?.artist} — {selectedTrackJob?.title}</DialogTitle>
+        <DialogContent dividers>
+          {attemptsLoading ? <Box display="flex" justifyContent="center" py={3}><CircularProgress /></Box> : trackAttempts.length === 0 ? (
+            <Typography color="text.secondary">No peer was selected. The job may have stopped before candidates were returned.</Typography>
+          ) : (
+            <Table size="small">
+              <TableHead><TableRow>
+                <TableCell>#</TableCell><TableCell>Peer / file</TableCell><TableCell>Decision</TableCell><TableCell>Reason</TableCell>
+              </TableRow></TableHead>
+              <TableBody>{trackAttempts.map((attempt) => <TableRow key={attempt.id}>
+                <TableCell>{attempt.attempt_number}</TableCell>
+                <TableCell><Typography variant="body2">{attempt.username}</Typography><Typography variant="caption" color="text.secondary">{attempt.remote_filename}</Typography></TableCell>
+                <TableCell>{getStatusChip(attempt.status)}</TableCell>
+                <TableCell><Typography variant="body2">{attempt.reason || 'No additional reason recorded.'}</Typography></TableCell>
+              </TableRow>)}</TableBody>
+            </Table>
+          )}
+        </DialogContent>
+        <DialogActions><Button onClick={() => setSelectedTrackJob(null)}>Close</Button></DialogActions>
+      </Dialog>
     </Box>
   );
 };

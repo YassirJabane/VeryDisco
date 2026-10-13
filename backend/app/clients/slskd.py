@@ -252,7 +252,17 @@ class SlskdClient:
                     "speed": speed,
                     "priority": priority,
                     "full_artist_matched": full_artist_match,
-                    "album_matched": album_match
+                    "album_matched": album_match,
+                    # Explain why this peer/file survives ranking.  The
+                    # values are persisted with a download attempt so a user
+                    # can distinguish a bad peer from an intentional quality
+                    # or artist-match decision.
+                    "selection_reason": "; ".join(filter(None, [
+                        "exact artist match" if full_artist_match else "partial artist match" if partial_artist_match else "album-path match",
+                        "album match" if album_match else "",
+                        f"quality profile {priority + 1}" if active_profiles else "quality unrestricted",
+                        "free upload slot" if has_free_slot else f"queue length {queue_length}",
+                    ])),
                 })
  
         # Sort candidates: actual artist match comes before audio quality priority

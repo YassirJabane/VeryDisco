@@ -1216,10 +1216,13 @@ class Database:
             return cursor.lastrowid
 
     async def update_download_attempt(
-        self, attempt_id: int, status: str, reason: str = "", transfer_id: Optional[str] = None,
+        self, attempt_id: int, status: str, reason: Optional[str] = None, transfer_id: Optional[str] = None,
     ) -> None:
-        fields = ["status = ?", "reason = ?", "updated_at = datetime('now')"]
-        values: list[Any] = [status, reason]
+        fields = ["status = ?", "updated_at = datetime('now')"]
+        values: list[Any] = [status]
+        if reason is not None:
+            fields.append("reason = ?")
+            values.append(reason)
         if transfer_id is not None:
             fields.append("transfer_id = ?")
             values.append(transfer_id)
