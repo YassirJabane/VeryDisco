@@ -530,7 +530,7 @@ class SchedulerManager:
                 continue
 
             if not starred_tracks:
-                logger.info(f"No starred tracks found in Navidrome for user '{username}'.")
+                logger.debug(f"No starred tracks found in Navidrome for user '{username}'.")
                 continue
 
             processed_track_ids = set()
@@ -551,7 +551,7 @@ class SchedulerManager:
                     token=lb_token
                 )
             else:
-                logger.info(f"ListenBrainz integration disabled or token missing for user '{username}' — skipping LB submit but continuing with promote/download.")
+                logger.debug(f"ListenBrainz integration disabled or token missing for user '{username}' — skipping LB submit but continuing with promote/download.")
 
             for track in starred_tracks:
                 track_id = track["id"]
