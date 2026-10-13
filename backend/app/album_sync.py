@@ -915,6 +915,35 @@ async def _download_album_task_internal(
         instrumental_paths: set[str] = set()
         album_complete = False
 
+        # Upgrade check: if this is an upgraded edition (e.g. FOMO / Deluxe) of an existing
+        # base album in the library, migrate any existing tracks into the upgraded album
+        # and clean up the superseded album folder so they are merged without duplicates.
+        try:
+            from backend.app.sync import upgrade_or_merge_album_folders
+            migrated_upgrades = await asyncio.to_thread(
+                upgrade_or_merge_album_folders,
+                music_dir=music_dir,
+                artist=artist,
+                target_album=album,
+                official_album_tracks=official_album_tracks,
+                official_album_cover_bytes=official_album_cover_bytes,
+                official_mb_release_mbid=official_mb_release_mbid,
+                official_album_date=official_album_date,
+                playlists_dir=playlists_dir,
+                target_album_artist=target_album_artist,
+            )
+            if migrated_upgrades:
+                overall_copied.extend(migrated_upgrades)
+                for f_item, dest_path in migrated_upgrades:
+                    if _is_instrumental_track(f_item.get("title", ""), album):
+                        instrumental_paths.add(str(dest_path))
+                logger.info(
+                    f"Successfully merged/upgraded {len(migrated_upgrades)} tracks from "
+                    f"superseded album folder(s) into '{album}'."
+                )
+        except Exception as upgrade_err:
+            logger.warning(f"Error checking album upgrade migration: {upgrade_err}")
+
         for attempt, (dir_key, best_files) in enumerate(candidates[:max_attempts]):
             best_username, best_dir_path = dir_key
             logger.info(f"--- [Attempt {attempt + 1}/{max_attempts}] Trying peer '{best_username}' for album directory '{best_dir_path}' with {len(best_files)} tracks. ---")
@@ -1728,6 +1757,32 @@ async def _download_single_track_internal(
                 ext, bitrate, bit_depth, sample_rate = get_file_audio_info(found_path)
                 q_status = check_quality_status(ext, bitrate, bit_depth, sample_rate, config)
                 if q_status in ["same", "better"]:
+                    if album and not is_explore and not dest_dir_override and not replace_path_override:
+                        from backend.app.sync import resolve_album_dir, get_library_filename, safe_move_file, embed_metadata, update_m3u_references
+                        dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, artist, album)
+                        if Path(found_path).parent.resolve() != dest_dir.resolve():
+                            clean_filename = get_library_filename(artist, safe_album, None, title, Path(found_path).suffix)
+                            dest_path = dest_dir / clean_filename
+                            if not dest_path.exists():
+                                try:
+                                    await asyncio.to_thread(safe_move_file, found_path, dest_path)
+                                    found_lrc = Path(found_path).with_suffix(".lrc")
+                                    if found_lrc.exists():
+                                        await asyncio.to_thread(safe_move_file, found_lrc, dest_path.with_suffix(".lrc"))
+                                    await asyncio.to_thread(
+                                        embed_metadata,
+                                        file_path=str(dest_path),
+                                        artist=artist,
+                                        title=title,
+                                        album=album,
+                                    )
+                                    if playlists_dir and Path(playlists_dir).exists():
+                                        update_m3u_references(Path(playlists_dir), Path(found_path).name, dest_path)
+                                    logger.info(f"Relocated and retagged existing track '{title}' into album folder '{dest_dir.name}'.")
+                                    found_path = dest_path
+                                except Exception as rel_err:
+                                    logger.warning(f"Could not relocate existing track '{title}' into album: {rel_err}")
+
                     logger.info(f"Single track '{artist} - {title}' already exists in library in same/better quality ({ext.upper()} {bitrate}kbps). Skipping download.")
                     return True
 

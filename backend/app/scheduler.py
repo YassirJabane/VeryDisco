@@ -624,11 +624,17 @@ class SchedulerManager:
                 # 3. Check if the album is already present in the filesystem
                 album_exists = False
                 try:
-                    from backend.app.sync import sanitize_filename
+                    from backend.app.sync import sanitize_filename, find_existing_album_folder
                     safe_artist = sanitize_filename(artist)
-                    safe_album = sanitize_filename(album)
-                    final_dir = Path(user_music_dir) / safe_artist / safe_album
-                    album_exists = await asyncio.to_thread(_check_album_dir_exists_sync, final_dir)
+                    artist_dir = Path(user_music_dir) / safe_artist
+                    if artist_dir.exists() and artist_dir.is_dir():
+                        existing_folder = find_existing_album_folder(artist_dir, album)
+                        if existing_folder and await asyncio.to_thread(_check_album_dir_exists_sync, existing_folder):
+                            album_exists = True
+                    if not album_exists:
+                        safe_album = sanitize_filename(album)
+                        final_dir = artist_dir / safe_album
+                        album_exists = await asyncio.to_thread(_check_album_dir_exists_sync, final_dir)
                 except Exception as e:
                     logger.warning(f"Failed to check if album dir exists: {e}", exc_info=True)
 

@@ -3354,6 +3354,44 @@ async def fix_multidisc_albums_endpoint(request: Request):
     asyncio.create_task(_run_multidisc_fix())
     return {"status": "ok", "message": "Multi-disc migration task started in background. Albums are being scanned and organized."}
 
+@app.post("/api/library/consolidate-albums")
+async def consolidate_albums_endpoint(request: Request):
+    """Scan library for split album editions (e.g. Base vs FOMO/Deluxe) and consolidate them."""
+    if not config_manager.is_configured or not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured yet.")
+
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
+    user_row = await db.get_user_by_id(user_id)
+    music_dir = Path(config_manager.config.paths.music_dir)
+    if user_row and user_row.get("music_dir"):
+        music_dir = Path(user_row["music_dir"])
+    playlists_dir = Path(config_manager.config.paths.navidrome_playlists_dir)
+    if user_row and user_row.get("playlist_dir"):
+        playlists_dir = Path(user_row["playlist_dir"])
+
+    from backend.app.sync import consolidate_all_split_albums
+    consolidated = await asyncio.to_thread(consolidate_all_split_albums, music_dir, playlists_dir)
+
+    if config_manager.config.navidrome.url:
+        try:
+            from backend.app.clients.navidrome import NavidromeClient
+            nd = NavidromeClient(
+                url=config_manager.config.navidrome.url,
+                username=config_manager.config.navidrome.username,
+                password=config_manager.config.navidrome.password
+            )
+            await nd.trigger_scan()
+        except Exception as e:
+            logger.warning(f"Navidrome scan failed after consolidation: {e}")
+
+    return {
+        "status": "success",
+        "message": f"Consolidated {len(consolidated)} split album(s).",
+        "consolidated": consolidated
+    }
+
 @app.get("/api/musicbrainz/inspect")
 async def inspect_musicbrainz_release_endpoint(artist: str, album: str, request: Request):
     """Query MusicBrainz for candidate releases, score them, and return winner details."""
@@ -4496,6 +4534,17 @@ async def run_library_scan_task(user_id: str, music_dir: Path):
             naming_pattern = user_row["renaming_pattern"]
 
         metadata_cache = await db.get_all_file_metadata()
+
+        # Consolidate any split album editions across the library
+        try:
+            from backend.app.sync import consolidate_all_split_albums
+            consolidated = await asyncio.to_thread(
+                consolidate_all_split_albums, music_dir, playlists_dir
+            )
+            if consolidated:
+                logger.info(f"Consolidated {len(consolidated)} split album edition(s) during library scan.")
+        except Exception as cons_err:
+            logger.warning(f"Error consolidating split albums during library scan: {cons_err}")
 
         loop = asyncio.get_running_loop()
         def progress_callback(idx, total, new_entries):

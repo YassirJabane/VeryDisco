@@ -518,42 +518,374 @@ def get_clean_album_folder(album: str, artist: str = "") -> str:
         return "Singles"
     return clean or album
 
+EDITION_SUFFIX_RE = re.compile(
+    r'(?i)\s*(?:[\(\[\{]\s*(?:(?:\d+(?:th|st|nd|rd)?\s+)?(?:anniversary|deluxe|edition|version|remaster(?:ed)?)|deluxe|fomo|bonus(?:\s+track)?|expanded|extended|special|collector\'?s?|complete|super\s+deluxe|international|repack|digital|remaster(?:ed)?|tour|reissue|platinum|diamond|explicit).*?[\)\]\}]|\s*[-–—]\s*(?:(?:\d+(?:th|st|nd|rd)?\s+)?(?:anniversary|deluxe|edition|version)|deluxe|fomo|bonus(?:\s+track)?|expanded|extended|special|edition|version|digital|remaster(?:ed)?|reissue|platinum).*$)'
+)
+TRAILING_YEAR_RE = re.compile(r'\s*[\(\[]\s*\d{4}\s*[\)\]]$')
+
+def extract_base_album_name(album_name: str) -> str:
+    """
+    Strips edition tags, deluxe markers, year tags, etc. to get the root/base album name.
+    E.g. 'Habibti (FOMO)' -> 'Habibti'
+         'ABBA Gold (Anniversary Edition) (1992)' -> 'ABBA Gold'
+    """
+    if not album_name:
+        return ""
+    clean = album_name
+    for _ in range(2):
+        clean = EDITION_SUFFIX_RE.sub('', clean).strip()
+        clean = TRAILING_YEAR_RE.sub('', clean).strip()
+    return clean or album_name.strip()
+
+def normalize_album_name(name: str) -> str:
+    cleaned = extract_base_album_name(name)
+    cleaned = re.sub(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+.*[\)\]]?)', '', cleaned, flags=re.IGNORECASE)
+    return re.sub(r'[^\w]', '', cleaned).lower()
+
+# Alias for backwards compatibility
+normalize_album = normalize_album_name
+
 def find_existing_album_folder(artist_dir: Path, target_album: str) -> Optional[Path]:
     """
     Looks under artist_dir for an existing album directory that matches target_album.
-    Matches case-insensitively, and handles variations like '(Deluxe)', '[Explicit]', etc.
+    Matches case-insensitively, and handles variations like '[Explicit]', etc.
+    Avoids collapsing an upgraded edition (e.g. 'Habibti (FOMO)') into a base album ('Habibti').
     """
     if not artist_dir.exists() or not artist_dir.is_dir():
         return None
-        
-    def normalize_album(name: str) -> str:
-        cleaned = re.sub(r'[\(\[]?\s*(?:deluxe|bonus|explicit|expanded|remastered|special|edition|version|digital).*?[\)\]]?', '', name, flags=re.IGNORECASE)
-        cleaned = re.sub(r'[\(\[]?\s*(?:\b(?:feat|ft|featuring)\.?\s+.*[\)\]]?)', '', cleaned, flags=re.IGNORECASE)
-        return re.sub(r'[^\w]', '', cleaned).lower()
 
     target_clean = get_clean_album_folder(target_album).lower()
-    target_norm = normalize_album(target_album)
+    target_alphanumeric = re.sub(r'[^\w]', '', target_clean)
+    target_norm = normalize_album_name(target_album)
 
     try:
-        children = list(artist_dir.iterdir())
+        children = [c for c in artist_dir.iterdir() if c.is_dir()]
     except Exception:
         return None
 
     # 1. Exact case-insensitive match
     for child in children:
-        if child.is_dir():
-            if child.name.lower() == target_clean:
+        if child.name.lower() == target_clean:
+            return child
+
+    # 2. Match ignoring punctuation / whitespace
+    if target_alphanumeric:
+        for child in children:
+            if re.sub(r'[^\w]', '', child.name.lower()) == target_alphanumeric:
                 return child
 
-    # 2. Normalized match (e.g. UTOPIA vs UTOPIA (Deluxe))
+    # 3. Normalized base match ONLY IF target is NOT an upgraded edition compared to child
+    is_target_edition = bool(EDITION_SUFFIX_RE.search(target_album))
     if target_norm:
         for child in children:
-            if child.is_dir():
-                child_norm = normalize_album(child.name)
-                if child_norm and child_norm == target_norm:
-                    return child
+            is_child_edition = bool(EDITION_SUFFIX_RE.search(child.name))
+            # If target has an edition tag (e.g. FOMO) but child does not, do not reuse child
+            if is_target_edition and not is_child_edition:
+                continue
+            child_norm = normalize_album_name(child.name)
+            if child_norm and child_norm == target_norm:
+                return child
 
     return None
+
+def find_superseded_album_folders(artist_dir: Path, target_album: str) -> List[Path]:
+    """
+    Finds sibling folders in artist_dir that represent a base or older edition of target_album.
+    E.g. If target is 'Habibti (fomo)', finds 'Habibti'.
+    """
+    if not artist_dir.exists() or not artist_dir.is_dir():
+        return []
+
+    target_clean = get_clean_album_folder(target_album).lower()
+    target_norm_base = normalize_album_name(target_album)
+    if not target_norm_base:
+        return []
+
+    superseded = []
+    try:
+        for child in artist_dir.iterdir():
+            if not child.is_dir():
+                continue
+            if child.name.lower() == target_clean:
+                continue
+            
+            child_norm_base = normalize_album_name(child.name)
+            if child_norm_base and child_norm_base == target_norm_base:
+                superseded.append(child)
+    except Exception:
+        pass
+
+    return superseded
+
+def upgrade_or_merge_album_folders(
+    music_dir: Union[str, Path],
+    artist: str,
+    target_album: str,
+    official_album_tracks: Optional[List[Dict[str, Any]]] = None,
+    official_album_cover_bytes: Optional[bytes] = None,
+    official_mb_release_mbid: Optional[str] = None,
+    official_album_date: Optional[str] = None,
+    playlists_dir: Optional[Union[str, Path]] = None,
+    target_album_artist: Optional[str] = None,
+) -> List[Tuple[Dict[str, Any], Path]]:
+    """
+    When downloading/upgrading an album (e.g. 'Habibti (fomo)' when 'Habibti' exists),
+    migrates tracks from the superseded base album folder(s) into the upgraded folder,
+    retags them with the upgraded album metadata, removes the superseded folder,
+    and returns the migrated file records.
+    """
+    from backend.app.metadata_pipeline.tags import read_track
+    from backend.app.album_sync import match_file_to_official_track, extract_track_num_from_filename
+
+    music_path = Path(music_dir)
+    clean_artist = get_folder_artist_name(artist, target_album_artist)
+    safe_artist = sanitize_filename(clean_artist)
+    artist_dir = music_path / safe_artist
+
+    if not artist_dir.exists() and music_path.exists():
+        for child in music_path.iterdir():
+            if child.is_dir() and child.name.lower() == safe_artist.lower():
+                artist_dir = child
+                safe_artist = child.name
+                break
+
+    if not artist_dir.exists() or not artist_dir.is_dir():
+        return []
+
+    superseded_folders = find_superseded_album_folders(artist_dir, target_album)
+    if not superseded_folders:
+        return []
+
+    clean_album = get_clean_album_folder(target_album, clean_artist)
+    safe_album = sanitize_filename(clean_album)
+    target_album_dir = artist_dir / safe_album
+    target_album_dir.mkdir(parents=True, exist_ok=True)
+
+    disc_total = 1
+    track_total = len(official_album_tracks) if official_album_tracks else None
+    if official_album_tracks:
+        disc_total = max(
+            (t.get("disk_number") or t.get("disc_num") or 1 for t in official_album_tracks),
+            default=1
+        )
+
+    migrated_results: List[Tuple[Dict[str, Any], Path]] = []
+
+    for old_dir in superseded_folders:
+        logger.info(
+            f"Found superseded album folder '{old_dir.name}' for upgraded album '{target_album}'. "
+            f"Merging tracks into '{target_album_dir.name}'..."
+        )
+        old_files = [
+            p for p in old_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() in [".mp3", ".flac", ".m4a"]
+        ]
+
+        for old_file in old_files:
+            matched = (
+                match_file_to_official_track(old_file.name, official_album_tracks)
+                if official_album_tracks else None
+            )
+
+            if matched:
+                disc_num = matched.get("disk_number") or matched.get("disc_num") or 1
+                track_num = matched.get("track_position") or matched.get("position")
+                title_tag = matched.get("title") or old_file.stem
+                track_artist = matched.get("artist") or artist
+            else:
+                try:
+                    t_info = read_track(old_file)
+                    track_num = t_info.get("track_number")
+                    disc_num = t_info.get("disc_number") or 1
+                    title_tag = t_info.get("title")
+                    track_artist = t_info.get("artist") or artist
+                except Exception:
+                    track_num = None
+                    disc_num = 1
+                    title_tag = None
+                    track_artist = artist
+
+                if track_num is None:
+                    track_num = extract_track_num_from_filename(old_file.name)
+                if not title_tag or title_tag == old_file.stem:
+                    stem = old_file.stem
+                    if " - " in stem:
+                        title_tag = stem.split(" - ")[-1].strip()
+                    elif "_" in stem:
+                        title_tag = stem.split("_")[-1].strip()
+                    else:
+                        title_tag = stem
+
+            if disc_total > 1 and disc_num > 0:
+                dest_dir = target_album_dir / f"Disc {disc_num:02d}"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                dest_dir = target_album_dir
+
+            clean_filename = get_library_filename(
+                track_artist, safe_album, track_num, title_tag, old_file.suffix
+            )
+            dest_path = dest_dir / clean_filename
+
+            if dest_path.resolve() == old_file.resolve():
+                continue
+
+            if dest_path.exists():
+                # Compare audio quality
+                try:
+                    ext_old, br_old, bd_old, sr_old = get_file_audio_info(old_file)
+                    ext_new, br_new, bd_new, sr_new = get_file_audio_info(dest_path)
+                    old_score = (1 if ext_old == "flac" else 0, br_old, bd_old, sr_old)
+                    new_score = (1 if ext_new == "flac" else 0, br_new, bd_new, sr_new)
+                except Exception:
+                    old_score = (0, 0, 0, 0)
+                    new_score = (0, 0, 0, 0)
+
+                if new_score >= old_score:
+                    try:
+                        old_file.unlink()
+                        old_lrc = old_file.with_suffix(".lrc")
+                        if old_lrc.exists():
+                            old_lrc.unlink()
+                    except Exception as e:
+                        logger.warning(f"Failed to remove duplicate old file {old_file}: {e}")
+                    continue
+                else:
+                    try:
+                        dest_path.unlink()
+                        dest_lrc = dest_path.with_suffix(".lrc")
+                        if dest_lrc.exists():
+                            dest_lrc.unlink()
+                    except Exception:
+                        pass
+
+            try:
+                safe_move_file(old_file, dest_path)
+                old_lrc = old_file.with_suffix(".lrc")
+                if old_lrc.exists():
+                    safe_move_file(old_lrc, dest_path.with_suffix(".lrc"))
+            except Exception as move_err:
+                logger.error(f"Failed to move superseded file {old_file} to {dest_path}: {move_err}")
+                continue
+
+            lyrics_text = None
+            dest_lrc = dest_path.with_suffix(".lrc")
+            if dest_lrc.exists():
+                try:
+                    lyrics_text = dest_lrc.read_text(encoding="utf-8", errors="ignore")
+                except Exception:
+                    pass
+
+            try:
+                embed_metadata(
+                    file_path=str(dest_path),
+                    artist=track_artist,
+                    title=title_tag,
+                    album=target_album,
+                    track_num=track_num,
+                    track_total=track_total,
+                    cover_bytes=official_album_cover_bytes,
+                    lyrics_text=lyrics_text,
+                    album_artist=target_album_artist or clean_artist,
+                    date=official_album_date,
+                    disc_num=disc_num,
+                    disc_total=disc_total,
+                    is_explore=False,
+                    mbid_album=official_mb_release_mbid,
+                )
+            except Exception as tag_err:
+                logger.warning(f"Failed to retag upgraded track {dest_path}: {tag_err}")
+
+            if playlists_dir and Path(playlists_dir).exists():
+                try:
+                    update_m3u_references(Path(playlists_dir), old_file.name, dest_path)
+                except Exception as m3u_err:
+                    logger.debug(f"Failed to update M3U references for {old_file.name}: {m3u_err}")
+
+            mock_f = {
+                "filename": str(dest_path),
+                "track_num": track_num,
+                "title": title_tag,
+                "_official_position": (disc_num, track_num) if track_num is not None else None,
+                "download_status": "succeeded"
+            }
+            migrated_results.append((mock_f, dest_path))
+
+        # Check if old_dir has any remaining audio files
+        remaining = [
+            p for p in old_dir.rglob("*")
+            if p.is_file() and p.suffix.lower() in [".mp3", ".flac", ".m4a"]
+        ]
+        if not remaining:
+            logger.info(f"Superseded album directory '{old_dir}' has no remaining audio tracks. Removing folder.")
+            try:
+                shutil.rmtree(old_dir, ignore_errors=True)
+            except Exception as rm_err:
+                logger.warning(f"Failed to remove empty superseded directory '{old_dir}': {rm_err}")
+
+    return migrated_results
+
+def consolidate_all_split_albums(
+    music_dir: Union[str, Path],
+    playlists_dir: Optional[Union[str, Path]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Scans music_dir for split album editions (e.g. 'Habibti' and 'Habibti (FOMO)' under the same artist).
+    Merges tracks from the base edition into the upgraded edition and removes the empty base edition.
+    """
+    music_path = Path(music_dir)
+    if not music_path.exists() or not music_path.is_dir():
+        return []
+
+    consolidated_summary = []
+    try:
+        for artist_dir in music_path.iterdir():
+            if not artist_dir.is_dir():
+                continue
+
+            album_folders = [c for c in artist_dir.iterdir() if c.is_dir()]
+            if len(album_folders) < 2:
+                continue
+
+            groups: Dict[str, List[Path]] = {}
+            for folder in album_folders:
+                base_norm = normalize_album_name(folder.name)
+                if not base_norm:
+                    continue
+                groups.setdefault(base_norm, []).append(folder)
+
+            for base_norm, folders in groups.items():
+                if len(folders) < 2:
+                    continue
+
+                def _edition_priority(folder: Path):
+                    has_edition = bool(EDITION_SUFFIX_RE.search(folder.name))
+                    audio_count = len([
+                        p for p in folder.rglob("*")
+                        if p.is_file() and p.suffix.lower() in [".mp3", ".flac", ".m4a"]
+                    ])
+                    return (has_edition, audio_count, len(folder.name))
+
+                sorted_folders = sorted(folders, key=_edition_priority, reverse=True)
+                target_folder = sorted_folders[0]
+                target_album_name = target_folder.name
+
+                migrated = upgrade_or_merge_album_folders(
+                    music_dir=music_path,
+                    artist=artist_dir.name,
+                    target_album=target_album_name,
+                    playlists_dir=playlists_dir,
+                )
+                if migrated:
+                    consolidated_summary.append({
+                        "artist": artist_dir.name,
+                        "target_album": target_album_name,
+                        "migrated_tracks": len(migrated),
+                    })
+    except Exception as e:
+        logger.error(f"Error during consolidate_all_split_albums: {e}")
+
+    return consolidated_summary
 
 def resolve_album_dir(music_dir: Union[str, Path], artist: str, album: str, album_artist: str = "", disc_num: int = 1, disc_total: int = 1) -> Tuple[Path, str, str]:
     """
