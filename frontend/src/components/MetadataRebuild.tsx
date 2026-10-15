@@ -10,13 +10,21 @@ import RestoreIcon from '@mui/icons-material/Restore';
 import ScanIcon from '@mui/icons-material/Search';
 import apiService, { getErrorMessage } from '../api';
 
-const fields = ['title', 'artist', 'album', 'album_artist', 'date', 'track', 'disc'];
+const fields = ['title', 'artist', 'album', 'album_artist', 'date', 'track', 'disc', 'bpm'];
+const tagLabel = (value: any): string => Array.isArray(value) ? value.join(', ') || '∅' : value === null || value === undefined || value === '' ? '∅' : String(value);
+const bpmMessages: Record<string, string> = {
+  preserved: 'Existing BPM preserved', not_found: 'BPM missing · no archive data',
+  missing_mbid: 'BPM missing · recording MBID required', unavailable: 'BPM missing · provider unavailable; retry scan',
+  duration_mismatch: 'BPM missing · archive duration differs', unmatched: 'BPM missing · match recording first',
+  recording_mismatch: 'BPM missing · AcoustID mismatch', disabled: 'BPM missing · lookup disabled',
+};
 
 const MetadataRebuild: React.FC = () => {
   const [status, setStatus] = React.useState<any>({ status: 'idle', processed: 0, total: 0 });
   const [albums, setAlbums] = React.useState<any[]>([]);
   const [busy, setBusy] = React.useState(false);
   const [verifyAcoustid, setVerifyAcoustid] = React.useState(false);
+  const [lookupMissingBpm, setLookupMissingBpm] = React.useState(true);
   const [includeArtwork, setIncludeArtwork] = React.useState(true);
   const [allowItunes, setAllowItunes] = React.useState(true);
   const [manualMbids, setManualMbids] = React.useState<Record<string, string>>({});
@@ -50,7 +58,7 @@ const MetadataRebuild: React.FC = () => {
     setBusy(true);
     setMessage(null);
     try {
-      await apiService.startMetadataRebuildScan(verifyAcoustid);
+      await apiService.startMetadataRebuildScan(verifyAcoustid, lookupMissingBpm);
       setStatus({ status: 'scanning', processed: 0, total: 0, message: 'Starting read-only inventory…' });
     } catch (error) {
       setMessage({ type: 'error', text: getErrorMessage(error, 'Scan could not be started.') });
@@ -117,7 +125,7 @@ const MetadataRebuild: React.FC = () => {
             <Typography variant="h5" fontWeight={800}>Metadata Rebuild</Typography>
           </Stack>
           <Typography variant="body2" color="text.secondary" mt={1}>
-            Release-centric reconstruction using MusicBrainz, Cover Art Archive and optional AcoustID verification. Deezer is not used.
+            Release-centric reconstruction using MusicBrainz, Cover Art Archive and optional AcoustID verification. Missing BPM can be looked up by recording MBID in AcousticBrainz. Deezer is not used.
           </Typography>
         </Box>
         {['queued', 'scanning', 'cancelling'].includes(status.status)
@@ -143,10 +151,14 @@ const MetadataRebuild: React.FC = () => {
           </Stack>
           <Stack direction={{ xs: 'column', sm: 'row' }} gap={1}>
             <FormControlLabel control={<Switch checked={verifyAcoustid} onChange={e => setVerifyAcoustid(e.target.checked)} />} label="Verify recordings with AcoustID" />
+            <FormControlLabel control={<Switch checked={lookupMissingBpm} onChange={e => setLookupMissingBpm(e.target.checked)} />} label="Look up missing BPM" />
             <FormControlLabel control={<Switch checked={includeArtwork} onChange={e => setIncludeArtwork(e.target.checked)} />} label="Replace artwork" />
             <FormControlLabel control={<Switch checked={allowItunes} onChange={e => setAllowItunes(e.target.checked)} disabled={!includeArtwork} />} label="Allow verified digital artwork fallback" />
           </Stack>
         </Stack>
+        <Typography variant="caption" color="text.secondary" display="block" mt={1}>
+          BPM lookups use archived audio-analysis estimates, not MusicBrainz metadata. AcousticBrainz stopped collecting data in 2022, so coverage is limited. Existing BPM is preserved; unavailable values stay missing. Scan again to refresh saved plans.
+        </Typography>
         {['scanning', 'queued', 'cancelling'].includes(status.status) && <Box mt={2}>
           <LinearProgress variant={status.total ? 'determinate' : 'indeterminate'} value={progress} />
           <Typography variant="caption" color="text.secondary">{status.message} {status.total ? `(${status.processed}/${status.total})` : ''}</Typography>
@@ -166,6 +178,9 @@ const MetadataRebuild: React.FC = () => {
                 <Box flex={1}>
                   <Typography fontWeight={750}>{plan.album_artist} — {plan.album}</Typography>
                   <Typography variant="caption" color="text.secondary">{plan.folder} · {plan.matched_tracks}/{plan.total_tracks} tracks matched</Typography>
+                  {plan.bpm_summary && <Typography variant="caption" color="text.secondary" display="block">
+                    BPM at scan: {plan.bpm_summary.missing} missing · {plan.bpm_summary.proposed} proposed · {plan.bpm_summary.unresolved} unresolved
+                  </Typography>}
                 </Box>
                 <Chip size="small" label={`${Math.round(plan.confidence * 100)}%`} color={plan.confidence >= .9 ? 'success' : plan.confidence >= .6 ? 'warning' : 'error'} />
                 <Chip size="small" label={plan.state} variant="outlined" />
@@ -215,12 +230,17 @@ const MetadataRebuild: React.FC = () => {
 
               <Box sx={{ overflowX: 'auto' }}>
                 <Table size="small">
-                  <TableHead><TableRow><TableCell>File</TableCell><TableCell>Changed fields</TableCell><TableCell>AcoustID</TableCell></TableRow></TableHead>
+                  <TableHead><TableRow><TableCell>File</TableCell><TableCell>Changed fields</TableCell><TableCell>BPM</TableCell><TableCell>AcoustID</TableCell></TableRow></TableHead>
                   <TableBody>{plan.tracks.map((track: any) => {
-                    const changed = track.proposed ? fields.filter(field => String(track.current[field] ?? '') !== String(track.proposed[field] ?? '')) : [];
+                    const changed = track.proposed ? fields.filter(field => Object.prototype.hasOwnProperty.call(track.proposed, field) && String(track.current[field] ?? '') !== String(track.proposed[field] ?? '')) : [];
                     return <TableRow key={track.path}>
                       <TableCell sx={{ maxWidth: 320, wordBreak: 'break-all' }}>{track.path.split(/[\\/]/).pop()}</TableCell>
-                      <TableCell>{track.proposed ? changed.map(field => <Chip key={field} size="small" label={`${field}: ${track.current[field] || '∅'} → ${track.proposed[field] || '∅'}`} sx={{ m: .25 }} />) : <Chip size="small" color="error" label="unmatched" />}</TableCell>
+                      <TableCell>{track.proposed ? changed.map(field => <Chip key={field} size="small" label={`${field}: ${tagLabel(track.current[field])} → ${tagLabel(track.proposed[field])}`} sx={{ m: .25 }} />) : <Chip size="small" color="error" label="unmatched" />}</TableCell>
+                      <TableCell>
+                        {track.bpm_lookup?.status === 'found'
+                          ? <><Chip size="small" color="info" variant="outlined" label={`${track.proposed?.bpm?.join(', ')} BPM ${plan.state === 'applied' ? 'applied' : 'proposed'}`} /><Typography variant="caption" display="block">{track.bpm_lookup.source} · estimate, review before applying</Typography></>
+                          : <Typography variant="caption">{track.current.bpm?.length ? `${track.current.bpm.join(', ')} BPM · preserved` : bpmMessages[track.bpm_lookup?.status] || 'BPM missing · run a new scan'}</Typography>}
+                      </TableCell>
                       <TableCell>{track.acoustid?.status || 'not checked'}</TableCell>
                     </TableRow>;
                   })}</TableBody>

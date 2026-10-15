@@ -859,8 +859,8 @@ export const apiService = {
   },
 
   // ── Release-centric metadata rebuild ──────────────────────────────────────
-  async startMetadataRebuildScan(verifyAcoustid: boolean = false): Promise<any> {
-    const resp = await api.post('/api/metadata-rebuild/scan', { verify_acoustid: verifyAcoustid });
+  async startMetadataRebuildScan(verifyAcoustid: boolean = false, lookupMissingBpm: boolean = true): Promise<any> {
+    const resp = await api.post('/api/metadata-rebuild/scan', { verify_acoustid: verifyAcoustid, lookup_missing_bpm: lookupMissingBpm });
     return resp.data;
   },
 

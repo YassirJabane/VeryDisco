@@ -11,10 +11,12 @@ from backend.app.auth import get_current_user
 from backend.app.library_coordinator import library_scan_coordinator
 from .providers import MusicBrainzReleaseProvider
 from .service import MetadataRebuildService
+from .bpm import RecordingBpmProvider
 
 
 class ScanRequest(BaseModel):
     verify_acoustid: bool = False
+    lookup_missing_bpm: bool = True
 
 
 class SelectReleaseRequest(BaseModel):
@@ -34,7 +36,8 @@ def create_metadata_rebuild_router(
     router = APIRouter(prefix="/api/metadata-rebuild", tags=["metadata-rebuild"])
     state_root = Path(db.db_path).resolve().parent / "metadata-rebuild"
     provider = MusicBrainzReleaseProvider(db.get_provider_cache, db.set_provider_cache)
-    service = MetadataRebuildService(state_root, provider=provider)
+    service = MetadataRebuildService(state_root, provider=provider,
+        bpm_provider=RecordingBpmProvider(db.get_provider_cache, db.set_provider_cache))
     tasks: dict[Any, asyncio.Task] = {}
 
     async def context(request: Request) -> tuple[dict[str, Any], Path]:
@@ -63,6 +66,7 @@ def create_metadata_rebuild_router(
                 await service.scan(
                     user["id"], root, aliases, body.verify_acoustid, api_key,
                     indexed_tracks=indexed_tracks,
+                    lookup_missing_bpm=body.lookup_missing_bpm,
                 )
 
         service.mark_queued(user["id"])

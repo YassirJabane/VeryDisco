@@ -1,5 +1,9 @@
 # BPM and mood: preservation, not inference
 
+Subsequent update: `2026-10-15-bpm-rebuild-enrichment.md` documents the optional
+recording-MBID BPM archive lookup now available in Metadata Rebuild. The original
+preservation fix below does not itself perform that lookup or infer mood.
+
 ## Confirmed cause
 
 The post-download writer completely wipes source metadata. Its useful-tag allowlist

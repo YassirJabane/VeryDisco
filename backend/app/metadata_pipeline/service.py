@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable, Optional
 from backend.app.logger import get_logger
 from .providers import AcoustIDRecordingVerifier, ArtworkProvider, MusicBrainzReleaseProvider, MusicBrainzUnavailable, normalize
 from .tags import AUDIO_SUFFIXES, read_track, write_track
+from .bpm import RecordingBpmProvider
 
 
 logger = get_logger()
@@ -63,11 +64,13 @@ class MetadataRebuildService:
         provider: Optional[MusicBrainzReleaseProvider] = None,
         artwork: Optional[ArtworkProvider] = None,
         verifier: Optional[AcoustIDRecordingVerifier] = None,
+        bpm_provider: Optional[RecordingBpmProvider] = None,
     ) -> None:
         self.state_root = Path(state_root)
         self.provider = provider or MusicBrainzReleaseProvider()
         self.artwork = artwork or ArtworkProvider()
         self.verifier = verifier or AcoustIDRecordingVerifier()
+        self.bpm_provider = bpm_provider or RecordingBpmProvider()
         self._locks: dict[str, asyncio.Lock] = {}
         self._cancel_events: dict[Any, threading.Event] = {}
 
@@ -139,6 +142,7 @@ class MetadataRebuildService:
         verify_acoustid: bool = False,
         acoustid_api_key: str = "",
         indexed_tracks: Optional[list[dict[str, Any]]] = None,
+        lookup_missing_bpm: bool = True,
     ) -> list[dict[str, Any]]:
         lock = self._locks.setdefault(user_id, asyncio.Lock())
         if lock.locked():
@@ -225,6 +229,7 @@ class MetadataRebuildService:
                                 if change["acoustid"]["status"] == "mismatch":
                                     plan["confidence"] = min(plan["confidence"], 0.49)
                                     plan["review"] = "required"
+                    await self._enrich_missing_bpm(plan, lookup_missing_bpm)
                     plans.append(plan)
                     status.update({
                         "processed": index,
@@ -416,6 +421,40 @@ class MetadataRebuildService:
             "created_at": _now(), "root": str(root),
         }
 
+    async def _enrich_missing_bpm(self, plan: dict, enabled: bool) -> None:
+        """Prepare optional BPM changes; scanning never writes media files."""
+        plan["lookup_missing_bpm"] = enabled
+        missing = proposed_count = 0
+        for change in plan["tracks"]:
+            current = change["current"]
+            proposed = change.get("proposed")
+            if current.get("bpm"):
+                change["bpm_lookup"] = {"status": "preserved"}
+                if proposed is not None:
+                    proposed["bpm"] = current["bpm"]
+                continue
+            missing += 1
+            if proposed is None:
+                change["bpm_lookup"] = {"status": "unmatched"}
+            elif change.get("acoustid", {}).get("status") == "mismatch":
+                change["bpm_lookup"] = {"status": "recording_mismatch"}
+            elif not enabled:
+                change["bpm_lookup"] = {"status": "disabled"}
+            else:
+                try:
+                    result = await self.bpm_provider.lookup(
+                        proposed.get("recording_mbid", ""), current.get("duration", 0),
+                    )
+                    change["bpm_lookup"] = result
+                    if result.get("status") == "found" and result.get("bpm"):
+                        proposed["bpm"] = result["bpm"]
+                        proposed_count += 1
+                except Exception as error:
+                    # Optional enrichment must never discard a release proposal.
+                    logger.warning("BPM lookup failed for %s: %s", change["path"], error)
+                    change["bpm_lookup"] = {"status": "unavailable"}
+        plan["bpm_summary"] = {"missing": missing, "proposed": proposed_count, "unresolved": missing - proposed_count}
+
     @staticmethod
     def _match_track(local: dict[str, Any], remaining: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
         from backend.app.media_versions import same_master
@@ -445,7 +484,7 @@ class MetadataRebuildService:
 
     @staticmethod
     def _public_tags(track: dict[str, Any]) -> dict[str, Any]:
-        excluded = {"path", "cover", "mtime_ns", "size", "duration"}
+        excluded = {"path", "cover", "mtime_ns", "size"}
         return {key: value for key, value in track.items() if key not in excluded}
 
     async def select_release(self, user_id: str, plan_id: str, release_mbid: str) -> dict[str, Any]:
@@ -464,6 +503,7 @@ class MetadataRebuildService:
             "tracks": [read_track(Path(change["path"])) for change in plans[index]["tracks"]],
         }
         rebuilt = self._build_plan(Path(plans[index]["root"]), group, [details])
+        await self._enrich_missing_bpm(rebuilt, plans[index].get("lookup_missing_bpm", True))
         rebuilt["review"] = "selected"
         plans[index] = rebuilt
         _atomic_json(self._plans_path(user_id), plans)
