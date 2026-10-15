@@ -22,6 +22,9 @@ export const SearchMusic: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchType, setSearchType] = useState<'track' | 'album'>('track');
   const [searchResults, setSearchResults] = useState<any[]>([]);
+  const searchGeneration = React.useRef(0);
+  const versionGeneration = React.useRef<Record<string, number>>({});
+  useEffect(() => () => { searchGeneration.current += 1; }, []);
   const [searchLoading, setSearchLoading] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [queuedKeys, setQueuedKeys] = useState<Set<string>>(new Set());
@@ -145,6 +148,38 @@ export const SearchMusic: React.FC = () => {
     }
   };
 
+  const selectVersion = async (item: any, version: any) => {
+    const generation = (versionGeneration.current[item.id] || 0) + 1;
+    versionGeneration.current[item.id] = generation;
+    if (String(version.id) === String(item.id)) {
+      setSelectedVersions(prev => { const next = { ...prev }; delete next[item.id]; return next; });
+      return;
+    }
+    const search = searchGeneration.current;
+    setSelectedVersions(prev => ({ ...prev, [item.id]: { ...version, albumStatus: 'checking', upgradeAvailable: false } }));
+    try {
+      // Availability belongs to this edition, never to the original search row.
+      let expected = version.nb_tracks;
+      if (!expected) {
+        const tracklist = await apiService.getAlbumTracks(version.id);
+        expected = tracklist?.data?.length || undefined;
+      }
+      const checks = await apiService.checkAlbumsBatch([{
+        artist: version.artist?.name || item.artist?.name || '', title: version.title,
+        album_id: version.id, expected_tracks: expected,
+      }]);
+      if (search !== searchGeneration.current || generation !== versionGeneration.current[item.id]) return;
+      const check = checks[0];
+      setSelectedVersions(prev => ({ ...prev, [item.id]: { ...version,
+        albumStatus: check?.status || 'unknown', upgradeAvailable: check?.upgrade_available ?? false,
+      } }));
+    } catch {
+      if (search !== searchGeneration.current || generation !== versionGeneration.current[item.id]) return;
+      setSelectedVersions(prev => ({ ...prev, [item.id]: { ...version, albumStatus: 'unknown', upgradeAvailable: false } }));
+      notify('This edition could not be checked. It is not confirmed complete or missing.', 'warning');
+    }
+  };
+
   const handleToggleAlbumTracks = async (item: any, selectedVersion: any) => {
     const albumId = selectedVersion?.id || item.id;
     const key = String(albumId);
@@ -170,6 +205,7 @@ export const SearchMusic: React.FC = () => {
   const handleSearch = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!searchQuery.trim()) return;
+    searchGeneration.current += 1;
     
     setAlbumVersions({});
     setSelectedVersions({});
@@ -299,8 +335,9 @@ export const SearchMusic: React.FC = () => {
     if (existingStatus === 'full' && !existingUpgradeAvailable) {
       confirm({
         title: "Re-download Album?",
-        message: `You already have the album "${artist} - ${album}" fully in the desired quality. Do you want to download/overwrite it anyway?`,
+        message: `The library check reports "${artist} - ${album}" as complete. Re-downloading forces a new download of all tracks and may replace existing files. This is not needed to complete an edition. Continue only if you want to replace the album.`,
         confirmText: "Download Anyway",
+        isDangerous: true,
         onConfirm: () => executeDownloadAlbum(artist, album, true, key)
       });
       return;
@@ -388,7 +425,8 @@ export const SearchMusic: React.FC = () => {
 
                 const albumId = String(selectedVersion?.id || item.id);
                 const expanded = !isTrack && expandedAlbumId === albumId;
-                const albumStatus = selectedVersion?.albumStatus || item.albumStatus || 'missing';
+                const albumStatus = selectedVersion?.albumStatus ?? 'unknown';
+                const albumUpgrade = selectedVersion?.upgradeAvailable ?? false;
 
                 return (
                   <React.Fragment key={i}>
@@ -459,8 +497,8 @@ export const SearchMusic: React.FC = () => {
                             )
                           ) : (
                             (() => {
-                              const status = selectedVersion?.albumStatus || item.albumStatus || 'missing';
-                              const upgrade = selectedVersion?.upgradeAvailable || item.upgradeAvailable || false;
+                              const status = albumStatus;
+                              const upgrade = albumUpgrade;
                               
                               if (status === 'full') {
                                 if (upgrade) {
@@ -503,6 +541,8 @@ export const SearchMusic: React.FC = () => {
                                     }}
                                   />
                                 );
+                              } else if (status === 'checking' || status === 'unknown') {
+                                return <Chip label={status === 'checking' ? 'Checking edition…' : 'Availability unknown'} size="small" color="warning" variant="outlined" />;
                               } else {
                                 return (
                                   <Chip 
@@ -537,16 +577,12 @@ export const SearchMusic: React.FC = () => {
                                 onChange={(e) => {
                                   const val = e.target.value;
                                   if (String(val) === String(item.id)) {
-                                    setSelectedVersions(prev => {
-                                      const next = { ...prev };
-                                      delete next[item.id];
-                                      return next;
-                                    });
+                                    void selectVersion(item, item);
                                   } else {
                                     const matching = albumVersions[item.id] || [];
                                     const found = matching.find((a: any) => String(a.id) === String(val));
                                     if (found) {
-                                      setSelectedVersions(prev => ({ ...prev, [item.id]: found }));
+                                      void selectVersion(item, found);
                                     }
                                   }
                                 }}
@@ -641,16 +677,16 @@ export const SearchMusic: React.FC = () => {
                             color="success"
                             size="small"
                             startIcon={downloadingKeys.has(albumKey) ? <CircularProgress size={14} color="inherit" /> : <DownloadIcon />}
-                            disabled={downloadingKeys.has(albumKey)}
+                            disabled={downloadingKeys.has(albumKey) || albumStatus === 'checking'}
                             onClick={() => handleDownloadAlbum(
                               artistName, 
                               titleLabel, 
-                              selectedVersion?.albumStatus || item.albumStatus, 
-                              selectedVersion?.upgradeAvailable || item.upgradeAvailable
+                              albumStatus,
+                              albumUpgrade
                             )}
                             sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}
                           >
-                            {queuedKeys.has(albumKey) ? 'Queued' : 'Download'}
+                            {queuedKeys.has(albumKey) ? 'Queued' : albumStatus === 'checking' ? 'Checking…' : albumStatus === 'full' && !albumUpgrade ? 'Re-download' : albumStatus === 'partial' ? 'Complete album' : 'Download'}
                           </Button>
                           <Button
                             variant="outlined"
