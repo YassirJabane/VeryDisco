@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
 from backend.app.logger import get_logger
-from .providers import AcoustIDRecordingVerifier, ArtworkProvider, MusicBrainzReleaseProvider, normalize
+from .providers import AcoustIDRecordingVerifier, ArtworkProvider, MusicBrainzReleaseProvider, MusicBrainzUnavailable, normalize
 from .tags import AUDIO_SUFFIXES, read_track, write_track
 
 
@@ -210,6 +210,7 @@ class MetadataRebuildService:
                         provider_errors += 1
                         plan = self._build_plan(root, group, [])
                         plan["provider_error"] = str(exc)
+                        plan["provider_error_retryable"] = isinstance(exc, MusicBrainzUnavailable)
                         logger.warning(
                             "Metadata rebuild %s: provider failed for %s — %s: %s",
                             job_id, group["album_artist"], group["album"], exc,

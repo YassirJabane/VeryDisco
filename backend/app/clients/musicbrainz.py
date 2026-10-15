@@ -30,14 +30,18 @@ _release_group_releases_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {
 _tag_extras_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
-async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional[dict]:
-    """Make a rate-limited GET to the MusicBrainz API with automatic retries."""
+async def musicbrainz_request(path: str, params: dict = None, timeout: int = 30) -> Optional[dict]:
+    """Shared gate for downloads AND rebuild, with bounded transient retries.
+
+    A provider outage must raise, not become a cached 'no release found'.
+    Keep backoff inside the gate so competing pipelines also cool down.
+    """
     global _last_request_time
     url = f"{_MB_BASE}{path}"
     headers = {"User-Agent": _USER_AGENT, "Accept": "application/json"}
 
-    for attempt in range(3):
-        async with _rate_lock:
+    async with _rate_lock:
+        for attempt in range(3):
             now = time.monotonic()
             wait = _MIN_INTERVAL - (now - _last_request_time)
             if wait > 0:
@@ -46,33 +50,46 @@ async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional
             try:
                 from backend.app.clients.http_client import get_http_client
                 client = await get_http_client()
-                resp = await client.get(url, params=params, headers=headers)
-                _last_request_time = time.monotonic()
-
+                resp = await client.get(url, params=params, headers=headers, timeout=timeout)
                 if resp.status_code == 404:
                     return None
-                if resp.status_code in (503, 429):
-                    logger.warning(f"MusicBrainz rate-limited ({resp.status_code}). Sleeping 3.5s before retry {attempt+1}/3.")
-                    await asyncio.sleep(3.5)
-                    _last_request_time = time.monotonic()
-                    continue
                 resp.raise_for_status()
                 return resp.json()
             except httpx.HTTPStatusError as e:
+                if e.response.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+                    raise
+                delay = 3.5 * (2 ** attempt)
+                retry_after = e.response.headers.get('Retry-After')
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except ValueError:
+                        from datetime import datetime, timezone
+                        from email.utils import parsedate_to_datetime
+                        try:
+                            delay = max(delay, (parsedate_to_datetime(retry_after) - datetime.now(timezone.utc)).total_seconds())
+                        except (ValueError, TypeError, OverflowError):
+                            pass
+                # Do not retry before a long provider cooldown: fail explicitly instead.
+                if delay > 60:
+                    raise
+                logger.warning('MusicBrainz temporarily unavailable (%s); retry %s/3 in %.1fs', e.response.status_code, attempt + 2, delay)
+                await asyncio.sleep(delay)
+            except httpx.TransportError:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(3.5 * (2 ** attempt))
+            finally:
                 _last_request_time = time.monotonic()
-                if e.response.status_code in (503, 429):
-                    logger.warning(f"MusicBrainz rate-limited ({e.response.status_code}). Sleeping 3.5s before retry {attempt+1}/3.")
-                    await asyncio.sleep(3.5)
-                    _last_request_time = time.monotonic()
-                    continue
-                logger.warning(f"MusicBrainz HTTP error ({path}, attempt {attempt+1}/3): {e}")
-            except Exception as e:
-                _last_request_time = time.monotonic()
-                logger.warning(f"MusicBrainz request failed ({path}, attempt {attempt+1}/3): {e}")
 
-        if attempt < 2:
-            await asyncio.sleep(2)
-    return None
+
+async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional[dict]:
+    """Legacy optional lookups retain their contract; rebuild uses the raising API."""
+    try:
+        return await musicbrainz_request(path, params, timeout)
+    except (httpx.HTTPError, ValueError) as error:
+        logger.warning('MusicBrainz lookup unavailable for %s (%s)', path, type(error).__name__)
+        return None
 
 
 async def get_release_with_media(release_mbid: str) -> Optional[dict]:

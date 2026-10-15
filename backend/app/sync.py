@@ -618,7 +618,17 @@ def find_superseded_album_folders(artist_dir: Path, target_album: str) -> List[P
             
             child_norm_base = normalize_album_name(child.name)
             from backend.app.media_versions import same_master
-            if child_norm_base and child_norm_base == target_norm_base and same_master(target_album, child.name):
+            # Providers also return named editions without brackets, e.g.
+            # 'For All The Dogs Scary Hours Edition'. Infer the base boundary
+            # from a real sibling, not a hard-coded list of album/artist names.
+            base_words = re.sub(r'[^\w]+', ' ', child.name).casefold().strip()
+            target_words = re.sub(r'[^\w]+', ' ', target_album).casefold().strip()
+            named_edition = (
+                child_norm_base == re.sub(r'[^\w]', '', child.name).lower()
+                and target_words.startswith(base_words + ' ')
+                and target_words.endswith(' edition')
+            )
+            if child_norm_base and (child_norm_base == target_norm_base or named_edition) and same_master(target_album, child.name):
                 superseded.append(child)
     except Exception:
         pass

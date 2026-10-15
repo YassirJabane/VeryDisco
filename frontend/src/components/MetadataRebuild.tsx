@@ -196,7 +196,10 @@ const MetadataRebuild: React.FC = () => {
                       onClick={() => chooseRelease(plan.id, manualMbids[plan.id].trim())}>Load MBID</Button>
                   </Stack>
                   {plan.provider_error && <Alert severity="error" sx={{ mt: 1.5 }}>
-                    Provider lookup failed for this album: {plan.provider_error}. Paste a release MBID or run the scan again.
+                    Provider lookup failed for this album: {plan.provider_error}{' '}
+                    {plan.provider_error_retryable
+                      ? 'Try the scan again later. Changing the release MBID does not resolve a provider outage.'
+                      : 'Paste a release MBID or run the scan again.'}
                   </Alert>}
                   {release && <Stack direction="row" gap={1} flexWrap="wrap" mt={1}>
                     <Chip size="small" label={`MBID ${release.release_mbid}`} />

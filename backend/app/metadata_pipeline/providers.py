@@ -4,8 +4,8 @@ import asyncio
 import json
 import re
 import subprocess
-import time
 import urllib.parse
+import httpx
 from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable, Optional
 
@@ -48,6 +48,10 @@ def artist_credit(credits: list[dict[str, Any]] | None) -> tuple[str, list[dict[
     return "".join(display).strip(), entities
 
 
+class MusicBrainzUnavailable(RuntimeError):
+    """Temporary provider failure, not an invalid release identity."""
+
+
 class MusicBrainzReleaseProvider:
     """MusicBrainz release matcher with the public API rate limit enforced."""
 
@@ -56,27 +60,19 @@ class MusicBrainzReleaseProvider:
         cache_get: Optional[Callable[[str], Awaitable[Optional[Any]]]] = None,
         cache_set: Optional[Callable[[str, Any, int], Awaitable[None]]] = None,
     ) -> None:
-        self._lock = asyncio.Lock()
-        self._last_request = 0.0
         self._cache_get = cache_get
         self._cache_set = cache_set
 
     async def _get(self, path: str, params: dict[str, Any]) -> Optional[dict[str, Any]]:
-        async with self._lock:
-            delay = 1.05 - (time.monotonic() - self._last_request)
-            if delay > 0:
-                await asyncio.sleep(delay)
-            client = await get_http_client()
-            response = await client.get(
-                f"{MB_BASE}{path}",
-                params=params,
-                headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-            )
-            self._last_request = time.monotonic()
-        if response.status_code == 404:
-            return None
-        response.raise_for_status()
-        return response.json()
+        from backend.app.clients.musicbrainz import musicbrainz_request
+        try:
+            return await musicbrainz_request(path, params)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code in (429, 500, 502, 503, 504):
+                raise MusicBrainzUnavailable(f'MusicBrainz is temporarily unavailable (HTTP {error.response.status_code}). No metadata proposal could be verified.') from error
+            raise
+        except httpx.TransportError as error:
+            raise MusicBrainzUnavailable('MusicBrainz could not be reached. No metadata proposal could be verified.') from error
 
     async def release_details(self, release_mbid: str) -> Optional[dict[str, Any]]:
         cache_key = f"musicbrainz:release:v2:{release_mbid}"

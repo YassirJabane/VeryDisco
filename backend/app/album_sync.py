@@ -615,6 +615,10 @@ async def _download_album_task_internal(
         official_album_cover_bytes = None
         official_album_date = None
         official_mb_release_mbid = None
+        # These fallbacks must also exist when every track is already local.
+        mbid_album = None
+        cover_bytes = None
+        dz_date = None
 
         # 1. Fetch official album tracklist and release date from MusicBrainz
         try:
@@ -1016,12 +1020,8 @@ async def _download_album_task_internal(
             # active_playlists is resolved from outer scope
             from backend.app.sync import find_existing_track_file, get_file_audio_info, check_quality_status
 
-            # Consider official_album_tracks reliable for skipping extra files if:
-            # 1. An explicit release MBID was requested
-            # 2. Or the official tracklist has >= 4 tracks and EITHER covers >= 40% of folder files,
-            #    OR the folder matches a major portion of the official album (handles multi-disc box sets/anniversary editions)
-            # 3. Or requested as a single
-            matched_official_count = count_matching_official_tracks(best_files)
+            # The resolved tracklist scopes both automatic and manually chosen
+            # folders. The search-only ranking helper does not exist for manual picks.
             is_official_reliable = bool(official_album_tracks and len(official_album_tracks) >= 1)
 
             for f in best_files:
@@ -1099,7 +1099,7 @@ async def _download_album_task_internal(
                         
                         # If the existing file is already inside the destination album folder,
                         # there is nothing to do — skip entirely to avoid creating duplicates.
-                        if Path(existing_path).resolve().parent == Path(final_dir).resolve():
+                        if Path(existing_path).resolve().is_relative_to(Path(final_dir).resolve()):
                             logger.debug(f"Existing file already in destination folder, no copy needed for '{clean_title}'")
                             copied_files.append((f, existing_path))
                             if _is_instrumental_track(clean_title, album):
@@ -1122,7 +1122,7 @@ async def _download_album_task_internal(
                         credited_artists = matched.get("credited_artists") if matched else None
 
                         filename_part = os.path.basename(str(existing_path))
-                        matched = match_file_to_official_track(filename_part, official_album_tracks)
+                        matched = matched or match_file_to_official_track(filename_part, official_album_tracks)
                         official_disc_num = None
                         if matched:
                             official_disc_num = matched.get("disk_number") or matched.get("disc_num")
@@ -1204,7 +1204,7 @@ async def _download_album_task_internal(
                             from backend.app.sync import update_m3u_references
                             try:
                                 if Path(playlists_dir).exists():
-                                    update_m3u_references(Path(playlists_dir), existing_path.name, dest_path)
+                                    update_m3u_references(Path(playlists_dir), Path(existing_path).name, dest_path)
                             except Exception as e:
                                 logger.error(f"Failed to update M3U references on sync: {e}")
 
@@ -1213,16 +1213,19 @@ async def _download_album_task_internal(
                                 instrumental_paths.add(str(dest_path))
                         except Exception as e:
                             logger.error(f"Failed to copy and link existing track {clean_title}: {e}")
-                            # Staging leaves both source and prior destination intact.
-                            to_download.append(f)
+                            # Local I/O/tag errors cannot be fixed by downloading
+                            # the same audio again. Preserve the original and stop.
+                            raise RuntimeError(f"Could not reuse existing track '{clean_title}'; original retained") from e
                     else:
                         to_download.append(f)
                 else:
                     to_download.append(f)
 
+            # Reused tracks count even when this peer must supply extra tracks.
+            # Otherwise a partial/failed transfer makes fallback request them again.
+            overall_copied.extend(copied_files)
             if not to_download:
                 logger.info(f"All tracks of album '{artist} - {album}' were already present in equal/better quality and copied. Album download completed instantly.")
-                overall_copied.extend(copied_files)
                 album_complete = True
                 break
 
