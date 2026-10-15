@@ -1772,8 +1772,9 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
     def _norm_album(s: str) -> str:
         if not s:
             return ""
-        clean = re.sub(r'(?i)\b(?:disc|cd|disk)\s*\d+.*|\b(?:deluxe|explicit|edition|version|remastered|single)\b.*', '', s)
-        clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', clean).strip()
+        # The index preserves edition names. Strip only disc-folder suffixes,
+        # never '(Scary Hours Edition)', Deluxe, Instrumental or remaster identity.
+        clean = re.sub(r'(?i)\s*[\(\[]?\b(?:disc|cd|disk)\s*\d+[\)\]]?\s*$', '', s).strip()
         return _norm(clean) or _norm(s)
 
     artists_in_items = {_norm(extract_main_artist(it.artist) or it.artist) for it in items if it.artist}
@@ -1835,9 +1836,32 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
             "title": row.get("title") or Path(row.get("filepath") or "").stem,
             "track_position": row.get("track_num"), "disk_number": row.get("disc_num") or 1,
             "exists": True,
-            "quality_status": "better" if (row.get("ext") or "").lower() == "flac" else "same",
+            "quality_status": check_quality_status(row.get("ext") or "", row.get("bitrate") or 0,
+                row.get("bit_depth") or 0, row.get("sample_rate") or 0, cfg),
             "filepath": row.get("filepath"),
         } for row in rows]
+
+    def _distinct_tracks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        distinct = {}
+        for row in rows:
+            disc = row.get('disc_num') or 1
+            position = row.get('track_num')
+            if position:
+                key = (disc, 'position', str(position))
+            elif row.get('track_mbid'):
+                key = (disc, 'recording', row['track_mbid'])
+            elif row.get('title_norm') or row.get('title'):
+                key = (disc, 'title', row.get('title_norm') or _norm(row['title']))
+            else:
+                # An unidentified file cannot establish an album's completeness.
+                continue
+            def rank(track):
+                quality = check_quality_status(track.get('ext') or '', track.get('bitrate') or 0,
+                    track.get('bit_depth') or 0, track.get('sample_rate') or 0, cfg)
+                return (quality != 'worse', quality == 'better', track.get('bitrate') or 0)
+            if key not in distinct or rank(row) > rank(distinct[key]):
+                distinct[key] = row
+        return list(distinct.values())
 
     for item in items:
         artist_clean = _norm(extract_main_artist(item.artist) or item.artist)
@@ -1847,7 +1871,8 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
         if album_id_str and "-" in album_id_str and len(album_id_str) >= 32:
             matched_tracks = album_mbid_map.get(album_id_str, [])
             if matched_tracks:
-                cnt = len(matched_tracks)
+                unique_tracks = _distinct_tracks(matched_tracks)
+                cnt = len(unique_tracks)
                 cached_list = durable_tracklists.get(
                     (matched_tracks[0].get("artist_norm"), matched_tracks[0].get("album_norm")), {}
                 )
@@ -1857,8 +1882,9 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                     "title": item.title,
                     "exists": True,
                     "status": _album_completion_status(cnt, expected),
-                    "upgrade_available": False,
-                    "tracks": _present_tracks(matched_tracks)
+                    "upgrade_available": any(track['quality_status'] == 'worse' for track in _present_tracks(unique_tracks)),
+                    "matched_tracks": cnt, "expected_tracks": expected,
+                    "tracks": _present_tracks(unique_tracks)
                 })
                 continue
 
@@ -1874,7 +1900,8 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 )
                 
             if matched_tracks:
-                cnt = len(matched_tracks)
+                unique_tracks = _distinct_tracks(matched_tracks)
+                cnt = len(unique_tracks)
                 cached_list = durable_tracklists.get(
                     (matched_tracks[0].get("artist_norm"), matched_tracks[0].get("album_norm")), {}
                 )
@@ -1884,8 +1911,9 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                     "title": item.title,
                     "exists": True,
                     "status": _album_completion_status(cnt, expected),
-                    "upgrade_available": False,
-                    "tracks": _present_tracks(matched_tracks)
+                    "upgrade_available": any(track['quality_status'] == 'worse' for track in _present_tracks(unique_tracks)),
+                    "matched_tracks": cnt, "expected_tracks": expected,
+                    "tracks": _present_tracks(unique_tracks)
                 })
                 continue
                 

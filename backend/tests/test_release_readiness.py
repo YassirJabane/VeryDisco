@@ -261,3 +261,47 @@ async def test_mbid_album_check_uses_official_total_instead_of_local_tags(audit_
     audit_app.db.get_album_tracklists.return_value = {}
     result = await audit_app.batch_check_existence([audit_app.BatchCheckItem(artist="Artist", title="Album", album_id=mbid)], None)
     assert result[0]["status"] != "full"
+
+
+@pytest.mark.asyncio
+async def test_album_completion_counts_tracks_not_copies(audit_app):
+    rows = [{"artist_norm": "drake", "album_norm": "forallthedogsscaryhoursedition",
+        "title": f"Track {i}", "title_norm": f"track{i}", "disc_num": 1, "track_num": i,
+        "ext": "mp3", "bitrate": 320, "filepath": f"/old/{i}.mp3"} for i in range(1, 24)]
+    audit_app.db.query_library_index_for_user.return_value = rows + [{**r, 'filepath': r['filepath'].replace('/old/', '/new/')} for r in rows]
+    result = await audit_app.batch_check_existence([audit_app.BatchCheckItem(
+        artist='Drake', title='For All The Dogs Scary Hours Edition', album_id=123, expected_tracks=29)], None)
+    assert result[0]['status'] == 'partial'
+    assert result[0]['matched_tracks'] == 23
+    assert len(result[0]['tracks']) == 23
+
+
+@pytest.mark.asyncio
+async def test_album_checks_preserve_edition_identity(audit_app):
+    audit_app.db.query_library_index_for_user.return_value = [{
+        'artist_norm': 'drake', 'album_norm': 'forallthedogs', 'track_num': i,
+        'title': f'Track {i}', 'ext': 'mp3', 'bitrate': 320} for i in range(1, 24)]
+    result = await audit_app.batch_check_existence([audit_app.BatchCheckItem(
+        artist='Drake', title='For All The Dogs (Scary Hours Edition)', album_id=123, expected_tracks=29)], None)
+    assert result[0]['status'] == 'missing'
+    audit_app.db.query_library_index_for_user.return_value = [{**r, 'album_norm': 'forallthedogsscaryhoursedition'}
+        for r in audit_app.db.query_library_index_for_user.return_value]
+    result = await audit_app.batch_check_existence([audit_app.BatchCheckItem(
+        artist='Drake', title='For All The Dogs Scary Hours Edition', album_id=123, expected_tracks=29)], None)
+    assert result[0]['status'] == 'partial'
+    assert result[0]['matched_tracks'] == 23
+
+
+@pytest.mark.asyncio
+async def test_album_quality_uses_best_duplicate_and_does_not_claim_no_upgrade(audit_app, monkeypatch):
+    monkeypatch.setattr('backend.app.sync.check_quality_status', lambda ext, bitrate, *args: 'worse' if bitrate < 320 else 'same')
+    rows = [{'artist_norm': 'artist', 'album_norm': 'album', 'track_num': 1, 'title': 'Song', 'ext': 'mp3', 'bitrate': 128}]
+    audit_app.db.query_library_index_for_user.return_value = rows
+    item = audit_app.BatchCheckItem(artist='Artist', title='Album', album_id=123, expected_tracks=1)
+    result = await audit_app.batch_check_existence([item], None)
+    assert result[0]['status'] == 'full'
+    assert result[0]['upgrade_available'] is True
+    rows.append({**rows[0], 'bitrate': 320})
+    result = await audit_app.batch_check_existence([item], None)
+    assert result[0]['matched_tracks'] == 1
+    assert result[0]['upgrade_available'] is False
