@@ -233,3 +233,16 @@ async def test_cover_lookup_preserves_edition_qualifiers(monkeypatch):
     monkeypatch.setattr(client, 'download_cover_art', download)
     assert await client.get_album_cover('Artist', 'Album (Deluxe)') == b'cover'
     download.assert_awaited_once_with('correct')
+
+
+def test_recovery_archives_album_extras_without_using_file_mover(tmp_path, monkeypatch):
+    root = tmp_path / 'music'
+    album = root / 'Artist' / 'Album'
+    album.mkdir(parents=True)
+    (album / 'booklet.pdf').write_bytes(b'keep booklet')
+    def file_only(source, destination):
+        assert not source.is_dir(), 'Directories must not enter the EXDEV file-copy fallback'
+    monkeypatch.setattr(sync, 'safe_move_file', file_only)
+    recovered = sync._archive_superseded_file(album, root)
+    assert (recovered / 'booklet.pdf').read_bytes() == b'keep booklet'
+    assert not album.exists()

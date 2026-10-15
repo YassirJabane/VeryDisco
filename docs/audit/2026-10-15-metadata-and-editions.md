@@ -31,6 +31,6 @@ Limite intenzionale: non si pretende di riconoscere il mastering dai campioni au
 
 ## Verifica e lavoro residuo
 
-Test locali: **206 test backend/regressioni e 7 test frontend passati**, TypeScript, build Vite/PWA e controllo del diff. Il workflow beta ripete i test e lo smoke Docker/Linux prima della pubblicazione GHCR. Nessun download reale o riscrittura massiva della libreria NAS è stato eseguito da questa sessione.
+Test locali: **207 test backend/regressioni e 7 test frontend passati**, TypeScript, build Vite/PWA e controllo del diff. Il workflow beta ripete i test e lo smoke Docker/Linux prima della pubblicazione GHCR. Nessun download reale o riscrittura massiva della libreria NAS è stato eseguito da questa sessione.
 
 Restano aperti i lavori architetturali dell'audit precedente non completati da questa tranche: un unico ledger/coordinatore per **tutte** le mutazioni legacy e i relativi override instrumental/M3U, recording MBID end-to-end su ogni richiesta/grab, copertura coerente WAV/ALAC e altri formati, paginazione/serializzazione completa del feedback e centralizzazione definitiva delle entità artista. Questi punti non vengono dichiarati risolti dalla sola presenza di test verdi.

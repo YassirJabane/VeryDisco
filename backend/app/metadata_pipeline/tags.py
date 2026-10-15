@@ -210,7 +210,11 @@ def write_track(
                     os.fsync(target.fileno())
                 shutil.copystat(temp_path, path)
             except Exception:
-                shutil.copy2(backup_path, path)
+                try:
+                    shutil.copy2(backup_path, path)
+                except Exception as restore_error:
+                    recovery_path, backup_path = backup_path, None
+                    raise RuntimeError(f'Tag restoration failed; recovery copy retained at {recovery_path}') from restore_error
                 raise
         else:
             os.replace(temp_path, path)

@@ -34,7 +34,11 @@ def atomic_tag_update(function):
                     shutil.copyfile(staged, path)
                     os.utime(path, None)
                 except BaseException:
-                    shutil.copy2(backup, path)
+                    try:
+                        shutil.copy2(backup, path)
+                    except BaseException as restore_error:
+                        recovery_path, backup = backup, None
+                        raise RuntimeError(f'Tag restoration failed; recovery copy retained at {recovery_path}') from restore_error
                     raise
             else:
                 os.replace(staged, path)

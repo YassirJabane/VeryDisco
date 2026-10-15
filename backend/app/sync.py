@@ -775,10 +775,21 @@ def _archive_superseded_file(path: Path, music_root: Path, keep_original: bool =
     recovery_root = data_root / 'recovery' if os.name != 'nt' and data_root.is_dir() else music_root.parent / '.verydisco-recovery'
     if os.environ.get('VERYDISCO_RECOVERY_DIR'):
         recovery_root = Path(os.environ['VERYDISCO_RECOVERY_DIR'])
+    if recovery_root.resolve().is_relative_to(music_root.resolve()):
+        raise ValueError('Recovery directory must be outside the indexed music library')
     recovery = recovery_root / music_root.name / uuid.uuid4().hex
     recovery.mkdir(parents=True, exist_ok=True)
     destination = recovery / path.name
-    (safe_copy_file if keep_original else safe_move_file)(path, destination)
+    if path.is_dir():
+        if path.resolve() == music_root.resolve() or not path.resolve().is_relative_to(music_root.resolve()):
+            raise ValueError('Recovery can only archive a child album directory')
+        # Recovery and music are separate Docker mounts; the file mover's EXDEV
+        # fallback cannot open directories as files. Finish the copy first.
+        shutil.copytree(path, destination)
+        if not keep_original:
+            shutil.rmtree(path)
+    else:
+        (safe_copy_file if keep_original else safe_move_file)(path, destination)
     sidecar = path.with_suffix('.lrc')
     if sidecar.exists():
         (safe_copy_file if keep_original else safe_move_file)(sidecar, destination.with_suffix('.lrc'))
@@ -1260,6 +1271,8 @@ def embed_metadata(
     useful_tags.update({k: v for k, v in (metadata_extras or {}).items() if v not in (None, "", [])})
     if genre:
         useful_tags["genre"] = genre
+    if album_artist_mbids:
+        useful_tags['album_artist_mbids'] = album_artist_mbids
     useful_tags = {key: cleaned for key, value in useful_tags.items()
                    if (cleaned := [text for item in (value if isinstance(value, (list, tuple)) else [value])
                                    if (text := strip_promotional_text(str(item)))])}
