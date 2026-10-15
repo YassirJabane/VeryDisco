@@ -3335,66 +3335,34 @@ async def test_navidrome():
 
 @app.get("/api/navidrome/stats")
 async def get_navidrome_stats(request: Request):
-    """Fetch total songs, albums, and artists from Navidrome for the logged-in user."""
+    """Unavailable is not an empty library; never substitute another user's account."""
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    unavailable = {"available": False, "songs": None, "albums": None, "artists": None}
     if not config_manager.is_configured or not config_manager.config:
-        return {"songs": 0, "albums": 0, "artists": 0}
-        
+        return {**unavailable, "reason": "Navidrome is not configured"}
     cfg = config_manager.config.navidrome
     if not cfg.url:
-        return {"songs": 0, "albums": 0, "artists": 0}
-
-    from backend.app.auth import get_current_user
-    try:
-        user = await get_current_user(request)
-    except Exception:
-        user = None
-
-    if not user:
-        return {"songs": 0, "albums": 0, "artists": 0}
-
-    # Fetch user's credentials from DB
-    async with db.get_db() as conn:
-        async with conn.execute(
-            "SELECT username, subsonic_token, subsonic_salt FROM users WHERE id = ?",
-            (user["id"],)
-        ) as cursor:
-            user_row = await cursor.fetchone()
-
-    sub_token = None
-    sub_salt = None
-    nd_username = None
-    nd_password = None
-
-    if user_row:
-        user_row_dict = dict(user_row)
-        nd_username = user_row_dict["username"]
-        sub_token = user_row_dict["subsonic_token"]
-        sub_salt = user_row_dict["subsonic_salt"]
-
-    # Fallback to global config if the user is the admin and subsonic parameters aren't stored yet
-    if not sub_token or not sub_salt:
-        if nd_username == cfg.username:
-            nd_username = cfg.username
-            nd_password = cfg.password
+        return {**unavailable, "reason": "Navidrome is not configured"}
+    row = await db.get_user_by_id(user["id"])
+    if not row:
+        return {**unavailable, "reason": "User credentials are unavailable"}
+    username = row.get("username")
+    token, salt = row.get("subsonic_token"), row.get("subsonic_salt")
+    password = None
+    if not token or not salt:
+        if user.get("is_admin") and username == cfg.username:
+            password = cfg.password
         else:
-            # Regular user without subsonic credentials yet
-            return {"songs": 0, "albums": 0, "artists": 0}
-
+            return {**unavailable, "reason": "Sign in again to reconnect Navidrome"}
     from backend.app.clients.navidrome import NavidromeClient
-    client = NavidromeClient(
-        url=cfg.url,
-        username=nd_username,
-        password=nd_password,
-        token=sub_token,
-        salt=sub_salt,
-    )
-    
     try:
-        stats = await client.get_server_stats()
-        return stats
-    except Exception as e:
-        logger.error(f"Error fetching Navidrome stats for user '{nd_username}': {e}")
-        return {"songs": 0, "albums": 0, "artists": 0}
+        stats = await NavidromeClient(url=cfg.url, username=username, password=password, token=token, salt=salt).get_server_stats()
+        return {**stats, "available": True}
+    except Exception as error:
+        # HTTP exception strings can contain the Subsonic token/salt in the URL.
+        logger.warning("Navidrome statistics unavailable for user %s (%s)", user["id"], type(error).__name__)
+        return {**unavailable, "reason": "Navidrome statistics are temporarily unavailable"}
 
 @app.post("/api/library/fix-singles")
 async def fix_legacy_singles(request: Request):
@@ -3533,6 +3501,10 @@ async def trigger_navidrome_starred_sync(request: Request):
 @app.get("/api/logs/stream")
 async def stream_logs(request: Request, limit: int = 0, after: int = 0):
     """Server-Sent Events endpoint to stream live logs from the backend directly to the UI."""
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    if not user.get('is_admin'):
+        raise HTTPException(status_code=403, detail='Global application logs require admin access.')
     async def log_generator():
         q = asyncio.Queue(maxsize=2000)
         app_logger.log_subscribers.add(q)

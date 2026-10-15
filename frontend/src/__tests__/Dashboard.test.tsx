@@ -1,7 +1,10 @@
-import { describe, test, vi, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { afterEach, describe, test, vi, expect } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
 import React from 'react';
 import Dashboard from '../components/Dashboard';
+import { apiService } from '../api';
+
+afterEach(cleanup);
 
 vi.mock('../api', () => ({
   apiService: {
@@ -49,5 +52,11 @@ describe('Dashboard Component', () => {
     const syncButton = await screen.findByRole('button', { name: /Sync now/i });
     expect(syncButton).toBeInTheDocument();
     expect(syncButton).not.toBeDisabled();
+  });
+  test('shows unavailability instead of presenting a failed stats query as zero', async () => {
+    vi.mocked(apiService.getNavidromeStats).mockResolvedValueOnce({ songs: null, albums: null, artists: null, available: false });
+    render(<Dashboard onNavigateToConfig={() => {}} />);
+    expect(await screen.findByText(/statistics are unavailable, not zero/i)).toBeInTheDocument();
+    expect(screen.queryByText('Everything looks clean')).not.toBeInTheDocument();
   });
 });

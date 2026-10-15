@@ -3,13 +3,11 @@ import {
   Box, Typography, Button, Paper, Stack, CircularProgress,
   List, ListItem, ListItemText, Divider, Alert, TextField, IconButton
 } from '@mui/material';
-import {
-  RecentActors as ArtistsIcon,
-  Save as SaveIcon,
-  Delete as DeleteIcon,
-  Add as AddIcon,
-  Search as SearchIcon
-} from '@mui/icons-material';
+import ArtistsIcon from '@mui/icons-material/RecentActors';
+import SaveIcon from '@mui/icons-material/Save';
+import DeleteIcon from '@mui/icons-material/Delete';
+import AddIcon from '@mui/icons-material/Add';
+import SearchIcon from '@mui/icons-material/Search';
 import apiService from '../api';
 
 const ArtistAliases: React.FC = () => {

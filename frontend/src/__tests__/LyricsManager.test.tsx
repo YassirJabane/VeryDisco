@@ -15,9 +15,9 @@ test('plain lyrics remain eligible for a synced upgrade after saving plain text'
     artist: 'Artist', title: 'Song', album: 'Album', filepath: '/music/song.mp3', duration: 200, lyrics_status: 'plain',
   }]);
   render(<LyricsManager />);
-  expect(await screen.findByText('Plain · upgrade to synced')).toBeInTheDocument();
+  expect((await screen.findAllByText('Plain · upgrade to synced')).length).toBeGreaterThan(0);
   fireEvent.click(screen.getAllByRole('button', { name: /Find Lyrics/i })[0]);
   fireEvent.click(screen.getByText('Save lyrics test'));
   await waitFor(() => expect(apiService.getMissingLyrics).toHaveBeenCalledTimes(2));
-  expect(await screen.findByText('Plain · upgrade to synced')).toBeInTheDocument();
+  expect((await screen.findAllByText('Plain · upgrade to synced')).length).toBeGreaterThan(0);
 });

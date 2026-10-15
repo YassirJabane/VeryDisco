@@ -5,13 +5,11 @@ import {
   DialogContent, DialogActions, TextField, List, ListItem, ListItemText,
   IconButton, Tooltip, Badge, Chip
 } from '@mui/material';
-import {
-  PhotoLibrary as ArtIcon,
-  Search as SearchIcon,
-  CheckCircle as OkIcon,
-  FolderOpen as FolderIcon,
-  Close as CloseIcon
-} from '@mui/icons-material';
+import ArtIcon from '@mui/icons-material/PhotoLibrary';
+import SearchIcon from '@mui/icons-material/Search';
+import OkIcon from '@mui/icons-material/CheckCircle';
+import FolderIcon from '@mui/icons-material/FolderOpen';
+import CloseIcon from '@mui/icons-material/Close';
 import { apiService } from '../api';
 import { useNotification } from '../context/NotificationContext';
 

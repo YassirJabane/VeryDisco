@@ -3,11 +3,9 @@ import {
   Box, Typography, Button, Paper, Stack, CircularProgress,
   List, ListItem, ListItemText, Divider, Alert, Chip, Switch, FormControlLabel
 } from '@mui/material';
-import {
-  Rule as RuleIcon,
-  PlayArrow as PlayIcon,
-  CheckCircle as OkIcon,
-} from '@mui/icons-material';
+import RuleIcon from '@mui/icons-material/Rule';
+import PlayIcon from '@mui/icons-material/PlayArrow';
+import OkIcon from '@mui/icons-material/CheckCircle';
 import apiService from '../api';
 
 interface NamingMismatch {

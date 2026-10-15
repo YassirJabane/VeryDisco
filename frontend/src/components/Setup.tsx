@@ -4,12 +4,14 @@ import {
   CircularProgress, Alert, InputAdornment, IconButton,
   useTheme, Stepper, Step, StepLabel,
 } from '@mui/material';
-import {
-  Visibility, VisibilityOff, Settings as SettingsIcon,
-  MusicNote as MusicIcon, Cloud as CloudIcon,
-  ChevronRight as NextIcon, ChevronLeft as PrevIcon,
-  CheckCircle as DoneIcon,
-} from '@mui/icons-material';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import SettingsIcon from '@mui/icons-material/Settings';
+import MusicIcon from '@mui/icons-material/MusicNote';
+import CloudIcon from '@mui/icons-material/Cloud';
+import NextIcon from '@mui/icons-material/ChevronRight';
+import PrevIcon from '@mui/icons-material/ChevronLeft';
+import DoneIcon from '@mui/icons-material/CheckCircle';
 import { apiService } from '../api';
 import { useAuth } from '../context/AuthContext';
 

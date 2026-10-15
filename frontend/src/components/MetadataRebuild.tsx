@@ -4,10 +4,10 @@ import {
   CircularProgress, FormControlLabel, LinearProgress, MenuItem, Paper, Select,
   Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography,
 } from '@mui/material';
-import {
-  AutoFixHigh as RebuildIcon, ExpandMore as ExpandIcon, Restore as RestoreIcon,
-  Search as ScanIcon,
-} from '@mui/icons-material';
+import RebuildIcon from '@mui/icons-material/AutoFixHigh';
+import ExpandIcon from '@mui/icons-material/ExpandMore';
+import RestoreIcon from '@mui/icons-material/Restore';
+import ScanIcon from '@mui/icons-material/Search';
 import apiService, { getErrorMessage } from '../api';
 
 const fields = ['title', 'artist', 'album', 'album_artist', 'date', 'track', 'disc'];
@@ -144,7 +144,7 @@ const MetadataRebuild: React.FC = () => {
           <Stack direction={{ xs: 'column', sm: 'row' }} gap={1}>
             <FormControlLabel control={<Switch checked={verifyAcoustid} onChange={e => setVerifyAcoustid(e.target.checked)} />} label="Verify recordings with AcoustID" />
             <FormControlLabel control={<Switch checked={includeArtwork} onChange={e => setIncludeArtwork(e.target.checked)} />} label="Replace artwork" />
-            <FormControlLabel control={<Switch checked={allowItunes} onChange={e => setAllowItunes(e.target.checked)} disabled={!includeArtwork} />} label="Prefer verified digital artwork" />
+            <FormControlLabel control={<Switch checked={allowItunes} onChange={e => setAllowItunes(e.target.checked)} disabled={!includeArtwork} />} label="Allow verified digital artwork fallback" />
           </Stack>
         </Stack>
         {['scanning', 'queued', 'cancelling'].includes(status.status) && <Box mt={2}>
@@ -173,7 +173,7 @@ const MetadataRebuild: React.FC = () => {
             </AccordionSummary>
             <AccordionDetails>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} mb={2}>
-                {release?.artwork_url && <Stack spacing={.5}><Box component="img" src={release.artwork_url} alt="MusicBrainz cover preview" sx={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 2, bgcolor: 'action.hover' }} /><Typography variant="caption" color="text.secondary">MusicBrainz preview. Applying with digital artwork enabled prefers an exact digital cover.</Typography></Stack>}
+                {release?.artwork_url && <Stack spacing={.5}><Box component="img" src={release.artwork_url} alt="MusicBrainz cover preview" sx={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 2, bgcolor: 'action.hover' }} /><Typography variant="caption" color="text.secondary">Selected MusicBrainz release artwork comes first. Verified digital artwork is only a fallback when enabled.</Typography></Stack>}
                 <Box flex={1}>
                   <Typography variant="subtitle2" mb={1}>Selected MusicBrainz release</Typography>
                   <Select size="small" fullWidth value={release?.release_mbid || ''} displayEmpty

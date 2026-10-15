@@ -4,11 +4,9 @@ import {
   CircularProgress, Alert, Table, TableBody, TableCell, TableContainer,
   TableHead, TableRow, Paper, Chip, List, Stack
 } from '@mui/material';
-import {
-  Delete as DeleteIcon,
-  CheckCircle as OkIcon,
-  FolderZip as KeepIcon
-} from '@mui/icons-material';
+import DeleteIcon from '@mui/icons-material/Delete';
+import OkIcon from '@mui/icons-material/CheckCircle';
+import KeepIcon from '@mui/icons-material/FolderZip';
 import { apiService } from '../api';
 import { useNotification } from '../context/NotificationContext';
 

@@ -4,23 +4,21 @@ import {
   Card, CardContent, CardActions, Divider, Grid, Tooltip,
   IconButton, Collapse, LinearProgress, Stack, Paper,
 } from '@mui/material';
-import {
-  HealthAndSafety as HealthIcon,
-  ContentCopy as DupTrackIcon,
-  FolderCopy as SplitAlbumIcon,
-  ImageNotSupported as NoCoverIcon,
-  ManageSearch as MissingMetaIcon,
-  Refresh as RefreshIcon,
-  Build as FixIcon,
-  VisibilityOff as IgnoreIcon,
-  ExpandMore as ExpandIcon,
-  ExpandLess as CollapseIcon,
-  CheckCircle as OkIcon,
-  Warning as WarnIcon,
-  DriveFileMove as MisfiledIcon,
-  Article as LyricsIcon,
-  Fingerprint as FingerprintIcon,
-} from '@mui/icons-material';
+import HealthIcon from '@mui/icons-material/HealthAndSafety';
+import DupTrackIcon from '@mui/icons-material/ContentCopy';
+import SplitAlbumIcon from '@mui/icons-material/FolderCopy';
+import NoCoverIcon from '@mui/icons-material/ImageNotSupported';
+import MissingMetaIcon from '@mui/icons-material/ManageSearch';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import FixIcon from '@mui/icons-material/Build';
+import IgnoreIcon from '@mui/icons-material/VisibilityOff';
+import ExpandIcon from '@mui/icons-material/ExpandMore';
+import CollapseIcon from '@mui/icons-material/ExpandLess';
+import OkIcon from '@mui/icons-material/CheckCircle';
+import WarnIcon from '@mui/icons-material/Warning';
+import MisfiledIcon from '@mui/icons-material/DriveFileMove';
+import LyricsIcon from '@mui/icons-material/Article';
+import FingerprintIcon from '@mui/icons-material/Fingerprint';
 import apiService, { MaintenanceIssue, AcoustidStats } from '../api';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -161,7 +159,7 @@ const IssueCard: React.FC<{
                 {issue.description}
               </Typography>
               {preview && (
-                <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 2, bgcolor: '#121118', border: '1px solid', borderColor: 'divider' }}>
+                <Box sx={{ mt: 1.5, p: 1.5, borderRadius: 2, bgcolor: 'action.hover', border: '1px solid', borderColor: 'divider' }}>
                   <Typography variant="caption" sx={{ fontWeight: 800, color: 'primary.main', display: 'block', mb: 1 }}>
                     PROPOSED FIX (DEEZER):
                   </Typography>
@@ -171,7 +169,7 @@ const IssueCard: React.FC<{
                         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.7rem' }}>
                           {key}
                         </Typography>
-                        <Typography variant="caption" fontWeight={600} sx={{ fontSize: '0.75rem', color: '#e5e5e9' }}>
+                        <Typography variant="caption" fontWeight={600} sx={{ fontSize: '0.75rem', color: 'text.primary' }}>
                           {val as string}
                         </Typography>
                       </Grid>

@@ -24,15 +24,13 @@ import {
   Stack,
   Divider,
 } from '@mui/material';
-import {
-  Search as SearchIcon,
-  EmojiEvents as WinnerIcon,
-  ExpandMore as ExpandMoreIcon,
-  Album as AlbumIcon,
-  MusicNote as TrackIcon,
-  OpenInNew as OpenInNewIcon,
-  Layers as DiscIcon,
-} from '@mui/icons-material';
+import SearchIcon from '@mui/icons-material/Search';
+import WinnerIcon from '@mui/icons-material/EmojiEvents';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import AlbumIcon from '@mui/icons-material/Album';
+import TrackIcon from '@mui/icons-material/MusicNote';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
+import DiscIcon from '@mui/icons-material/Layers';
 import apiService from '../api';
 
 export const MusicBrainzInspector: React.FC = () => {

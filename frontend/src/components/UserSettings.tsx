@@ -4,15 +4,13 @@ import {
   CircularProgress, Alert, Snackbar, Divider, useTheme,
   Switch, FormControlLabel,
 } from '@mui/material';
-import {
-  Save as SaveIcon,
-  Person as PersonIcon,
-  MusicNote as MusicIcon,
-  CheckCircle as CheckCircleIcon,
-  Error as ErrorIcon,
-  AdminPanelSettings as AdminIcon,
-  WifiTethering as TestIcon,
-} from '@mui/icons-material';
+import SaveIcon from '@mui/icons-material/Save';
+import PersonIcon from '@mui/icons-material/Person';
+import MusicIcon from '@mui/icons-material/MusicNote';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import AdminIcon from '@mui/icons-material/AdminPanelSettings';
+import TestIcon from '@mui/icons-material/WifiTethering';
 import { apiService } from '../api';
 import { useAuth } from '../context/AuthContext';
 

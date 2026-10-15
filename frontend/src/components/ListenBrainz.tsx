@@ -3,7 +3,9 @@ import {
   Box, Typography, Card, CardContent, Grid, 
   Switch, CircularProgress, Alert, useTheme, CardActions
 } from '@mui/material';
-import { MusicNote as MusicIcon, Explore as ExploreIcon, ViewDay as DayIcon } from '@mui/icons-material';
+import MusicIcon from '@mui/icons-material/MusicNote';
+import ExploreIcon from '@mui/icons-material/Explore';
+import DayIcon from '@mui/icons-material/ViewDay';
 import { apiService, ConfigData } from '../api';
 
 const PLAYLISTS = [

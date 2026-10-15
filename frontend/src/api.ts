@@ -525,8 +525,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async getNavidromeStats(): Promise<{ songs: number; albums: number; artists: number }> {
-    const resp = await api.get<{ songs: number; albums: number; artists: number }>('/api/navidrome/stats');
+  async getNavidromeStats(options?: { signal?: AbortSignal }): Promise<{ songs: number | null; albums: number | null; artists: number | null; available?: boolean; reason?: string }> {
+    const resp = await api.get('/api/navidrome/stats', options);
     return resp.data;
   },
 

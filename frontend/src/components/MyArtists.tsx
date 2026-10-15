@@ -6,22 +6,20 @@ import {
   List, ListItem, ListItemAvatar, ListItemText, useTheme, useMediaQuery,
   Select, MenuItem
 } from '@mui/material';
-import { 
-  Person as ArtistIcon, 
-  Add as AddIcon, 
-  Delete as DeleteIcon, 
-  Close as CloseIcon, 
-  Download as DownloadIcon,
-  Album as AlbumIcon,
-  Visibility as ShowIcon,
-  VisibilityOff as HideIcon,
-  MusicNote as MusicIcon,
-  Favorite as FavoriteIcon,
-  HeartBroken as HeartBrokenIcon,
-  DeleteForever as DangerousIcon,
-  LibraryMusic as LibraryIcon,
-  Refresh as RefreshIcon
-} from '@mui/icons-material';
+import ArtistIcon from '@mui/icons-material/Person';
+import AddIcon from '@mui/icons-material/Add';
+import DeleteIcon from '@mui/icons-material/Delete';
+import CloseIcon from '@mui/icons-material/Close';
+import DownloadIcon from '@mui/icons-material/Download';
+import AlbumIcon from '@mui/icons-material/Album';
+import ShowIcon from '@mui/icons-material/Visibility';
+import HideIcon from '@mui/icons-material/VisibilityOff';
+import MusicIcon from '@mui/icons-material/MusicNote';
+import FavoriteIcon from '@mui/icons-material/Favorite';
+import HeartBrokenIcon from '@mui/icons-material/HeartBroken';
+import DangerousIcon from '@mui/icons-material/DeleteForever';
+import LibraryIcon from '@mui/icons-material/LibraryMusic';
+import RefreshIcon from '@mui/icons-material/Refresh';
 import apiService, { getErrorMessage } from '../api';
 import { useNotification } from '../context/NotificationContext';
 

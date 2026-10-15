@@ -4,10 +4,10 @@ import {
   CircularProgress, Alert, InputAdornment, IconButton,
   useTheme,
 } from '@mui/material';
-import {
-  Visibility, VisibilityOff, MusicNote as MusicIcon,
-  Login as LoginIcon,
-} from '@mui/icons-material';
+import Visibility from '@mui/icons-material/Visibility';
+import VisibilityOff from '@mui/icons-material/VisibilityOff';
+import MusicIcon from '@mui/icons-material/MusicNote';
+import LoginIcon from '@mui/icons-material/Login';
 import { useAuth } from '../context/AuthContext';
 
 const Login: React.FC = () => {

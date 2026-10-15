@@ -4,13 +4,11 @@ import {
   TableContainer, TableHead, TableRow, Paper, Collapse, IconButton,
   TablePagination, Chip, CircularProgress, Alert, Tooltip, useTheme, Button, Stack, List
 } from '@mui/material';
-import { 
-  KeyboardArrowDown as ExpandIcon, 
-  KeyboardArrowUp as CollapseIcon,
-  CheckCircle as SuccessIcon,
-  Error as ErrorIcon,
-  Help as HelpIcon
-} from '@mui/icons-material';
+import ExpandIcon from '@mui/icons-material/KeyboardArrowDown';
+import CollapseIcon from '@mui/icons-material/KeyboardArrowUp';
+import SuccessIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import HelpIcon from '@mui/icons-material/Help';
 import { apiService, RunRecord, TrackRecord } from '../api';
 
 const formatSize = (bytes: number | null) => {

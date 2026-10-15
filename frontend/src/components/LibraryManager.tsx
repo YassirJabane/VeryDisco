@@ -5,22 +5,20 @@ import {
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
   IconButton, Tooltip, LinearProgress, Divider, Avatar, Collapse,
 } from '@mui/material';
-import {
-  LibraryMusic as LibraryIcon,
-  Search as SearchIcon,
-  Delete as DeleteIcon,
-  Refresh as RefreshIcon,
-  Folder as FolderIcon,
-  MusicNote as TrackIcon,
-  Storage as SizeIcon,
-  KeyboardArrowDown as ExpandIcon,
-  KeyboardArrowUp as CollapseIcon,
-  PlayArrow as PlayIcon,
-  Edit as EditIcon,
-  Lyrics as LyricsIcon,
-  CompareArrows as OrganizeIcon,
-  Autorenew as ReplaceIcon,
-} from '@mui/icons-material';
+import LibraryIcon from '@mui/icons-material/LibraryMusic';
+import SearchIcon from '@mui/icons-material/Search';
+import DeleteIcon from '@mui/icons-material/Delete';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import FolderIcon from '@mui/icons-material/Folder';
+import TrackIcon from '@mui/icons-material/MusicNote';
+import SizeIcon from '@mui/icons-material/Storage';
+import ExpandIcon from '@mui/icons-material/KeyboardArrowDown';
+import CollapseIcon from '@mui/icons-material/KeyboardArrowUp';
+import PlayIcon from '@mui/icons-material/PlayArrow';
+import EditIcon from '@mui/icons-material/Edit';
+import LyricsIcon from '@mui/icons-material/Lyrics';
+import OrganizeIcon from '@mui/icons-material/CompareArrows';
+import ReplaceIcon from '@mui/icons-material/Autorenew';
 import apiService, { AlbumItem, LibraryTrackItem } from '../api';
 import LyricsPreviewDialog from './LyricsPreviewDialog';
 

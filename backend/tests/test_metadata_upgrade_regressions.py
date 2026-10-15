@@ -152,6 +152,7 @@ async def test_log_replay_includes_startup_and_thread_messages(test_db, monkeypa
 @pytest.mark.asyncio
 async def test_sse_replays_all_history_with_resume_ids(test_db, monkeypatch):
     monkeypatch.setattr(main, 'db', test_db)
+    monkeypatch.setattr('backend.app.auth.get_current_user', AsyncMock(return_value={'id': 'admin', 'is_admin': True}))
     await test_db.add_log('INFO', 'previous boot', timestamp='2000-01-01')
     first = await test_db.add_log('INFO', 'startup', timestamp=app_logger.boot_started_at)
     second = await test_db.add_log('INFO', 'later', timestamp=app_logger.boot_started_at)

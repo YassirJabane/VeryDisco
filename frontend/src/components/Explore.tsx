@@ -7,18 +7,16 @@ import {
   DialogActions, Table, TableBody, TableCell, TableContainer, 
   TableHead, TableRow, Paper
 } from '@mui/material';
-import { 
-  LibraryMusic as MusicIcon,
-  Favorite as FavoriteIcon,
-  FavoriteBorder as FavoriteBorderIcon,
-  HeartBroken as HeartBrokenIcon,
-  Sync as SyncIcon,
-  Stop as StopIcon,
-  CheckCircle as SuccessIcon,
-  Error as ErrorIcon,
-  CloudDownload as DownloadIcon,
-  Info as InfoIcon
-} from '@mui/icons-material';
+import MusicIcon from '@mui/icons-material/LibraryMusic';
+import FavoriteIcon from '@mui/icons-material/Favorite';
+import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder';
+import HeartBrokenIcon from '@mui/icons-material/HeartBroken';
+import SyncIcon from '@mui/icons-material/Sync';
+import StopIcon from '@mui/icons-material/Stop';
+import SuccessIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import DownloadIcon from '@mui/icons-material/CloudDownload';
+import InfoIcon from '@mui/icons-material/Info';
 import { apiService, GetStatusResponse } from '../api';
 import { useNotification } from '../context/NotificationContext';
 import { resolveTrackArtwork, trackKey } from '../trackArtwork';

@@ -4,14 +4,12 @@ import {
   Box, Typography, TextField, CircularProgress, Grid, Card,
   CardContent, Stack, Chip, Divider, Paper
 } from '@mui/material';
-import {
-  Search as SearchIcon,
-  Timer as TimerIcon,
-  CheckCircle as MatchIcon,
-  Edit as EditIcon,
-  Save as SaveIcon,
-  CloudDownload as DownloadIcon,
-} from '@mui/icons-material';
+import SearchIcon from '@mui/icons-material/Search';
+import TimerIcon from '@mui/icons-material/Timer';
+import MatchIcon from '@mui/icons-material/CheckCircle';
+import EditIcon from '@mui/icons-material/Edit';
+import SaveIcon from '@mui/icons-material/Save';
+import DownloadIcon from '@mui/icons-material/CloudDownload';
 import apiService, { LrcLibCandidate } from '../api';
 import { useNotification } from '../context/NotificationContext';
 

@@ -4,10 +4,8 @@ import {
   List, ListItem, ListItemText, Divider, Alert, Switch, FormControlLabel,
   LinearProgress
 } from '@mui/material';
-import {
-  LibraryMusic as LibraryIcon,
-  PlayArrow as PlayIcon,
-} from '@mui/icons-material';
+import LibraryIcon from '@mui/icons-material/LibraryMusic';
+import PlayIcon from '@mui/icons-material/PlayArrow';
 import apiService from '../api';
 
 const RetagManager: React.FC = () => {

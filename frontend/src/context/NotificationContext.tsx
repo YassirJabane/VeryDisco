@@ -1,9 +1,11 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useRef, ReactNode } from 'react';
 import { 
   Snackbar, Alert, Dialog, DialogTitle, DialogContent, 
   DialogContentText, DialogActions, Button, Typography, Box 
 } from '@mui/material';
-import { WarningAmber as AlarmIcon, DeleteForever as DangerousIcon } from '@mui/icons-material';
+import AlarmIcon from '@mui/icons-material/WarningAmber';
+import DangerousIcon from '@mui/icons-material/DeleteForever';
+import { getErrorMessage } from '../api';
 
 type Severity = 'success' | 'info' | 'warning' | 'error';
 
@@ -17,11 +19,23 @@ interface ConfirmOptions {
 }
 
 interface NotificationContextType {
-  notify: (message: string, severity?: Severity) => void;
+  notify: (message: unknown, severity?: Severity) => void;
   confirm: (options: ConfirmOptions) => void;
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
+
+function notificationText(message: unknown): string {
+  if (typeof message === 'string') return message;
+  if (Array.isArray(message)) return message.map(notificationText).join('; ');
+  if (message && typeof message === 'object') {
+    const details = message as Record<string, unknown>;
+    const value = details.msg ?? details.message ?? details.detail;
+    if (value !== undefined && value !== message) return notificationText(value);
+    try { return JSON.stringify(message); } catch { return 'An unexpected error occurred.'; }
+  }
+  return message == null ? '' : String(message);
+}
 
 export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   // Toast state
@@ -33,21 +47,10 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmOptions, setConfirmOptions] = useState<ConfirmOptions | null>(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
+  const confirmPending = useRef(false);
 
-  const notify = (message: any, severity: Severity = 'info') => {
-    let text = '';
-    if (typeof message === 'string') {
-      text = message;
-    } else if (Array.isArray(message)) {
-      text = message
-        .map(item => (typeof item === 'object' && item !== null ? (item.msg || JSON.stringify(item)) : String(item)))
-        .join('; ');
-    } else if (typeof message === 'object' && message !== null) {
-      text = message.msg || message.message || message.detail || JSON.stringify(message);
-    } else {
-      text = String(message || '');
-    }
-    setToastMessage(text);
+  const notify = (message: unknown, severity: Severity = 'info') => {
+    setToastMessage(notificationText(message));
     setToastSeverity(severity);
     setToastOpen(true);
   };
@@ -63,16 +66,19 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
   };
 
   const handleConfirmAction = async () => {
-    if (!confirmOptions) return;
+    if (!confirmOptions || confirmPending.current) return;
+    confirmPending.current = true;
     setConfirmLoading(true);
     try {
       await confirmOptions.onConfirm();
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setConfirmLoading(false);
       setConfirmOpen(false);
       setConfirmOptions(null);
+    } catch (e) {
+      console.error(e);
+      notify(getErrorMessage(e, 'The operation failed. Please try again.'), 'error');
+    } finally {
+      confirmPending.current = false;
+      setConfirmLoading(false);
     }
   };
 
@@ -85,7 +91,8 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
         open={toastOpen}
         autoHideDuration={4000}
         onClose={handleToastClose}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ top: { xs: '76px !important', sm: '80px !important' } }}
       >
         <Alert 
           onClose={handleToastClose} 
@@ -113,8 +120,8 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
               p: 1,
               maxWidth: 480,
               border: confirmOptions.isDangerous ? '1px solid rgba(244, 67, 54, 0.5)' : '1px solid rgba(255, 255, 255, 0.1)',
-              background: 'linear-gradient(145deg, #1e1e24 0%, #121216 100%)',
-              boxShadow: '0 16px 48px rgba(0, 0, 0, 0.8)'
+              bgcolor: 'background.paper',
+              boxShadow: '0 16px 48px rgba(0, 0, 0, 0.24)'
             }
           }}
         >
@@ -134,7 +141,7 @@ export const NotificationProvider: React.FC<{ children: ReactNode }> = ({ childr
             ) : (
               <AlarmIcon color="warning" />
             )}
-            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+            <Typography component="span" variant="h6" sx={{ fontWeight: 800 }}>
               {confirmOptions.title}
             </Typography>
           </DialogTitle>

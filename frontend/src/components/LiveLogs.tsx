@@ -4,14 +4,12 @@ import {
   Select, MenuItem, FormControl, InputLabel,
   IconButton, Tooltip, useTheme, Snackbar, Alert
 } from '@mui/material';
-import { 
-  DeleteSweep as ClearIcon, 
-  VerticalAlignBottom as ScrollIcon,
-  Pause as PauseIcon,
-  PlayArrow as PlayIcon,
-  ContentCopy as CopyIcon,
-  Download as DownloadIcon
-} from '@mui/icons-material';
+import ClearIcon from '@mui/icons-material/DeleteSweep';
+import ScrollIcon from '@mui/icons-material/VerticalAlignBottom';
+import PauseIcon from '@mui/icons-material/Pause';
+import PlayIcon from '@mui/icons-material/PlayArrow';
+import CopyIcon from '@mui/icons-material/ContentCopy';
+import DownloadIcon from '@mui/icons-material/Download';
 
 interface LogEntry {
   id?: number;

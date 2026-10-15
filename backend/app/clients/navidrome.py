@@ -90,73 +90,47 @@ class NavidromeClient:
             return False
 
     async def get_server_stats(self) -> dict:
-        """Fetch server stats (total songs, albums, artists) via Subsonic API."""
+        """Return a complete dataset, or fail explicitly instead of inventing zeros."""
         if not self.url or not self.username or (not self.password and not (self.token and self.salt)):
-            return {"songs": 0, "albums": 0, "artists": 0}
-
+            raise ValueError("Navidrome credentials are unavailable")
         params = self._generate_auth_params()
-        songs_count = 0
-        albums_count = 0
+        client = await get_http_client()
+        response = await client.get(f"{self.url}/rest/getArtists.view", params=params)
+        response.raise_for_status()
+        data = response.json().get("subsonic-response", {})
+        if data.get("status") != "ok":
+            raise ValueError("Navidrome could not provide artist statistics")
+        indexes = data.get("artists", {}).get("index", [])
+        if isinstance(indexes, dict):
+            indexes = [indexes]
         artists_count = 0
-
-        try:
-            client = await get_http_client()
-            # 1. Count artists via getArtists (more reliable than getIndexes)
-            try:
-                url_artists = f"{self.url}/rest/getArtists.view"
-                resp = await client.get(url_artists, params=params)
-                if resp.status_code == 200:
-                    data = resp.json().get("subsonic-response", {})
-                    if data.get("status") == "ok":
-                        indexes = data.get("artists", {}).get("index", [])
-                        if isinstance(indexes, dict):
-                            indexes = [indexes]
-                        for idx in indexes:
-                            artists = idx.get("artist", [])
-                            if isinstance(artists, dict):
-                                artists = [artists]
-                            artists_count += len(artists)
-            except Exception as e:
-                logger.debug(f"Failed to count Navidrome artists: {e}")
-
-            # 2. Count every visible album and sum its real songCount.  The
-            # endpoint is paginated (500 max in Navidrome), so a single page
-            # silently under-counts large libraries.
-            try:
-                url_albums = f"{self.url}/rest/getAlbumList2.view"
-                offset = 0
-                page_size = 500
-                while True:
-                    params_albums = {
-                        **params, "type": "alphabeticalByName",
-                        "size": page_size, "offset": offset,
-                    }
-                    resp = await client.get(url_albums, params=params_albums)
-                    resp.raise_for_status()
-                    data = resp.json().get("subsonic-response", {})
-                    if data.get("status") != "ok":
-                        break
-                    albums_list = data.get("albumList2", {}).get("album", [])
-                    if isinstance(albums_list, dict):
-                        albums_list = [albums_list]
-                    if not isinstance(albums_list, list):
-                        albums_list = []
-                    albums_count += len(albums_list)
-                    songs_count += sum(int(album.get("songCount") or 0) for album in albums_list)
-                    if len(albums_list) < page_size:
-                        break
-                    offset += page_size
-            except Exception as e:
-                logger.debug(f"Failed to count Navidrome albums: {e}")
-
-            return {
-                "songs": songs_count,
-                "albums": albums_count,
-                "artists": artists_count
-            }
-        except Exception as e:
-            logger.error(f"Failed to fetch Navidrome server stats: {e}")
-            return {"songs": 0, "albums": 0, "artists": 0}
+        for index in indexes:
+            artists = index.get("artist", [])
+            artists_count += len(artists) if isinstance(artists, list) else (1 if isinstance(artists, dict) else 0)
+        songs_count, albums_count, offset = 0, 0, 0
+        seen_album_ids = set()
+        while True:
+            response = await client.get(f"{self.url}/rest/getAlbumList2.view",
+                params={**params, "type": "alphabeticalByName", "size": 500, "offset": offset})
+            response.raise_for_status()
+            data = response.json().get("subsonic-response", {})
+            if data.get("status") != "ok":
+                raise ValueError("Navidrome could not provide album statistics")
+            albums = data.get("albumList2", {}).get("album", [])
+            if isinstance(albums, dict):
+                albums = [albums]
+            if not isinstance(albums, list):
+                raise ValueError("Navidrome returned invalid album statistics")
+            page_ids = {album["id"] for album in albums if album.get("id")}
+            if page_ids & seen_album_ids:
+                raise ValueError("Navidrome album pagination repeated results")
+            seen_album_ids.update(page_ids)
+            albums_count += len(albums)
+            songs_count += sum(int(album.get("songCount") or 0) for album in albums)
+            if len(albums) < 500:
+                break
+            offset += 500
+        return {"songs": songs_count, "albums": albums_count, "artists": artists_count}
 
     async def get_artists_list(self) -> list[str]:
         """Fetch all artist names from Navidrome."""

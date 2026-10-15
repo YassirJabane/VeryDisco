@@ -4,13 +4,11 @@ import {
   Card, CardContent, Grid, LinearProgress, Stack, Paper, Divider,
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, List, ListItem, ListItemText
 } from '@mui/material';
-import {
-  Fingerprint as FingerprintIcon,
-  Refresh as RefreshIcon,
-  CheckCircle as OkIcon,
-  Warning as WarnIcon,
-  Info as InfoIcon
-} from '@mui/icons-material';
+import FingerprintIcon from '@mui/icons-material/Fingerprint';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import OkIcon from '@mui/icons-material/CheckCircle';
+import WarnIcon from '@mui/icons-material/Warning';
+import InfoIcon from '@mui/icons-material/Info';
 import apiService, { AcoustidStats } from '../api';
 
 export const AcoustIDManager: React.FC = () => {

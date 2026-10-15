@@ -6,7 +6,20 @@ import {
   IconButton, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper, Tooltip,
   Checkbox, List, ListItem, ListItemText, Dialog, DialogTitle, DialogContent, DialogActions
 } from '@mui/material';
-import { Save as SaveIcon, Edit as EditIcon, Settings as SettingsIcon, CheckCircle as CheckCircleIcon, Error as ErrorIcon, WifiTethering as TestIcon, ArrowUpward as ArrowUpwardIcon, ArrowDownward as ArrowDownwardIcon, Add as AddIcon, Delete as DeleteIcon, DragIndicator as DragIcon, CloudDownload as ImportIcon, AdminPanelSettings as AdminIcon, Tune as TuneIcon } from '@mui/icons-material';
+import SaveIcon from '@mui/icons-material/Save';
+import EditIcon from '@mui/icons-material/Edit';
+import SettingsIcon from '@mui/icons-material/Settings';
+import CheckCircleIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import TestIcon from '@mui/icons-material/WifiTethering';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import AddIcon from '@mui/icons-material/Add';
+import DeleteIcon from '@mui/icons-material/Delete';
+import DragIcon from '@mui/icons-material/DragIndicator';
+import ImportIcon from '@mui/icons-material/CloudDownload';
+import AdminIcon from '@mui/icons-material/AdminPanelSettings';
+import TuneIcon from '@mui/icons-material/Tune';
 import { apiService, GetConfigResponse, ConfigData } from '../api';
 import { useAuth } from '../context/AuthContext';
 
@@ -928,7 +941,7 @@ export const Configuration: React.FC = () => {
                           <Button size="small" variant="outlined" onClick={handleResetToStorageSaver}>Reset to Storage Saver Defaults</Button>
                         </Box>
 
-                        <Paper variant="outlined" sx={{ bgcolor: '#0d0c12', borderColor: '#1b1a23', borderRadius: 3, p: 1, mb: 3 }}>
+                        <Paper variant="outlined" sx={{ bgcolor: 'background.default', borderColor: 'divider', borderRadius: 3, p: 1, mb: 3 }}>
                           <List sx={{ p: 0, display: 'flex', flexDirection: 'column', gap: 1 }}>
                             {audioQualityLadder.map((item, idx) => {
                               const isDragged = draggedIndex === idx;
@@ -941,15 +954,15 @@ export const Configuration: React.FC = () => {
                                   onDragEnd={handleDragEnd}
                                   sx={{
                                     border: '1px solid',
-                                    borderColor: item.checked ? 'primary.main' : '#22212d',
+                                    borderColor: item.checked ? 'primary.main' : 'divider',
                                     borderRadius: 2,
-                                    bgcolor: isDragged ? 'rgba(144, 202, 249, 0.08)' : (item.checked ? '#14121d' : '#0c0b11'),
+                                    bgcolor: isDragged || item.checked ? 'action.selected' : 'background.paper',
                                     opacity: isDragged ? 0.5 : 1,
                                     cursor: 'grab',
                                     transition: 'all 0.15s ease',
                                     '&:hover': {
                                       borderColor: 'primary.light',
-                                      bgcolor: '#191724',
+                                      bgcolor: 'action.hover',
                                     },
                                     py: 1,
                                     px: 2,
@@ -993,7 +1006,7 @@ export const Configuration: React.FC = () => {
                         </Paper>
 
                         {/* Inline Form to add a new custom quality to the ladder */}
-                        <Box sx={{ p: 2.5, bgcolor: '#0f0e15', border: '1px dashed #282736', borderRadius: 3 }}>
+                        <Box sx={{ p: 2.5, bgcolor: 'action.hover', border: '1px dashed', borderColor: 'divider', borderRadius: 3 }}>
                           <Typography variant="body2" fontWeight={700} sx={{ mb: 2 }}>Add Custom Format to Ladder</Typography>
                           <Grid container spacing={{ xs: 1.5, sm: 2 }} alignItems="center">
                             <Grid item xs={12} sm={3}>

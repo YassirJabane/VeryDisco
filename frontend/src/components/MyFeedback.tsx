@@ -4,12 +4,10 @@ import {
   List, ListItem, ListItemAvatar, ListItemText, Avatar, 
   Chip, Tooltip, IconButton, useTheme, Alert, Snackbar, Button, Tabs, Tab
 } from '@mui/material';
-import { 
-  LibraryMusic as MusicIcon,
-  Favorite as FavoriteIcon,
-  HeartBroken as HateIcon,
-  Sync as SyncIcon
-} from '@mui/icons-material';
+import MusicIcon from '@mui/icons-material/LibraryMusic';
+import FavoriteIcon from '@mui/icons-material/Favorite';
+import HateIcon from '@mui/icons-material/HeartBroken';
+import SyncIcon from '@mui/icons-material/Sync';
 import { apiService } from '../api';
 import { resolveTrackArtwork, trackKey } from '../trackArtwork';
 
@@ -19,6 +17,8 @@ export const MyFeedback: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [syncingStarred, setSyncingStarred] = useState(false);
   const [activeTab, setActiveTab] = useState<number>(0); // 0 = Loved, 1 = Hated
+  const requestGeneration = React.useRef(0);
+  const refreshTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({
     open: false,
@@ -27,6 +27,7 @@ export const MyFeedback: React.FC = () => {
   });
 
   const fetchFeedback = async () => {
+    const generation = ++requestGeneration.current;
     setLoading(true);
     setError(null);
     try {
@@ -52,15 +53,18 @@ export const MyFeedback: React.FC = () => {
         libraryStatus: libraryStatusMap.get(index)
       }));
 
+      if (generation !== requestGeneration.current) return;
       setFeedbackTracks(enrichedTracks);
       setLoading(false);
       const covers = await resolveTrackArtwork(initialTracks);
-      setFeedbackTracks(enrichedTracks.map((t: any) => ({ ...t, cover_url: t.cover_url || covers.get(trackKey(t)) || '' })));
+      if (generation !== requestGeneration.current) return;
+      // Artwork completing later must not resurrect a rating removed meanwhile.
+      setFeedbackTracks(current => current.map((t: any) => ({ ...t, cover_url: t.cover_url || covers.get(trackKey(t)) || '' })));
     } catch (e: any) {
       console.error("Failed to load feedback", e);
-      setError(e.response?.data?.detail || "Failed to load feedback from ListenBrainz.");
+      if (generation === requestGeneration.current) setError(e.response?.data?.detail || "Failed to load cached feedback.");
     } finally {
-      setLoading(false);
+      if (generation === requestGeneration.current) setLoading(false);
     }
   };
 
@@ -73,7 +77,8 @@ export const MyFeedback: React.FC = () => {
         message: res.message || "Navidrome loved tracks sync started successfully.",
         severity: 'success'
       });
-      setTimeout(() => fetchFeedback(), 3000);
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+      refreshTimer.current = setTimeout(() => void fetchFeedback(), 3000);
     } catch (err: any) {
       setSnackbar({
         open: true,
@@ -87,6 +92,7 @@ export const MyFeedback: React.FC = () => {
 
   useEffect(() => {
     fetchFeedback();
+    return () => { requestGeneration.current += 1; if (refreshTimer.current) clearTimeout(refreshTimer.current); };
   }, []);
 
   const lovedTracks = feedbackTracks.filter(t => t.score === 1);
@@ -117,7 +123,7 @@ export const MyFeedback: React.FC = () => {
       {error && <Alert severity="error" onClose={() => setError(null)}>{error}</Alert>}
 
       <Card sx={{ 
-        background: theme.palette.mode === 'dark' ? '#1c1b22' : '#ffffff',
+        bgcolor: 'background.paper',
         borderRadius: 4,
         boxShadow: '0 4px 20px rgba(0,0,0,0.05)'
       }}>
@@ -212,7 +218,7 @@ export const MyFeedback: React.FC = () => {
                           onClick={async () => {
                             try {
                               await apiService.likeTrack(track.artist, track.title, track.album || '', 0, track.mbid);
-                              setFeedbackTracks(prev => prev.filter(t => t.mbid !== track.mbid || t.title !== track.title));
+                              setFeedbackTracks(prev => prev.filter(t => t.mbid && track.mbid ? t.mbid !== track.mbid : !(t.artist === track.artist && t.title === track.title)));
                               window.dispatchEvent(new Event('verydisco-feedback-changed'));
                               setSnackbar({
                                 open: true,

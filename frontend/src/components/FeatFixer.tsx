@@ -3,11 +3,9 @@ import {
   Box, Typography, Button, Paper, Stack, CircularProgress,
   List, ListItem, ListItemText, Divider, Alert, Chip, Switch, FormControlLabel
 } from '@mui/material';
-import {
-  RecentActors as ArtistsIcon,
-  PlayArrow as PlayIcon,
-  CheckCircle as OkIcon,
-} from '@mui/icons-material';
+import ArtistsIcon from '@mui/icons-material/RecentActors';
+import PlayIcon from '@mui/icons-material/PlayArrow';
+import OkIcon from '@mui/icons-material/CheckCircle';
 import apiService from '../api';
 
 const FeatFixer: React.FC = () => {

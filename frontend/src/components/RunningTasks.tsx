@@ -5,19 +5,17 @@ import {
   CircularProgress, Alert, Tooltip, Button, Grid, Divider, useTheme, List,
   Dialog, DialogTitle, DialogContent, DialogActions
 } from '@mui/material';
-import { 
-  StopCircle as StopIcon,
-  Delete as DeleteIcon,
-  Refresh as RefreshIcon,
-  Sync as SyncIcon,
-  Album as AlbumIcon,
-  MusicNote as TrackIcon,
-  HourglassEmpty as PendingIcon,
-  CheckCircle as SuccessIcon,
-  Error as ErrorIcon,
-  Replay as RetryIcon,
-  InfoOutlined as DetailsIcon
-} from '@mui/icons-material';
+import StopIcon from '@mui/icons-material/StopCircle';
+import DeleteIcon from '@mui/icons-material/Delete';
+import RefreshIcon from '@mui/icons-material/Refresh';
+import SyncIcon from '@mui/icons-material/Sync';
+import AlbumIcon from '@mui/icons-material/Album';
+import TrackIcon from '@mui/icons-material/MusicNote';
+import PendingIcon from '@mui/icons-material/HourglassEmpty';
+import SuccessIcon from '@mui/icons-material/CheckCircle';
+import ErrorIcon from '@mui/icons-material/Error';
+import RetryIcon from '@mui/icons-material/Replay';
+import DetailsIcon from '@mui/icons-material/InfoOutlined';
 import { apiService, ActiveTask, AlbumDownloadQueueItem, TrackDownloadAttempt, TrackDownloadJobItem } from '../api';
 import { useNotification } from '../context/NotificationContext';
 

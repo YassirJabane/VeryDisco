@@ -6,14 +6,12 @@ import {
   Tooltip, IconButton, useTheme, Dialog, DialogTitle, DialogContent, DialogActions,
   Collapse, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper
 } from '@mui/material';
-import { 
-  LibraryMusic as MusicIcon,
-  CloudDownload as DownloadIcon,
-  FolderZip as AlbumIcon,
-  CheckCircle as ExistIcon,
-  ExpandMore as ExpandMoreIcon,
-  ExpandLess as ExpandLessIcon
-} from '@mui/icons-material';
+import MusicIcon from '@mui/icons-material/LibraryMusic';
+import DownloadIcon from '@mui/icons-material/CloudDownload';
+import AlbumIcon from '@mui/icons-material/FolderZip';
+import ExistIcon from '@mui/icons-material/CheckCircle';
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import { apiService } from '../api';
 import LyricsPreviewDialog from './LyricsPreviewDialog';
 import { useNotification } from '../context/NotificationContext';
