@@ -1396,54 +1396,6 @@ async def get_acoustid_stats(request: Request = None):
         "failures": failures,
     }
 
-def _itunes_track_matches(result: Dict[str, Any], artist: str, title: str) -> bool:
-    """Accept iTunes metadata only for the requested recording, never a variant.
-
-    iTunes frequently ranks a remix or a similarly titled single first.  Album
-    art enrichment must not turn that ranking accident into a changed Explore
-    album/title.
-    """
-    def key(value: str) -> str:
-        return re.sub(r"[^\w]", "", (value or "").casefold())
-
-    def main_artist(value: str) -> str:
-        return re.split(r"(?i)\s*(?:feat\.?|ft\.?|featuring)\s+", value or "", maxsplit=1)[0].strip()
-
-    candidate_title = result.get("trackName") or result.get("trackCensoredName") or ""
-    candidate_artist = result.get("artistName") or ""
-    return bool(
-        key(title)
-        and key(title) == key(candidate_title)
-        and key(main_artist(artist)) == key(main_artist(candidate_artist))
-    )
-
-
-async def fetch_itunes_metadata(artist: str, title: str) -> dict:
-    url = "https://itunes.apple.com/search"
-    params = {"term": f"{artist} {title}", "entity": "song", "limit": 10}
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(url, params=params)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("resultCount", 0) > 0:
-                    res = next(
-                        (item for item in data.get("results", []) if _itunes_track_matches(item, artist, title)),
-                        None,
-                    )
-                    if not res:
-                        logger.info("Ignoring non-exact iTunes result for %s - %s", artist, title)
-                        return {"album": "", "artwork": ""}
-                    # Get highest res artwork
-                    artwork = res.get("artworkUrl100", "").replace("100x100bb", "300x300bb")
-                    return {
-                        "album": res.get("collectionName", ""),
-                        "artwork": artwork
-                    }
-    except Exception as e:
-        logger.warning(f"Failed to fetch iTunes metadata for {artist} - {title}: {e}")
-    return {"album": "", "artwork": ""}
-
 async def resolve_user_lb_credentials(request: Request) -> Tuple[str, str, Optional[Dict[str, Any]]]:
     """
     Resolves the ListenBrainz username and token for the currently logged-in user.
@@ -1482,6 +1434,7 @@ async def resolve_user_lb_credentials(request: Request) -> Tuple[str, str, Optio
 
 import time
 _cached_playlists = {} # schema: {source: {"tracks": [...], "time": timestamp}}
+_feedback_cache_locks: dict[str, asyncio.Lock] = {}
 
 @app.get("/api/playlist/current")
 async def get_current_playlist(source: Optional[str] = None, request: Request = None):
@@ -1601,12 +1554,12 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
 
     # Enrich metadata in parallel
     async def enrich_track(t):
-        meta = await fetch_itunes_metadata(t['artist'], t['title'])
-        # The JSPF release comes from ListenBrainz and the recording MBID pins
-        # the exact musical work.  iTunes is artwork-only; it must never
-        # decide the album shown in Explore.
+        # Explore is identity-first: the JSPF recording/release is
+        # authoritative.  Cover art is resolved client-side from an exact
+        # Deezer match only when missing, avoiding an extra iTunes request for
+        # every ten-second page refresh.
         t['album'] = t.get('album') or ''
-        t['artwork'] = meta['artwork']
+        t['artwork'] = t.get('artwork') or ''
         key = f"{t['artist'].lower()}-{t['title'].lower()}"
         info = db_tracks_map.get(key, {"status": "pending", "error_reason": ""})
         t['status'] = info["status"]
@@ -1641,7 +1594,18 @@ async def get_feedback(request: Request, score: Optional[int] = None, count: int
     cache_ready = await db.get_cache(f"feedback_ready_{user_id}", max_age=86400 * 365, allow_stale=True)
     if cached_feedback or cache_ready is not None:
         return {"feedback": cached_feedback, "cached": True}
-    return {"feedback": await refresh_feedback_cache_for_user(user_id, lb_username, lb_token, score, count, offset), "cached": False}
+
+    # Several components can mount together after a cold start.  Re-check the
+    # durable cache under a per-user lock so they produce one ListenBrainz call,
+    # rather than a burst of identical calls before the first response writes.
+    refresh_lock = _feedback_cache_locks.setdefault(user_id, asyncio.Lock())
+    async with refresh_lock:
+        cached_feedback = await db.get_feedback_cache(user_id, score=score, count=count, offset=offset)
+        cache_ready = await db.get_cache(f"feedback_ready_{user_id}", max_age=86400 * 365, allow_stale=True)
+        if cached_feedback or cache_ready is not None:
+            return {"feedback": cached_feedback, "cached": True}
+        feedback = await refresh_feedback_cache_for_user(user_id, lb_username, lb_token, score, count, offset)
+        return {"feedback": feedback, "cached": False}
 
 async def refresh_feedback_cache_for_user(user_id: str, lb_username: Optional[str] = None,
                                           lb_token: Optional[str] = None,
@@ -1689,14 +1653,13 @@ async def refresh_feedback_cache_for_user(user_id: str, lb_username: Optional[st
             artist = track_meta.get("artist_name") or item.get("artist_name") or "Unknown Artist"
             title = track_meta.get("track_name") or item.get("recording_name") or item.get("track_name") or "Unknown Track"
             
-            meta = await fetch_itunes_metadata(artist, title)
             return {
                 "artist": artist,
                 "title": title,
                 "mbid": mbid,
                 "score": scr,
-                "artwork": meta.get("artwork", ""),
-                "album": meta.get("album", "")
+                "artwork": "",
+                "album": track_meta.get("release_name") or track_meta.get("album_name") or ""
             }
 
         feedback_list = await asyncio.gather(*(enrich_feedback_item(item) for item in feedback_raw))
@@ -3224,10 +3187,9 @@ async def like_track(req: LikeRequest, request: Request = None):
         lb_success = await lb_client.submit_feedback(req.artist, req.title, req.score, mbid=mbid)
         if lb_success:
             lb_message = "Feedback submitted to ListenBrainz."
-            cached_meta = await fetch_itunes_metadata(req.artist, req.title)
             await db.upsert_feedback_cache(user_id, {
-                "artist": req.artist, "title": req.title, "album": req.album or cached_meta.get("album", ""),
-                "artwork": cached_meta.get("artwork", ""), "mbid": mbid or "", "score": req.score,
+                "artist": req.artist, "title": req.title, "album": req.album or "",
+                "artwork": "", "mbid": mbid or "", "score": req.score,
             })
         else:
             lb_message = "ListenBrainz feedback could not be submitted (check token/MBID). Music action will still proceed."
