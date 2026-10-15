@@ -1273,12 +1273,12 @@ def embed_metadata(
     - All pre-existing tags are wiped before writing to eliminate scene-release junk.
     """
     ext = os.path.splitext(file_path)[1].lower()
-    from backend.app.metadata_pipeline.extras import read_extras, write_extras
+    from backend.app.metadata_pipeline.extras import normalize_extras, read_extras, write_extras
     try:
         useful_tags = read_extras(file_path)
     except Exception:
         useful_tags = {}
-    useful_tags.update({k: v for k, v in (metadata_extras or {}).items() if v not in (None, "", [])})
+    useful_tags.update({k: v for k, v in normalize_extras(metadata_extras or {}).items() if v not in (None, "", [])})
     if genre:
         useful_tags["genre"] = genre
     if album_artist_mbids:

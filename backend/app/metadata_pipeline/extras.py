@@ -4,6 +4,7 @@ Never manufacture a genre, ISRC or original release date when providers lack it.
 """
 from pathlib import Path
 from typing import Any
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import functools
 import os
 import shutil
@@ -51,6 +52,8 @@ def atomic_tag_update(function):
 # Vorbis, ID3, MP4 mappings. Artist credits and release identity use the core writer.
 FIELDS = {
     "genre": ("genre", "TCON", "©gen"),
+    "bpm": ("bpm", "TBPM", "tmpo"),
+    "mood": ("mood", "TMOO", "----:com.apple.iTunes:MOOD"),
     "isrc": ("isrc", "TSRC", "----:com.apple.iTunes:ISRC"),
     "label": ("label", "TPUB", "----:com.apple.iTunes:LABEL"),
     "original_date": ("originaldate", "TDOR", "----:com.apple.iTunes:ORIGINALDATE"),
@@ -80,6 +83,29 @@ def _values(value: Any) -> list[str]:
     return [v.decode("utf-8") if isinstance(v, bytes) else str(v) for v in value if v not in (None, "")]
 
 
+def normalize_extras(values: dict) -> dict:
+    """Reject invalid tempo without replacing an existing useful source value.
+
+    BPM is single-valued. Keep fractional precision in text tags; only MP4's
+    unsigned integer tmpo atom requires rounding. Empty values still mean delete
+    to the explicit extras writer, but an absent/invalid provider value does not.
+    """
+    result = dict(values)
+    if "bpm" in result:
+        data = _values(result["bpm"])
+        if not data:
+            result["bpm"] = []
+        else:
+            try:
+                tempo = Decimal(data[0].strip())
+                if len(data) != 1 or not tempo.is_finite() or not 1 <= tempo <= 65535:
+                    raise ValueError("Invalid BPM")
+                result["bpm"] = [format(tempo.normalize(), "f")]
+            except (InvalidOperation, ValueError):
+                result.pop("bpm")
+    return result
+
+
 def read_extras(path: str | Path) -> dict:
     from mutagen import File
     from mutagen.id3 import ID3
@@ -94,8 +120,12 @@ def read_extras(path: str | Path) -> dict:
             value = getattr(frame, "text", [])
         else:
             value = tags.get(mp4 if suffix in {".m4a", ".mp4"} else vorbis, []) if tags else []
+            if field == "mood" and not value and tags and suffix in {".m4a", ".mp4"}:
+                # Both MOOD and mood freeform spellings occur in the wild;
+                # Navidrome normalizes atom names case-insensitively too.
+                value = next((tags[key] for key in tags.keys() if key.casefold() == mp4.casefold()), [])
         result[field] = _values(value)
-    return result
+    return {**result, "bpm": normalize_extras(result).get("bpm", [])}
 
 
 def write_extras(path: str | Path, values: dict) -> None:
@@ -107,10 +137,15 @@ def write_extras(path: str | Path, values: dict) -> None:
     tags = ID3(path) if suffix == ".mp3" else File(path)
     if tags is None:
         raise ValueError(f"Unsupported audio format: {suffix}")
+    values = normalize_extras(values)
     for field, (vorbis, frame_name, mp4) in FIELDS.items():
         if field not in values:
             continue
         data = _values(values.get(field))
+        if suffix in {".m4a", ".mp4"} and field == "mood":
+            for key in list(tags.keys()):
+                if key.casefold() == mp4.casefold():
+                    del tags[key]
         if not data:
             if suffix == '.mp3':
                 tags.delall(frame_name if len(frame_name) == 4 and hasattr(id3, frame_name) else f'TXXX:{frame_name}')
@@ -123,7 +158,10 @@ def write_extras(path: str | Path, values: dict) -> None:
             else:
                 tags.add(TXXX(encoding=3, desc=frame_name, text=data))
         elif suffix in {".m4a", ".mp4"}:
-            tags[mp4] = [MP4FreeForm(v.encode("utf-8")) for v in data] if mp4.startswith("----") else data
+            if field == "bpm":
+                tags[mp4] = [int(Decimal(data[0]).quantize(Decimal("1"), rounding=ROUND_HALF_UP))]
+            else:
+                tags[mp4] = [MP4FreeForm(v.encode("utf-8")) for v in data] if mp4.startswith("----") else data
         else:
             tags[vorbis] = data
     tags.save(path, v2_version=4) if suffix == ".mp3" else tags.save()
