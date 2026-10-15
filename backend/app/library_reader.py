@@ -9,22 +9,31 @@ from typing import Any
 AUDIO_SUFFIXES = {".mp3", ".flac", ".m4a", ".mp4", ".ogg"}
 
 
+def sqlite_file_identity(value: int) -> int | str:
+    # NTFS may expose 128-bit IDs. A prefixed string avoids both overflow and
+    # SQLite's lossy INTEGER-affinity conversion of decimal strings to REAL.
+    return value if -(2**63) <= value < 2**63 else f"0x{value:x}"
+
+
 def match_official_album_tracks(official_tracks: list[dict[str, Any]],
                                 local_tracks: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Match by title once per file; track numbers alone do not establish identity."""
-    def title_key(title: str) -> str:
-        return re.sub(r"[^\w]", "", (title or "")).casefold()
-
-    available: dict[str, list[dict[str, Any]]] = {}
-    for track in local_tracks:
-        key = title_key(track.get("title", ""))
-        if key:
-            available.setdefault(key, []).append(track)
-
+    from backend.app.media_versions import same_recording_title, same_master
+    available = list(local_tracks)
     result = []
     for track in official_tracks:
-        candidates = available.get(title_key(track.get("title", "")), [])
-        matched = candidates.pop(0) if candidates else None
+        expected_id = track.get("id") or track.get("recording_mbid")
+        matched = None
+        for candidate in available:
+            local_id = candidate.get("track_mbid") or candidate.get("recording_mbid")
+            if expected_id and local_id:
+                compatible = expected_id == local_id and same_master(track.get("title", ""), candidate.get("title", ""))
+            else:
+                compatible = same_recording_title(track.get("title", ""), candidate.get("title", ""))
+            if compatible:
+                matched = candidate
+                available.remove(candidate)
+                break
         result.append({
             "title": track.get("title", ""),
             "track_num": track.get("track_position", 0),
@@ -91,7 +100,7 @@ def read_library_file(path: Path) -> dict[str, Any]:
     result: dict[str, Any] = {
         "filepath": str(path), "size": stat.st_size, "mtime": stat.st_mtime,
         "mtime_ns": stat.st_mtime_ns, "ctime_ns": stat.st_ctime_ns,
-        "device": stat.st_dev, "inode": stat.st_ino, "artist": "", "artists": [],
+        "device": sqlite_file_identity(stat.st_dev), "inode": sqlite_file_identity(stat.st_ino), "artist": "", "artists": [],
         "album": "", "title": "", "album_artist": "", "album_artists": [], "year": "0000",
         "date": "", "track_num": 0, "total_tracks": 0, "disc_num": 1,
         "disc_total": 1, "quality_desc": suffix.lstrip(".").upper(),

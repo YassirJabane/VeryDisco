@@ -426,6 +426,15 @@ class MetadataRebuildService:
                         "recording_mbid": remote["recording_mbid"],
                         "compilation": normalize(winner["album_artist"]) == normalize("Various Artists"),
                     }
+                    for key, value in {
+                        "genre": winner.get("genre"), "label": winner.get("labels"),
+                        "original_date": winner.get("first_release_date"),
+                        "release_group_mbid": winner.get("release_group_mbid"),
+                        "barcode": winner.get("barcode"), "isrc": remote.get("isrc"),
+                        "artist_mbids": [item["mbid"] for item in remote["artists"] if item.get("mbid")],
+                    }.items():
+                        if value:
+                            proposed[key] = value
                 changes.append({
                     "path": local["path"], "expected_mtime_ns": local["mtime_ns"],
                     "expected_size": local["size"], "current": self._public_tags(local),
@@ -450,6 +459,8 @@ class MetadataRebuildService:
 
     @staticmethod
     def _match_track(local: dict[str, Any], remaining: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        from backend.app.media_versions import same_master
+        remaining = [item for item in remaining if same_master(local.get("title", ""), item["title"])]
         if local.get("track"):
             numbered = [
                 item for item in remaining

@@ -1,0 +1,125 @@
+"""Useful source tags survive cleaning; provider values take precedence when known.
+
+Never manufacture a genre, ISRC or original release date when providers lack it.
+"""
+from pathlib import Path
+from typing import Any
+import functools
+import os
+import shutil
+import tempfile
+
+
+def atomic_tag_update(function):
+    """Finish the complete wipe/rebuild on a private copy before publishing it."""
+    @functools.wraps(function)
+    def wrapped(*args, **kwargs):
+        path = Path(args[0] if args else kwargs["file_path"])
+        fd, name = tempfile.mkstemp(prefix=".verydisco-tags-", suffix=path.suffix, dir=path.parent)
+        os.close(fd)
+        staged = Path(name)
+        backup = None
+        try:
+            shutil.copy2(path, staged)
+            if args:
+                function(str(staged), *args[1:], **kwargs)
+            else:
+                function(**{**kwargs, "file_path": str(staged)})
+            if path.stat().st_nlink > 1:
+                fd, name = tempfile.mkstemp(prefix=".verydisco-backup-", suffix=path.suffix, dir=path.parent)
+                os.close(fd)
+                backup = Path(name)
+                shutil.copy2(path, backup)
+                try:
+                    shutil.copyfile(staged, path)
+                    os.utime(path, None)
+                except BaseException:
+                    shutil.copy2(backup, path)
+                    raise
+            else:
+                os.replace(staged, path)
+        finally:
+            staged.unlink(missing_ok=True)
+            if backup:
+                backup.unlink(missing_ok=True)
+    return wrapped
+
+# Vorbis, ID3, MP4 mappings. Artist credits and release identity use the core writer.
+FIELDS = {
+    "genre": ("genre", "TCON", "©gen"),
+    "isrc": ("isrc", "TSRC", "----:com.apple.iTunes:ISRC"),
+    "label": ("label", "TPUB", "----:com.apple.iTunes:LABEL"),
+    "original_date": ("originaldate", "TDOR", "----:com.apple.iTunes:ORIGINALDATE"),
+    "release_group_mbid": ("musicbrainz_releasegroupid", "MusicBrainz Release Group Id", "----:com.apple.iTunes:MusicBrainz Release Group Id"),
+    "artist_mbids": ("musicbrainz_artistid", "MusicBrainz Artist Id", "----:com.apple.iTunes:MusicBrainz Artist Id"),
+    "album_artist_mbids": ("musicbrainz_albumartistid", "MusicBrainz Album Artist Id", "----:com.apple.iTunes:MusicBrainz Album Artist Id"),
+    "barcode": ("barcode", "BARCODE", "----:com.apple.iTunes:BARCODE"),
+    "instrumental": ("instrumental", "INSTRUMENTAL", "----:com.apple.iTunes:INSTRUMENTAL"),
+    "composer": ("composer", "TCOM", "©wrt"),
+    "lyricist": ("lyricist", "TEXT", "----:com.apple.iTunes:LYRICIST"),
+    "conductor": ("conductor", "TPE3", "----:com.apple.iTunes:CONDUCTOR"),
+    "copyright": ("copyright", "TCOP", "cprt"),
+    "language": ("language", "TLAN", "----:com.apple.iTunes:LANGUAGE"),
+    "disc_subtitle": ("discsubtitle", "TSST", "----:com.apple.iTunes:DISCSUBTITLE"),
+    "replaygain_track_gain": ("replaygain_track_gain", "REPLAYGAIN_TRACK_GAIN", "----:com.apple.iTunes:replaygain_track_gain"),
+    "replaygain_track_peak": ("replaygain_track_peak", "REPLAYGAIN_TRACK_PEAK", "----:com.apple.iTunes:replaygain_track_peak"),
+    "replaygain_album_gain": ("replaygain_album_gain", "REPLAYGAIN_ALBUM_GAIN", "----:com.apple.iTunes:replaygain_album_gain"),
+    "replaygain_album_peak": ("replaygain_album_peak", "REPLAYGAIN_ALBUM_PEAK", "----:com.apple.iTunes:replaygain_album_peak"),
+}
+
+
+def _values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        value = [value]
+    return [v.decode("utf-8") if isinstance(v, bytes) else str(v) for v in value if v not in (None, "")]
+
+
+def read_extras(path: str | Path) -> dict:
+    from mutagen import File
+    from mutagen.id3 import ID3
+    suffix = Path(path).suffix.lower()
+    tags = ID3(path) if suffix == ".mp3" else File(path)
+    result = {}
+    for field, (vorbis, id3, mp4) in FIELDS.items():
+        if suffix == ".mp3":
+            frame = tags.get(id3 if len(id3) == 4 else f"TXXX:{id3}")
+            if frame is None and len(id3) != 4:
+                frame = next((f for f in tags.getall('TXXX') if f.desc.casefold().replace('_', ' ') == id3.casefold().replace('_', ' ')), None)
+            value = getattr(frame, "text", [])
+        else:
+            value = tags.get(mp4 if suffix in {".m4a", ".mp4"} else vorbis, []) if tags else []
+        result[field] = _values(value)
+    return result
+
+
+def write_extras(path: str | Path, values: dict) -> None:
+    from mutagen import File
+    from mutagen import id3
+    from mutagen.id3 import ID3, TXXX
+    from mutagen.mp4 import MP4FreeForm
+    suffix = Path(path).suffix.lower()
+    tags = ID3(path) if suffix == ".mp3" else File(path)
+    if tags is None:
+        raise ValueError(f"Unsupported audio format: {suffix}")
+    for field, (vorbis, frame_name, mp4) in FIELDS.items():
+        if field not in values:
+            continue
+        data = _values(values.get(field))
+        if not data:
+            if suffix == '.mp3':
+                tags.delall(frame_name if len(frame_name) == 4 and hasattr(id3, frame_name) else f'TXXX:{frame_name}')
+            else:
+                tags.pop(mp4 if suffix in {'.m4a', '.mp4'} else vorbis, None)
+            continue
+        if suffix == ".mp3":
+            if len(frame_name) == 4 and hasattr(id3, frame_name):
+                tags.add(getattr(id3, frame_name)(encoding=3, text=data))
+            else:
+                tags.add(TXXX(encoding=3, desc=frame_name, text=data))
+        elif suffix in {".m4a", ".mp4"}:
+            tags[mp4] = [MP4FreeForm(v.encode("utf-8")) for v in data] if mp4.startswith("----") else data
+        else:
+            tags[vorbis] = data
+    tags.save(path, v2_version=4) if suffix == ".mp3" else tags.save()

@@ -305,7 +305,7 @@ export const MyArtists: React.FC = () => {
     
     let force = false;
     if (isAlbum) {
-      if (release.albumStatus === 'full' && !release.upgradeAvailable) {
+      if (release.albumStatus === 'full' && !release.upgradeAvailable && !selectedEdition) {
         confirm({
           title: 'Album Already Downloaded',
           message: `You already have "${detailArtist.artist_name} - ${releaseTitle}" fully in the desired quality. Download/overwrite anyway?`,

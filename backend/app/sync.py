@@ -17,6 +17,7 @@ from backend.app.clients.listenbrainz import ListenBrainzClient
 from backend.app.clients.slskd import SlskdClient
 from backend.app.clients.lrclib import LrcLibClient
 from backend.app.clients.deezer import DeezerClient
+from backend.app.metadata_pipeline.extras import atomic_tag_update
 
 logger = app_logger.get_logger()
 
@@ -533,7 +534,7 @@ def extract_base_album_name(album_name: str) -> str:
     """
     if not album_name:
         return ""
-    clean = album_name
+    clean = re.sub(r'(?i)\s*[\(\[][^\)\]]+\s+edition[\)\]]\s*$', '', album_name)
     for _ in range(2):
         clean = EDITION_SUFFIX_RE.sub('', clean).strip()
         clean = TRAILING_YEAR_RE.sub('', clean).strip()
@@ -578,11 +579,15 @@ def find_existing_album_folder(artist_dir: Path, target_album: str) -> Optional[
 
     # 3. Normalized base match ONLY IF target is NOT an upgraded edition compared to child
     is_target_edition = bool(EDITION_SUFFIX_RE.search(target_album))
+    is_target_edition = is_target_edition or extract_base_album_name(target_album) != target_album.strip()
     if target_norm:
         for child in children:
-            is_child_edition = bool(EDITION_SUFFIX_RE.search(child.name))
+            from backend.app.media_versions import same_master
+            if not same_master(target_album, child.name):
+                continue
+            is_child_edition = bool(EDITION_SUFFIX_RE.search(child.name)) or extract_base_album_name(child.name) != child.name.strip()
             # If target has an edition tag (e.g. FOMO) but child does not, do not reuse child
-            if is_target_edition and not is_child_edition:
+            if is_target_edition or is_child_edition:
                 continue
             child_norm = normalize_album_name(child.name)
             if child_norm and child_norm == target_norm:
@@ -612,7 +617,8 @@ def find_superseded_album_folders(artist_dir: Path, target_album: str) -> List[P
                 continue
             
             child_norm_base = normalize_album_name(child.name)
-            if child_norm_base and child_norm_base == target_norm_base:
+            from backend.app.media_versions import same_master
+            if child_norm_base and child_norm_base == target_norm_base and same_master(target_album, child.name):
                 superseded.append(child)
     except Exception:
         pass
@@ -760,6 +766,26 @@ def harmonize_album_directory(
         logger.info(f"Harmonized metadata for {updated_count} track(s) in '{dir_path.name}'.")
     return updated_count
 
+def _archive_superseded_file(path: Path, music_root: Path, keep_original: bool = False) -> Path:
+    """Recoverable originals live outside the scanned library, never in its albums."""
+    import uuid
+    # /music may be a mount at the filesystem root: its parent is not writable
+    # by the production non-root user. Keep recovery on the writable data mount.
+    data_root = Path('/data')
+    recovery_root = data_root / 'recovery' if os.name != 'nt' and data_root.is_dir() else music_root.parent / '.verydisco-recovery'
+    if os.environ.get('VERYDISCO_RECOVERY_DIR'):
+        recovery_root = Path(os.environ['VERYDISCO_RECOVERY_DIR'])
+    recovery = recovery_root / music_root.name / uuid.uuid4().hex
+    recovery.mkdir(parents=True, exist_ok=True)
+    destination = recovery / path.name
+    (safe_copy_file if keep_original else safe_move_file)(path, destination)
+    sidecar = path.with_suffix('.lrc')
+    if sidecar.exists():
+        (safe_copy_file if keep_original else safe_move_file)(sidecar, destination.with_suffix('.lrc'))
+    logger.info('Previous media retained for recovery: %s', destination)
+    return destination
+
+
 def upgrade_or_merge_album_folders(
     music_dir: Union[str, Path],
     artist: str,
@@ -879,6 +905,18 @@ def upgrade_or_merge_album_folders(
                 match_file_to_official_track(old_file.name, official_album_tracks)
                 if official_album_tracks else None
             )
+            try:
+                source_tags = read_track(old_file)
+            except Exception:
+                source_tags = {}
+            if source_tags.get('recording_mbid') and matched and matched.get('id') and source_tags['recording_mbid'] != matched['id']:
+                continue
+            from backend.app.media_versions import same_master
+            if source_tags.get('album') and not same_master(target_album, source_tags['album']):
+                continue
+            if official_album_tracks and not matched:
+                # Never relabel an unrelated bonus, live take or different master.
+                continue
 
             if matched:
                 disc_num = matched.get("disk_number") or matched.get("disc_num") or 1
@@ -888,8 +926,8 @@ def upgrade_or_merge_album_folders(
             else:
                 try:
                     t_info = read_track(old_file)
-                    track_num = t_info.get("track_number")
-                    disc_num = t_info.get("disc_number") or 1
+                    track_num = t_info.get("track")
+                    disc_num = t_info.get("disc") or 1
                     title_tag = t_info.get("title")
                     track_artist = t_info.get("artist") or artist
                 except Exception:
@@ -923,71 +961,43 @@ def upgrade_or_merge_album_folders(
             if dest_path.resolve() == old_file.resolve():
                 continue
 
-            if dest_path.exists():
-                # Compare audio quality
-                try:
+            # Never publish an untagged donor or delete the previous destination.
+            import uuid
+            staged = dest_path.with_name(f".verydisco-upgrade-{uuid.uuid4().hex}{dest_path.suffix}")
+            old_lrc = old_file.with_suffix(".lrc")
+            try:
+                if dest_path.exists():
                     ext_old, br_old, bd_old, sr_old = get_file_audio_info(old_file)
                     ext_new, br_new, bd_new, sr_new = get_file_audio_info(dest_path)
-                    old_score = (1 if ext_old == "flac" else 0, br_old, bd_old, sr_old)
-                    new_score = (1 if ext_new == "flac" else 0, br_new, bd_new, sr_new)
-                except Exception:
-                    old_score = (0, 0, 0, 0)
-                    new_score = (0, 0, 0, 0)
-
-                if new_score >= old_score:
-                    try:
-                        old_file.unlink()
-                        old_lrc = old_file.with_suffix(".lrc")
-                        if old_lrc.exists():
-                            old_lrc.unlink()
-                    except Exception as e:
-                        logger.warning(f"Failed to remove duplicate old file {old_file}: {e}")
-                    continue
-                else:
-                    try:
-                        dest_path.unlink()
-                        dest_lrc = dest_path.with_suffix(".lrc")
-                        if dest_lrc.exists():
-                            dest_lrc.unlink()
-                    except Exception:
-                        pass
-
-            try:
-                safe_move_file(old_file, dest_path)
-                old_lrc = old_file.with_suffix(".lrc")
-                if old_lrc.exists():
-                    safe_move_file(old_lrc, dest_path.with_suffix(".lrc"))
-            except Exception as move_err:
-                logger.error(f"Failed to move superseded file {old_file} to {dest_path}: {move_err}")
-                continue
-
-            lyrics_text = None
-            dest_lrc = dest_path.with_suffix(".lrc")
-            if dest_lrc.exists():
-                try:
-                    lyrics_text = dest_lrc.read_text(encoding="utf-8", errors="ignore")
-                except Exception:
-                    pass
-
-            try:
+                    if (ext_new == "flac", bd_new, sr_new, br_new) >= (ext_old == "flac", bd_old, sr_old, br_old):
+                        # Keep donor recoverable rather than permanently deleting it.
+                        _archive_superseded_file(old_file, music_path)
+                        migrated_results.append(({"title": title_tag, "_official_position": (disc_num, track_num)}, dest_path))
+                        continue
+                safe_copy_file(old_file, staged)
+                lyrics_text = old_lrc.read_text(encoding="utf-8", errors="ignore") if old_lrc.exists() else None
                 embed_metadata(
-                    file_path=str(dest_path),
-                    artist=track_artist,
-                    title=title_tag,
-                    album=target_album,
-                    track_num=track_num,
-                    track_total=track_total,
-                    cover_bytes=official_album_cover_bytes,
-                    lyrics_text=lyrics_text,
+                    file_path=str(staged), artist=track_artist, title=title_tag,
+                    album=target_album, track_num=track_num,
+                    track_total=sum(1 for t in official_album_tracks if (t.get("disk_number") or t.get("disc_num") or 1) == disc_num) if official_album_tracks else track_total,
+                    cover_bytes=official_album_cover_bytes, lyrics_text=lyrics_text,
                     album_artist=target_album_artist or clean_artist,
-                    date=official_album_date,
-                    disc_num=disc_num,
-                    disc_total=disc_total,
-                    is_explore=False,
+                    date=official_album_date, disc_num=disc_num, disc_total=disc_total,
                     mbid_album=official_mb_release_mbid,
+                    mbid_recording=(matched or {}).get("id") or source_tags.get('recording_mbid'),
+                    credited_artists=(matched or {}).get("credited_artists"),
                 )
-            except Exception as tag_err:
-                logger.warning(f"Failed to retag upgraded track {dest_path}: {tag_err}")
+                if dest_path.exists():
+                    _archive_superseded_file(dest_path, music_path, keep_original=True)
+                safe_move_file(staged, dest_path)
+                if old_lrc.exists():
+                    safe_copy_file(old_lrc, dest_path.with_suffix(".lrc"))
+                _archive_superseded_file(old_file, music_path)
+            except Exception as error:
+                logger.warning(f"Upgrade failed; original retained for {old_file}: {error}")
+                continue
+            finally:
+                staged.unlink(missing_ok=True)
 
             if playlists_dir and Path(playlists_dir).exists():
                 try:
@@ -1012,7 +1022,8 @@ def upgrade_or_merge_album_folders(
         if not remaining:
             logger.info(f"Superseded album directory '{old_dir}' has no remaining audio tracks. Removing folder.")
             try:
-                shutil.rmtree(old_dir, ignore_errors=True)
+                # Retain booklets/art and other ancillary files for recovery too.
+                _archive_superseded_file(old_dir, music_path)
             except Exception as rm_err:
                 logger.warning(f"Failed to remove empty superseded directory '{old_dir}': {rm_err}")
 
@@ -1207,6 +1218,7 @@ def strip_promotional_text(text: Optional[str]) -> str:
     cleaned = re.sub(r'(?i)\b(?:www\.)?pmedia(?:_music|1)?\b', '', cleaned)
     return re.sub(r'\s+', ' ', cleaned).strip(' -_.,;:/\\')
 
+@atomic_tag_update
 def embed_metadata(
     file_path: str,
     artist: str,
@@ -1227,6 +1239,7 @@ def embed_metadata(
     credited_artists: Optional[List[str]] = None,
     album_artists: Optional[List[str]] = None,
     album_artist_mbids: Optional[List[str]] = None,
+    metadata_extras: Optional[dict] = None,
 ):
     """Embed metadata, cover art, and lyrics directly into the audio file metadata.
 
@@ -1239,6 +1252,31 @@ def embed_metadata(
     - All pre-existing tags are wiped before writing to eliminate scene-release junk.
     """
     ext = os.path.splitext(file_path)[1].lower()
+    from backend.app.metadata_pipeline.extras import read_extras, write_extras
+    try:
+        useful_tags = read_extras(file_path)
+    except Exception:
+        useful_tags = {}
+    useful_tags.update({k: v for k, v in (metadata_extras or {}).items() if v not in (None, "", [])})
+    if genre:
+        useful_tags["genre"] = genre
+    useful_tags = {key: cleaned for key, value in useful_tags.items()
+                   if (cleaned := [text for item in (value if isinstance(value, (list, tuple)) else [value])
+                                   if (text := strip_promotional_text(str(item)))])}
+    # Retagging a library file must not erase lyrics when no replacement was found.
+    if not lyrics_text:
+        try:
+            if ext == '.mp3':
+                from mutagen.id3 import ID3
+                frames = ID3(file_path).getall('USLT')
+                lyrics_text = frames[0].text if frames else None
+            else:
+                from mutagen import File
+                original_audio = File(file_path)
+                values = original_audio.get('©lyr' if ext in {'.m4a', '.mp4'} else 'lyrics', []) if original_audio else []
+                lyrics_text = values[0] if values else None
+        except Exception:
+            pass
 
     # Provider display strings are editorial data. Preserve punctuation and
     # join phrases verbatim; normalization is only for matching/search.
@@ -1259,7 +1297,7 @@ def embed_metadata(
         final_album_artist = strip_promotional_text(
             str(album_artist or artist or clean_artist).strip()
         ) or clean_artist
-        compilation_val = "0"
+        compilation_val = "1" if re.sub(r'[^\w]', '', final_album_artist).casefold() == 'variousartists' else "0"
 
     final_album_artists = list(dict.fromkeys(
         value.strip() for value in (
@@ -1383,7 +1421,7 @@ def embed_metadata(
             # Save as ID3v2.4 — required for true multi-value frame support
             tags.save(file_path, v2_version=4)
             
-        elif ext in [".flac", ".ogg"]:
+        elif ext == ".flac":
             from mutagen.flac import FLAC, Picture
             audio = FLAC(file_path)
 
@@ -1465,7 +1503,7 @@ def embed_metadata(
             audio["aART"] = [final_album_artist]
             audio["©nam"] = [clean_title]
             audio["©alb"] = [final_album]
-            audio["cpil"] = is_explore
+            audio["cpil"] = compilation_val == "1"
             if clean_genre:
                 audio["©gen"] = [clean_genre]
 
@@ -1513,6 +1551,28 @@ def embed_metadata(
                 audio["covr"] = [MP4Cover(cover_bytes, imageformat=image_format)]
             audio.save()
 
+        elif ext == ".ogg":
+            from backend.app.metadata_pipeline.tags import write_track
+            from mutagen.oggvorbis import OggVorbis
+            audio = OggVorbis(file_path)
+            audio.clear()
+            audio.save()
+            write_track(Path(file_path), dict(title=clean_title, artist=clean_artist,
+                album=final_album, album_artist=final_album_artist,
+                artists=feat_artists, album_artists=final_album_artists,
+                album_artist_mbids=final_album_artist_mbids,
+                track=track_num, track_total=track_total, disc=disc_num, disc_total=disc_total,
+                date=date, compilation=compilation_val == "1", release_mbid=mbid_album,
+                recording_mbid=mbid_recording), cover_bytes if cover_format else None, bool(cover_format))
+            if lyrics_text:
+                from mutagen.oggvorbis import OggVorbis
+                audio = OggVorbis(file_path)
+                audio["lyrics"] = [lyrics_text]
+                audio.save()
+        else:
+            raise ValueError(f"Unsupported audio format: {ext}")
+
+        write_extras(file_path, useful_tags)
         # Touch mtime so Navidrome's file watcher immediately notices changes
         try:
             os.utime(file_path, None)
@@ -1667,6 +1727,10 @@ def clean_track_filename(filename: str, target_artist: str = "") -> str:
 
 def match_track_titles(target_title: str, candidate_filename: str, target_artist: str = "") -> bool:
     """Precision matching between target track title and candidate audio filename."""
+    from backend.app.media_versions import same_master
+    candidate_title = os.path.splitext(os.path.basename(candidate_filename))[0]
+    if not same_master(target_title, candidate_title):
+        return False
     clean_candidate = clean_track_filename(candidate_filename, target_artist)
     
     def norm(txt: str):
@@ -1891,6 +1955,7 @@ async def relocate_and_tag_download(
 
     # Fetch metadata using MusicBrainz primary, Deezer fallback
     from backend.app.album_sync import fetch_track_metadata_with_fallback
+    meta_result = {}
     meta_result = await fetch_track_metadata_with_fallback(deezer_client, artist_clean, title_clean, album)
     
     dz_title = meta_result.get("title") or title_clean
@@ -2013,7 +2078,8 @@ async def relocate_and_tag_download(
         is_explore=is_explore,
         mbid_album=mbid_album,
         mbid_recording=mbid_recording,
-        credited_artists=meta_result.get("credited_artists")
+        credited_artists=meta_result.get("credited_artists"),
+        metadata_extras=(meta_result or {}).get("metadata_extras"),
     )
 
     return "downloaded", str(dest_audio_path), lyrics_status

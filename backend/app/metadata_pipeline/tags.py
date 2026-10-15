@@ -35,7 +35,7 @@ def _pair(value: Any) -> tuple[int, int]:
 
 
 def read_track(path: Path, include_cover: bool = False) -> dict[str, Any]:
-    """Read only fields managed by the rebuild pipeline plus audio identity data."""
+    """Read managed fields and optional useful metadata for inspection."""
     suffix = path.suffix.lower()
     result: dict[str, Any] = {
         "path": str(path), "title": "", "artist": "", "artists": [], "album": "",
@@ -161,6 +161,8 @@ def read_track(path: Path, include_cover: bool = False) -> dict[str, Any]:
         result["cover"] = base64.b64encode(cover).decode("ascii") if cover else ""
     result["mtime_ns"] = path.stat().st_mtime_ns
     result["size"] = path.stat().st_size
+    from backend.app.metadata_pipeline.extras import read_extras
+    result.update(read_extras(path))
     return result
 
 
@@ -189,6 +191,8 @@ def write_track(
             _write_mp4(temp_path, values, cover, replace_cover)
         else:
             raise ValueError(f"Unsupported audio format: {path.suffix}")
+        from backend.app.metadata_pipeline.extras import write_extras
+        write_extras(temp_path, values)
         if hardlink_count > 1:
             # Replacing the inode would silently detach playlist hardlinks.
             # For linked media, preserve the inode and keep a full temporary

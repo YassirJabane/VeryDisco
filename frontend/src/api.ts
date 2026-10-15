@@ -263,6 +263,7 @@ export interface LibraryTrackItem {
 
 // ── Lyrics Manager ───────────────────────────────────────────────────────────
 export interface MissingLyricsTrack {
+  lyrics_status?: 'plain' | 'missing';
   artist: string;
   title: string;
   album: string;

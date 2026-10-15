@@ -59,7 +59,7 @@ class DeezerClient:
         Search for a track on Deezer and return its metadata (including album, cover art URL, etc).
         Returns the best-matching result or None if nothing matches.
         """
-        clean_title = title.split('(')[0].split('[')[0].strip()
+        clean_title = title.strip()
         clean_artist = artist.split('feat')[0].split('ft.')[0].strip()
         query = f"{clean_artist} {clean_title}"
 
@@ -137,7 +137,7 @@ class DeezerClient:
                         await asyncio.sleep(0.8 * (attempt + 1))
                         continue
                     resp.raise_for_status()
-                    return resp.content
+                    return resp.content if resp.content.startswith((b'\xff\xd8\xff', b'\x89PNG\r\n\x1a\n')) else None
                 except Exception as e:
                     if attempt == 2:
                         logger.error(f"Failed to download cover art from '{cover_url}': {e}")
@@ -148,7 +148,7 @@ class DeezerClient:
         """Search Deezer for album cover_xl art bytes for given (artist, album)."""
         from backend.app.sync import extract_main_artist
         clean_artist = extract_main_artist(artist)
-        clean_album = re.sub(r'[\(\[].*?[\)\]]', '', album).strip()
+        clean_album = album.strip()
         query = f"{clean_artist} {clean_album}".strip()
 
         url = f"{self.base_url}/search/album?q={urllib.parse.quote(query)}&limit=5"
@@ -205,15 +205,7 @@ class DeezerClient:
         for res in results:
             r_artist = _normalize((res.get("artist") or {}).get("name", ""))
             r_title = _normalize(res.get("title", ""))
-            if r_artist in valid_artists and r_title in {target_raw_norm, target_clean_norm} and r_title:
-                return res
-
-        for res in results:
-            r_artist = _normalize((res.get("artist") or {}).get("name", ""))
-            r_title = _normalize(res.get("title", ""))
-            if r_artist in valid_artists and target_clean_norm and (
-                target_clean_norm in r_title or r_title in target_clean_norm
-            ):
+            if r_artist in valid_artists and r_title == target_raw_norm and r_title:
                 return res
 
         return None

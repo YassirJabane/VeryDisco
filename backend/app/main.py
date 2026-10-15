@@ -97,7 +97,7 @@ async def lifespan(app: FastAPI):
 
     # Init database
     await db.initialize()
-    app_logger.db_ref = db
+    app_logger.attach_database(db)
 
     if config_manager.config:
         from backend.app.sync import recover_playlist_backups
@@ -177,6 +177,13 @@ async def lifespan(app: FastAPI):
 
     # Clean shutdown
     scheduler_manager.shutdown()
+    tasks = tuple(_background_tasks)
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    await app_logger.shutdown_logging()
+    from backend.app.clients.http_client import close_http_client
+    await close_http_client()
 
 app = FastAPI(title="VeryDisco API", lifespan=lifespan)
 
@@ -3524,17 +3531,22 @@ async def trigger_navidrome_starred_sync(request: Request):
 
 
 @app.get("/api/logs/stream")
-async def stream_logs(request: Request):
+async def stream_logs(request: Request, limit: int = 0, after: int = 0):
     """Server-Sent Events endpoint to stream live logs from the backend directly to the UI."""
     async def log_generator():
-        q = asyncio.Queue()
+        q = asyncio.Queue(maxsize=2000)
         app_logger.log_subscribers.add(q)
         
         try:
-            # Catch up with last 50 logs from SQLite database
-            past_logs = await db.get_logs(limit=50)
+            try:
+                cursor = max(0, after or int(request.headers.get("last-event-id") or 0))
+            except ValueError:
+                cursor = 0
+            await app_logger.flush_logs()
+            past_logs = await db.get_logs(limit=0 if cursor else max(0, limit), since=app_logger.boot_started_at, after_id=cursor)
             for log in past_logs:
-                yield f"data: {json.dumps(log)}\n\n"
+                cursor = max(cursor, log["id"])
+                yield f"id: {log['id']}\ndata: {json.dumps(log)}\n\n"
 
             # Stream newly emitted logs
             while True:
@@ -3542,12 +3554,20 @@ async def stream_logs(request: Request):
                 if await request.is_disconnected():
                     break
                 
-                log_entry = await q.get()
-                yield f"data: {json.dumps(log_entry)}\n\n"
+                try:
+                    log_entry = await asyncio.wait_for(q.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+                    continue
+                if log_entry is None:
+                    break
+                if log_entry["id"] > cursor:
+                    cursor = log_entry["id"]
+                    yield f"id: {cursor}\ndata: {json.dumps(log_entry)}\n\n"
         except asyncio.CancelledError:
             pass
         finally:
-            app_logger.log_subscribers.remove(q)
+            app_logger.log_subscribers.discard(q)
 
     return StreamingResponse(log_generator(), media_type="text/event-stream")
 
@@ -4418,9 +4438,9 @@ def _build_library_index_sync(
         if lrc_path.is_file():
             try:
                 with open(lrc_path, 'r', encoding='utf-8', errors='ignore') as _lf:
-                    first_lines = [_lf.readline() for _ in range(5)]
+                    first_lines = _lf.readlines()
                 has_timestamp = any(
-                    re.search(r'\[\d{2}:\d{2}', line) for line in first_lines
+                    re.search(r'\[\d{1,3}:\d{2}(?:\.\d+)?\]', line) for line in first_lines
                 )
                 if has_timestamp:
                     lyrics_synced = 1
@@ -6518,12 +6538,10 @@ async def get_missing_lyrics(request: Request):
             "album": r.get("album") or "",
             "filepath": r.get("filepath", ""),
             "duration": r.get("duration", 0),
+            "lyrics_status": "plain" if r.get("lyrics_plain") else "missing",
             "is_instrumental": r.get("filepath", "") in instrumental_set
         } for r in rows]
         
-    cached = await db.get_cache(f"missing_lyrics_{user_id}")
-    if cached is not None:
-        return cached
     return []
 
 
@@ -6555,7 +6573,7 @@ async def get_lyrics_file_endpoint(filepath: str, request: Request):
         try:
             with open(lrc_path, "r", encoding="utf-8") as f:
                 lyrics_text = f.read()
-            lyrics_type = "synced"
+            lyrics_type = "synced" if re.search(r"\[\d{1,3}:\d{2}(?:\.\d+)?\]", lyrics_text) else "plain"
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to read synced lyrics: {e}")
     elif txt_path.exists():
@@ -6606,7 +6624,7 @@ async def save_lyrics_endpoint(req: SaveLyricsRequest, request: Request):
         lrc_path = target_path.with_suffix(".lrc")
         with open(lrc_path, "w", encoding="utf-8") as f:
             f.write(req.lyrics_text)
-            
+        await db.refresh_library_paths(user_id, [str(target_path.resolve())])
         await trigger_navidrome_scan_debounced()
         await db.delete_cache(f"missing_lyrics_{user_id}")
                 

@@ -66,9 +66,12 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
           if (localDuration > 0) {
             const diffA = Math.abs(a.duration - localDuration);
             const diffB = Math.abs(b.duration - localDuration);
+            if (diffA <= 5 && diffB <= 5 && !!a.syncedLyrics !== !!b.syncedLyrics) {
+              return a.syncedLyrics ? -1 : 1;
+            }
             return diffA - diffB;
           }
-          return 0;
+          return Number(!!b.syncedLyrics) - Number(!!a.syncedLyrics);
         });
         const best = sorted[0];
         setSelectedCandidate(best);

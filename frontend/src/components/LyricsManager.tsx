@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Box, Card, CardContent, Typography, Button, Table, TableBody,
   TableCell, TableContainer, TableHead, TableRow, Paper,
@@ -18,24 +18,37 @@ export const LyricsManager: React.FC = () => {
   const [filterText, setFilterText] = useState('');
   const [selectedTrack, setSelectedTrack] = useState<MissingLyricsTrack | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestGeneration = useRef(0);
 
   const fetchMissing = async (forceScan: boolean = false) => {
+    const generation = ++requestGeneration.current;
     setLoading(true);
+    setError(null);
     try {
       if (forceScan) {
         await apiService.triggerLibraryScan();
+        let progress = await apiService.getLibraryScanProgress();
+        while (progress.status === 'running' && generation === requestGeneration.current) {
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          progress = await apiService.getLibraryScanProgress();
+        }
+        if (progress.status === 'failed') throw new Error(progress.error || 'Library scan failed');
       }
+      if (generation !== requestGeneration.current) return;
       const data = await apiService.getMissingLyrics();
-      setTracks(data || []);
+      if (generation === requestGeneration.current) setTracks(data || []);
     } catch (err) {
       console.error('Failed to fetch missing lyrics tracks', err);
+      if (generation === requestGeneration.current) setError('Could not refresh lyrics. Please try again.');
     } finally {
-      setLoading(false);
+      if (generation === requestGeneration.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchMissing(false);
+    return () => { requestGeneration.current += 1; };
   }, []);
 
   const handleOpenSearch = (track: MissingLyricsTrack) => {
@@ -55,10 +68,7 @@ export const LyricsManager: React.FC = () => {
   };
 
   const handleSaveSuccess = () => {
-    // Remove track from local state
-    if (selectedTrack) {
-      setTracks((prev) => prev.filter((t) => t.filepath !== selectedTrack.filepath));
-    }
+    void fetchMissing(false);
     setSelectedTrack(null);
   };
 
@@ -80,11 +90,12 @@ export const LyricsManager: React.FC = () => {
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+      {error && <Alert severity="error">{error}</Alert>}
       <Box display="flex" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={2}>
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 800 }}>Lyrics Manager</Typography>
           <Typography variant="body2" color="text.secondary">
-            Identify library tracks missing synced or plain lyrics sidecars (.lrc) and fetch them
+            Find missing lyrics and upgrade plain lyrics to synced lyrics
           </Typography>
         </Box>
         <Button
@@ -150,7 +161,7 @@ export const LyricsManager: React.FC = () => {
                               <Chip label="Instrumental" color="default" />
                             ) : (
                               <Box display="flex" gap={1} justifyContent="flex-end" alignItems="center">
-                                <Chip label="Missing" color="error" size="small" />
+                                <Chip label={track.lyrics_status === 'plain' ? 'Plain · upgrade to synced' : 'Missing'} color={track.lyrics_status === 'plain' ? 'warning' : 'error'} size="small" />
                                 <Button
                                   variant="outlined"
                                   size="small"

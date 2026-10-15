@@ -34,53 +34,53 @@ def _promote_track_sync(explore_candidate_path, user_music_dir, artist, title, a
     safe_audio_name = get_library_filename(dz_artist, safe_album, track_num, dz_title, ext)
     dest_path = dest_folder / safe_audio_name
 
+    import uuid
+    from backend.app.sync import safe_copy_file, safe_move_file
     dest_folder.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(explore_candidate_path), str(dest_path))
-    
+    staged = dest_path.with_name(f".verydisco-promote-{uuid.uuid4().hex}{dest_path.suffix}")
     explore_lrc = explore_candidate_path.with_suffix(".lrc")
-    if explore_lrc.exists():
-        shutil.move(str(explore_lrc), str(dest_path.with_suffix(".lrc")))
-
-    # Read lyrics if present
-    lyrics_text = None
-    dest_lrc = dest_path.with_suffix(".lrc")
-    if dest_lrc.exists():
-        try:
-            with open(dest_lrc, "r", encoding="utf-8") as lf:
-                lyrics_text = lf.read()
-        except Exception as e:
-            logger.warning(f"Failed to read lyrics file: {e}", exc_info=True)
-
-    # Re-tag file with canonical album metadata (is_explore=False)
-    embed_metadata(
-        file_path=str(dest_path),
-        artist=dz_artist,
-        title=dz_title,
-        album=dz_album,
-        track_num=track_num,
-        track_total=track_total,
-        cover_bytes=cover_bytes,
-        lyrics_text=lyrics_text,
-        album_artist=dz_album_artist,
-        date=dz_date,
-        disc_num=disc_num,
-        disc_total=disc_total,
-        is_explore=False,
-        mbid_album=mbid_album,
-        mbid_recording=mbid_recording,
-        credited_artists=meta_result.get("credited_artists")
-    )
-
+    lyrics_text = explore_lrc.read_text(encoding="utf-8", errors="ignore") if explore_lrc.exists() else None
     try:
+        safe_copy_file(explore_candidate_path, staged)
+        embed_metadata(
+            file_path=str(staged),
+            artist=dz_artist,
+            title=dz_title,
+            album=dz_album,
+            track_num=track_num,
+            track_total=track_total,
+            cover_bytes=cover_bytes,
+            lyrics_text=lyrics_text,
+            album_artist=dz_album_artist,
+            date=dz_date,
+            disc_num=disc_num,
+            disc_total=disc_total,
+            is_explore=False,
+            mbid_album=mbid_album,
+            mbid_recording=mbid_recording,
+            credited_artists=meta_result.get("credited_artists"),
+            metadata_extras=meta_result.get("metadata_extras"),
+            album_artists=meta_result.get("album_artists"),
+        )
+        safe_move_file(staged, dest_path)
+        if explore_lrc.exists():
+            safe_copy_file(explore_lrc, dest_path.with_suffix(".lrc"))
+        # Playlist references change only after the destination is fully tagged.
         update_m3u_references(Path(playlists_dir), explore_candidate_path.name, dest_path)
-    except Exception as e:
-        logger.error(f"Failed to update M3U references on promotion: {e}")
-
+        if explore_candidate_path.resolve() != dest_path.resolve():
+            explore_candidate_path.unlink()
+            explore_lrc.unlink(missing_ok=True)
+    finally:
+        staged.unlink(missing_ok=True)
     return dest_path
 
-def _check_album_dir_exists_sync(final_dir) -> bool:
+def _check_album_dir_exists_sync(final_dir, official_tracks=None) -> bool:
     try:
-        return final_dir.exists() and final_dir.is_dir() and any(final_dir.iterdir())
+        if not official_tracks or not final_dir.is_dir():
+            return False
+        from backend.app.library_reader import read_library_file, AUDIO_SUFFIXES, match_official_album_tracks
+        local = [read_library_file(p) for p in final_dir.rglob('*') if p.is_file() and p.suffix.lower() in AUDIO_SUFFIXES]
+        return all(t['exists'] for t in match_official_album_tracks(official_tracks, local))
     except Exception:
         return False
 
@@ -619,17 +619,20 @@ class SchedulerManager:
                 # 3. Check if the album is already present in the filesystem
                 album_exists = False
                 try:
+                    from backend.app.clients.musicbrainz import musicbrainz_client
+                    official = await musicbrainz_client.get_album_tracklist(artist, album) if album else None
+                    official_tracks = (official or {}).get('tracks') or []
                     from backend.app.sync import sanitize_filename, find_existing_album_folder
                     safe_artist = sanitize_filename(artist)
                     artist_dir = Path(user_music_dir) / safe_artist
                     if artist_dir.exists() and artist_dir.is_dir():
                         existing_folder = find_existing_album_folder(artist_dir, album)
-                        if existing_folder and await asyncio.to_thread(_check_album_dir_exists_sync, existing_folder):
+                        if existing_folder and await asyncio.to_thread(_check_album_dir_exists_sync, existing_folder, official_tracks):
                             album_exists = True
                     if not album_exists:
                         safe_album = sanitize_filename(album)
                         final_dir = artist_dir / safe_album
-                        album_exists = await asyncio.to_thread(_check_album_dir_exists_sync, final_dir)
+                        album_exists = await asyncio.to_thread(_check_album_dir_exists_sync, final_dir, official_tracks)
                 except Exception as e:
                     logger.warning(f"Failed to check if album dir exists: {e}", exc_info=True)
 

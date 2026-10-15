@@ -145,7 +145,7 @@ async def test_musicbrainz_prefers_original_edition_and_release_group_date():
 
 
 @pytest.mark.asyncio
-async def test_artwork_prefers_exact_digital_cover_before_caa(monkeypatch):
+async def test_artwork_prefers_selected_release_before_digital_cover(monkeypatch):
     class Response:
         def __init__(self, status_code, content=b"", payload=None):
             self.status_code = status_code
@@ -157,6 +157,8 @@ async def test_artwork_prefers_exact_digital_cover_before_caa(monkeypatch):
 
     class Client:
         async def get(self, url, **kwargs):
+            if url == 'https://coverartarchive.org/release/release/front':
+                return Response(200, b"\xff\xd8\xffedition")
             if "itunes.apple.com" in url:
                 return Response(200, payload={"results": [{
                     "collectionName": "Scorpion", "artistName": "Drake",
@@ -171,9 +173,9 @@ async def test_artwork_prefers_exact_digital_cover_before_caa(monkeypatch):
 
     monkeypatch.setattr("backend.app.metadata_pipeline.providers.get_http_client", client)
     data, mime, source = await ArtworkProvider().fetch("release", "group", "Drake", "Scorpion")
-    assert data == b"\xff\xd8\xffdigital"
+    assert data == b"\xff\xd8\xffedition"
     assert mime == "image/jpeg"
-    assert source == "itunes:verified-digital"
+    assert source == "cover-art-archive:release"
 
 
 class SlowProvider:

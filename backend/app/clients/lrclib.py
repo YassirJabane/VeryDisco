@@ -52,13 +52,16 @@ class LrcLibClient:
         def _normalize(s: str) -> str:
             return re.sub(r'[^\w]', '', s).lower() if s else ""
             
-        n_artist, n_title, n_album = _normalize(artist), _normalize(title), _normalize(album)
+        from backend.app.media_versions import remaster_identity
+        # Remaster labels describe mastering, not different words. This relaxed
+        # comparison is lyrics-only; download/library matching stays strict.
+        n_artist, n_title, n_album = _normalize(artist), _normalize(remaster_identity(title)[0]), _normalize(remaster_identity(album or '')[0])
         matches = []
         for result in results:
             r_artist = _normalize(result.get("artistName", ""))
-            r_title = _normalize(result.get("trackName", ""))
+            r_title = _normalize(remaster_identity(result.get("trackName", ""))[0])
             artist_matches = bool(n_artist and r_artist and n_artist == r_artist)
-            album_matches = bool(n_album and n_album == _normalize(result.get("albumName", "")))
+            album_matches = bool(n_album and n_album == _normalize(remaster_identity(result.get("albumName", ""))[0]))
             if n_title and n_title == r_title and (artist_matches or album_matches):
                 matches.append((artist_matches, album_matches, bool(result.get("syncedLyrics")), result))
         if not matches:
@@ -95,6 +98,13 @@ class LrcLibClient:
             if album:
                 strategies.append({"album_name": album, "track_name": title})
             strategies.append({"track_name": title})
+            from backend.app.media_versions import remaster_identity
+            base_title, version = remaster_identity(title)
+            base_album, _ = remaster_identity(album or '')
+            if version is not None:
+                strategies.append({"artist_name": artist, "track_name": base_title})
+                if base_album:
+                    strategies.append({"album_name": base_album, "track_name": base_title})
             seen, combined = set(), []
             for params in strategies:
                 resp = await client.get(url, params=params)

@@ -742,18 +742,34 @@ class Database:
                 return [dict(r) for r in rows]
 
     # Logs Operations
-    async def add_log(self, level: str, message: str, run_id: Optional[int] = None):
+    async def add_log(self, level: str, message: str, run_id: Optional[int] = None, timestamp: Optional[str] = None):
         async with self.get_db() as db:
-            now = datetime.now(timezone.utc).isoformat()
-            await db.execute(
+            now = timestamp or datetime.now(timezone.utc).isoformat()
+            cursor = await db.execute(
                 "INSERT INTO logs (timestamp, level, message, run_id) VALUES (?, ?, ?, ?)",
                 (now, level, message, run_id)
             )
             await db.commit()
+            return cursor.lastrowid
 
-    async def get_logs(self, limit: int = 100) -> List[Dict[str, Any]]:
+    async def get_logs(self, limit: int = 100, since: Optional[str] = None,
+                       after_id: int = 0) -> List[Dict[str, Any]]:
+        conditions, values = [], []
+        if since:
+            conditions.append("timestamp >= ?")
+            values.append(since)
+        if after_id:
+            conditions.append("id > ?")
+            values.append(after_id)
+        query = "SELECT * FROM logs"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY id DESC"
+        if limit > 0:
+            query += " LIMIT ?"
+            values.append(limit)
         async with self.get_db() as db:
-            async with db.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)) as cursor:
+            async with db.execute(query, values) as cursor:
                 rows = await cursor.fetchall()
                 return [dict(r) for r in reversed(rows)]
 
@@ -1792,11 +1808,11 @@ class Database:
                 return [dict(r) for r in rows]
 
     async def query_library_lyrics_missing(self, user_id: str) -> List[Dict[str, Any]]:
-        """Return all rows where no lyrics (synced or plain) exist."""
+        """Plain lyrics are still eligible for a synced upgrade."""
         async with self.get_db() as db:
             async with db.execute(
-                "SELECT filepath, artist, album, title, duration FROM library_index "
-                "WHERE user_id = ? AND lyrics_synced = 0 AND lyrics_plain = 0",
+                "SELECT filepath, artist, album, title, duration, lyrics_plain FROM library_index "
+                "WHERE user_id = ? AND COALESCE(lyrics_synced, 0) = 0",
                 (user_id,)
             ) as cursor:
                 rows = await cursor.fetchall()

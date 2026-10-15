@@ -27,6 +27,7 @@ _MIN_INTERVAL = 1.25  # seconds between requests to ensure safe margin
 _album_releases_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _artist_rg_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _release_group_releases_cache: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
+_tag_extras_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
 
 async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional[dict]:
@@ -412,6 +413,43 @@ async def inspect_album_releases(artist: str, album: str, force_refresh: bool = 
 class MusicBrainzClient:
     """Thin wrapper around the MusicBrainz JSON API and Cover Art Archive."""
 
+    async def get_metadata_extras(self, recording_mbid: str = "", release_mbid: str = "") -> dict:
+        """Resolve optional tags by exact IDs, cached to avoid per-track release lookups."""
+        result = {}
+        for kind, identifier, includes in (
+            ("release", release_mbid, "genres+labels+release-groups+artist-credits"),
+            ("recording", recording_mbid, "genres+isrcs+artist-credits"),
+        ):
+            if not identifier:
+                continue
+            key = f"{kind}/{identifier}"
+            cached = _tag_extras_cache.get(key)
+            if cached and time.time() - cached[0] < 86400:
+                data = cached[1]
+            else:
+                data = await _mb_get(f"/{key}", params={"inc": includes})
+                if data is None:
+                    continue  # transient failure must not poison the cache
+                if len(_tag_extras_cache) >= 2000:
+                    _tag_extras_cache.pop(next(iter(_tag_extras_cache)))
+                _tag_extras_cache[key] = (time.time(), data)
+            genres = [g["name"] for g in sorted(data.get("genres", []), key=lambda g: g.get("count", 0), reverse=True) if g.get("name") and g.get("count", 0) > 0]
+            if genres:
+                result["genre"] = genres
+            if kind == "release":
+                group = data.get("release-group") or {}
+                result.update({
+                    "release_group_mbid": group.get("id"),
+                    "original_date": group.get("first-release-date"),
+                    "label": list(dict.fromkeys((l.get("label") or {}).get("name") for l in data.get("label-info", []) if (l.get("label") or {}).get("name"))),
+                    "barcode": data.get("barcode"),
+                    "album_artist_mbids": [c["artist"]["id"] for c in data.get("artist-credit", []) if isinstance(c, dict) and (c.get("artist") or {}).get("id")],
+                })
+            else:
+                result["isrc"] = data.get("isrcs", [])
+                result["artist_mbids"] = [c["artist"]["id"] for c in data.get("artist-credit", []) if isinstance(c, dict) and (c.get("artist") or {}).get("id")]
+        return {k: v for k, v in result.items() if v not in (None, "", [])}
+
     # -----------------------------------------------------------------------
     # Artist resolution
     # -----------------------------------------------------------------------
@@ -657,7 +695,7 @@ class MusicBrainzClient:
                     )
                     tracks.append({
                         "position": int(track.get("position") or track.get("number") or 0),
-                        "title": recording.get("title") or track.get("title"),
+                        "title": track.get("title") or recording.get("title"),
                         "recording_id": recording.get("id") or track.get("id"),
                         "artist": track_artist,
                         "credited_artists": track_artists,
@@ -726,9 +764,9 @@ class MusicBrainzClient:
         try:
             from backend.app.clients.http_client import get_http_client
             client = await get_http_client()
-            resp = await client.get(url, headers={"User-Agent": _USER_AGENT})
+            resp = await client.get(url, headers={"User-Agent": _USER_AGENT}, follow_redirects=True)
             if resp.status_code in (200,):
-                return resp.content if resp.content else None
+                return resp.content if resp.content.startswith((b'\xff\xd8\xff', b'\x89PNG\r\n\x1a\n')) else None
             if resp.status_code == 404:
                 return None
             logger.debug(f"CAA returned {resp.status_code} for {release_mbid}")
@@ -758,7 +796,7 @@ class MusicBrainzClient:
     # -----------------------------------------------------------------------
 
     async def get_track_metadata(
-        self, artist: str, title: str, album: str = ""
+        self, artist: str, title: str, album: str = "", release_mbid: str = ""
     ) -> Optional[Dict[str, Any]]:
         """
         High-level method: returns a dict with metadata for embed_metadata calls.
@@ -769,8 +807,8 @@ class MusicBrainzClient:
         # If album is provided, check the official album tracklist first to get exact canonical album/disc/track MBID info
         if album:
             try:
-                mb_album = await self.get_album_tracklist(clean_art or artist, album)
-                if mb_album and mb_album.get("tracks"):
+                mb_album = await self.get_album_tracklist(clean_art or artist, album, **({"release_mbid": release_mbid} if release_mbid else {}))
+                if mb_album and mb_album.get("tracks") and (release_mbid or _normalize(mb_album.get("title", "")) == _normalize(album)):
                     clean_target = _normalize(clean_tit)
                     for t in mb_album["tracks"]:
                         t_title = _normalize(t.get("title", ""))
@@ -793,6 +831,9 @@ class MusicBrainzClient:
             except Exception as e:
                 logger.debug(f"get_album_tracklist lookup in get_track_metadata failed: {e}")
 
+        if release_mbid:
+            return None  # explicit edition is authoritative; no unrelated text fallback
+
         recording = await self.search_recording(clean_art, clean_tit, album)
         if not recording and album:
             recording = await self.search_recording(clean_art, clean_tit, "")
@@ -808,6 +849,8 @@ class MusicBrainzClient:
         album_artists = [primary_artist]
 
         releases = recording.get("releases", [])
+        if album:
+            releases = [r for r in releases if _normalize(r.get("title", "")) == _normalize(album)]
         best_release = None
         if releases:
             best_release = sorted(releases, key=lambda r: score_release(r, album or title, clean_art or artist), reverse=True)[0]

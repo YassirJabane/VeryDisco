@@ -185,6 +185,9 @@ class SlskdClient:
                 # Matching directory path causes eponymous title tracks (e.g. Purple Rain on album Purple Rain)
                 # to falsely match every file in the album folder, downloading track 01 instead.
                 basename = os.path.basename(filename.replace("\\", "/"))
+                from backend.app.media_versions import master_matches_path
+                if not master_matches_path(title, filename, album or ""):
+                    continue
                 norm_basename = normalize_title(basename)
                 if norm_title not in norm_basename:
                     continue

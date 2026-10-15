@@ -14,6 +14,7 @@ import {
 } from '@mui/icons-material';
 
 interface LogEntry {
+  id?: number;
   timestamp: string;
   level: string;
   message: string;
@@ -26,7 +27,8 @@ export const LiveLogs: React.FC = () => {
   const [filterLevel, setFilterLevel] = useState<string>('ALL');
   const [limitLines, setLimitLines] = useState<number>(() => {
     const saved = localStorage.getItem('logsLimit');
-    return saved ? parseInt(saved, 10) : 500;
+    const parsed = saved ? parseInt(saved, 10) : 0;
+    return [0, 500, 1000, 2000, 5000].includes(parsed) ? parsed : 0;
   });
   const limitLinesRef = useRef<number>(limitLines);
   useEffect(() => {
@@ -43,6 +45,7 @@ export const LiveLogs: React.FC = () => {
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectDelayRef = useRef<number>(1000);
+  const lastEventIdRef = useRef(0);
 
   const scrollToBottom = () => {
     if (logsEndRef.current) {
@@ -63,22 +66,24 @@ export const LiveLogs: React.FC = () => {
     }
 
     setIsConnected(false);
-    const es = new EventSource('/api/logs/stream');
+    const es = new EventSource(`/api/logs/stream?limit=${limitLinesRef.current}&after=${lastEventIdRef.current}`);
     eventSourceRef.current = es;
 
     es.onopen = () => {
+      if (eventSourceRef.current !== es) return;
       setIsConnected(true);
       reconnectDelayRef.current = 1000; // reset backoff on successful connection
     };
 
     es.onmessage = (event) => {
-      if (isPausedRef.current) return;
+      if (eventSourceRef.current !== es) return;
       try {
         const entry: LogEntry = JSON.parse(event.data);
+        lastEventIdRef.current = Number(event.lastEventId) || entry.id || lastEventIdRef.current;
         setLogs((prev) => {
           const newLogs = [...prev, entry];
           const limit = limitLinesRef.current;
-          return newLogs.length > limit ? newLogs.slice(-limit) : newLogs;
+          return limit > 0 && newLogs.length > limit ? newLogs.slice(-limit) : newLogs;
         });
       } catch (err) {
         console.error('Failed to parse log streaming message', err);
@@ -86,6 +91,7 @@ export const LiveLogs: React.FC = () => {
     };
 
     es.onerror = () => {
+      if (eventSourceRef.current !== es) return;
       setIsConnected(false);
       es.close();
       eventSourceRef.current = null;
@@ -100,6 +106,7 @@ export const LiveLogs: React.FC = () => {
     connectStream();
     return () => {
       if (eventSourceRef.current) eventSourceRef.current.close();
+      eventSourceRef.current = null;
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
   }, [connectStream]);
@@ -154,7 +161,7 @@ export const LiveLogs: React.FC = () => {
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 800 }}>Live Logs</Typography>
           <Typography variant="body2" color="text.secondary">
-            Realtime terminal logs piped directly from VeryDisco.
+            Logs since application startup, followed by live updates.
           </Typography>
         </Box>
         <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
@@ -179,9 +186,15 @@ export const LiveLogs: React.FC = () => {
               onChange={(e) => {
                 const val = Number(e.target.value);
                 setLimitLines(val);
+                limitLinesRef.current = val;
+                lastEventIdRef.current = 0;
+                setLogs([]);
+                if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+                connectStream();
                 localStorage.setItem('logsLimit', String(val));
               }}
             >
+              <MenuItem value={0}>All since startup</MenuItem>
               <MenuItem value={500}>500 lines</MenuItem>
               <MenuItem value={1000}>1000 lines</MenuItem>
               <MenuItem value={2000}>2000 lines</MenuItem>
@@ -189,7 +202,7 @@ export const LiveLogs: React.FC = () => {
             </Select>
           </FormControl>
 
-          <Tooltip title={isPausedDisplay ? 'Resume logging stream' : 'Pause logging stream'}>
+          <Tooltip title={isPausedDisplay ? 'Resume auto-scroll' : 'Pause auto-scroll (logs keep loading)'}>
             <IconButton color="primary" onClick={togglePause} sx={{ border: '1px solid', borderColor: 'divider' }}>
               {isPausedDisplay ? <PlayIcon /> : <PauseIcon />}
             </IconButton>

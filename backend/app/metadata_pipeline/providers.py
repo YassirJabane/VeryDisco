@@ -79,14 +79,14 @@ class MusicBrainzReleaseProvider:
         return response.json()
 
     async def release_details(self, release_mbid: str) -> Optional[dict[str, Any]]:
-        cache_key = f"musicbrainz:release:{release_mbid}"
+        cache_key = f"musicbrainz:release:v2:{release_mbid}"
         if self._cache_get:
             cached = await self._cache_get(cache_key)
             if cached is not None:
                 return cached
         raw = await self._get(
             f"/release/{release_mbid}",
-            {"inc": "recordings+artist-credits+release-groups+media+labels", "fmt": "json"},
+            {"inc": "recordings+artist-credits+release-groups+media+labels+genres+isrcs", "fmt": "json"},
         )
         result = self._normalize_release(raw) if raw else None
         if result and self._cache_set:
@@ -170,10 +170,11 @@ class MusicBrainzReleaseProvider:
                 display, entities = artist_credit(track.get("artist-credit") or recording.get("artist-credit"))
                 length_ms = track.get("length") or recording.get("length") or 0
                 tracks.append({
-                    "title": recording.get("title") or track.get("title") or "",
+                    "title": track.get("title") or recording.get("title") or "",
                     "artist": display or album_artist,
                     "artists": entities or album_entities,
                     "recording_mbid": recording.get("id") or "",
+                    "isrc": recording.get("isrcs") or [],
                     "track": int(track.get("position") or track_index),
                     "disc": disc_number,
                     "duration": round(float(length_ms) / 1000, 2) if length_ms else 0,
@@ -201,6 +202,7 @@ class MusicBrainzReleaseProvider:
             "status": raw.get("status") or "",
             "barcode": raw.get("barcode") or "",
             "labels": labels,
+            "genre": [g["name"] for g in raw.get("genres", []) if g.get("name") and g.get("count", 0) > 0],
             "disc_total": len(media) or 1,
             "track_total": len(tracks),
             "tracks": tracks,
@@ -214,6 +216,9 @@ class MusicBrainzReleaseProvider:
         album_artist: str,
         local_tracks: list[dict[str, Any]],
     ) -> float:
+        from backend.app.media_versions import same_master
+        if not same_master(album, release["album"]):
+            return 0.0
         title_score = SequenceMatcher(None, normalize(album), normalize(release["album"])).ratio()
         artist_names = [
             release["album_artist"],
@@ -233,7 +238,7 @@ class MusicBrainzReleaseProvider:
 
 
 class ArtworkProvider:
-    """Artwork chain: exact digital artwork, then canonical and edition CAA fallbacks."""
+    """Edition-specific artwork first; never substitute another release's cover."""
 
     async def fetch(
         self,
@@ -244,20 +249,19 @@ class ArtworkProvider:
         allow_itunes: bool = True,
     ) -> tuple[Optional[bytes], Optional[str], Optional[str]]:
         client = await get_http_client()
-        if allow_itunes:
-            artwork = await self._fetch_exact_itunes_artwork(client, album_artist, album)
-            if artwork:
-                return artwork
-
         urls = []
-        if release_group_mbid:
-            urls.append((f"{CAA_BASE}/release-group/{release_group_mbid}/front", "cover-art-archive:release-group"))
         if release_mbid:
             urls.append((f"{CAA_BASE}/release/{release_mbid}/front", "cover-art-archive:release"))
+        elif release_group_mbid:
+            urls.append((f"{CAA_BASE}/release-group/{release_group_mbid}/front", "cover-art-archive:release-group"))
         for url, source in urls:
             response = await client.get(url, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
             if response.status_code == 200 and self._image_mime(response.content):
                 return response.content, self._image_mime(response.content), source
+        if allow_itunes:
+            artwork = await self._fetch_exact_itunes_artwork(client, album_artist, album)
+            if artwork:
+                return artwork
         return None, None, None
 
     async def _fetch_exact_itunes_artwork(
