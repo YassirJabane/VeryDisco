@@ -26,6 +26,8 @@ def audit_app(tmp_path, monkeypatch):
         get_user_by_id=AsyncMock(return_value={"id": "alice", "is_admin": False}),
         get_album_tracklists=AsyncMock(return_value={}),
         query_library_index_for_user=AsyncMock(return_value=[]),
+        get_provider_cache=AsyncMock(return_value=None),
+        set_provider_cache=AsyncMock(),
     ))
     return main
 
@@ -305,3 +307,43 @@ async def test_album_quality_uses_best_duplicate_and_does_not_claim_no_upgrade(a
     result = await audit_app.batch_check_existence([item], None)
     assert result[0]['matched_tracks'] == 1
     assert result[0]['upgrade_available'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('provider_available', [False, True])
+async def test_direct_search_missing_total_cannot_use_a_stale_base_edition_total(audit_app, monkeypatch, provider_available):
+    from backend.app.clients.deezer import DeezerClient
+    audit_app.db.query_library_index_for_user.return_value = [{
+        'artist_norm': 'drake', 'album_norm': 'forallthedogsscaryhoursedition',
+        'title': f'Track {i}', 'track_num': i, 'ext': 'mp3', 'bitrate': 320,
+    } for i in range(1, 24)]
+    # A previous mistag/migration may leave 23 tracks and an old cached total of 23.
+    audit_app.db.get_album_tracklists.return_value = {
+        ('drake', 'forallthedogsscaryhoursedition'): {'total_tracks': 23, 'release_mbid': 'base-release'}}
+    lookup = AsyncMock(return_value={'id': 200, 'title': 'For All The Dogs Scary Hours Edition', 'nb_tracks': 29} if provider_available else None)
+    monkeypatch.setattr(DeezerClient, 'get_album_metadata', lookup)
+    result = await audit_app.batch_check_existence([audit_app.BatchCheckItem(
+        artist='Drake', title='For All The Dogs Scary Hours Edition', album_id=200)], None)
+    assert result[0]['status'] == 'partial'
+    assert result[0]['matched_tracks'] == 23
+    assert result[0]['expected_tracks'] == (29 if provider_available else 0)
+    lookup.assert_awaited_once_with(200)
+
+
+@pytest.mark.asyncio
+async def test_requested_mbid_does_not_inherit_another_release_total(audit_app):
+    mbid = '11111111-2222-3333-4444-555555555555'
+    audit_app.db.query_library_index_for_user.return_value = [{
+        'artist_norm': 'artist', 'album_norm': 'albumdeluxe', 'album_mbid': mbid,
+        'title': f'Track {i}', 'track_num': i} for i in range(1, 24)]
+    audit_app.db.get_album_tracklists.return_value = {
+        ('artist', 'albumdeluxe'): {'release_mbid': 'other-release', 'total_tracks': 23}}
+    result = await audit_app.batch_check_existence([audit_app.BatchCheckItem(
+        artist='Artist', title='Album Deluxe', album_id=mbid)], None)
+    assert result[0]['status'] == 'partial'
+    assert result[0]['expected_tracks'] == 0
+    audit_app.db.get_album_tracklists.return_value[('artist', 'albumdeluxe')] = {'release_mbid': mbid, 'total_tracks': 29}
+    result = await audit_app.batch_check_existence([audit_app.BatchCheckItem(
+        artist='Artist', title='Album Deluxe', album_id=mbid)], None)
+    assert result[0]['status'] == 'partial'
+    assert result[0]['expected_tracks'] == 29

@@ -1831,6 +1831,30 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
     results = []
     durable_tracklists = await db.get_album_tracklists(user_id)
 
+    async def _expected_album_total(item: BatchCheckItem, rows: List[Dict[str, Any]]) -> int:
+        if item.expected_tracks and item.expected_tracks > 0:
+            return item.expected_tracks
+        requested_id = str(item.album_id or '').strip()
+        if requested_id.isdigit():
+            # Deezer search responses do not always include nb_tracks. A cached
+            # MusicBrainz total under the local folder name is NOT this edition's total.
+            key = f'deezer:album-identity:v1:{requested_id}'
+            try:
+                metadata = await db.get_provider_cache(key)
+                if metadata is None:
+                    from backend.app.clients.deezer import DeezerClient
+                    metadata = await DeezerClient(timeout=10).get_album_metadata(int(requested_id))
+                    if metadata and not metadata.get('error') and metadata.get('nb_tracks'):
+                        await db.set_provider_cache(key, metadata, 7 * 86400)
+                if metadata and _norm(metadata.get('title') or '') == _norm(item.title):
+                    return max(0, int(metadata.get('nb_tracks') or 0))
+            except Exception as error:
+                logger.warning('Album total unavailable for Deezer ID %s (%s)', requested_id, type(error).__name__)
+            return 0
+        cached = durable_tracklists.get((rows[0].get('artist_norm'), rows[0].get('album_norm')), {})
+        # Only an explicitly identical release can provide the missing total.
+        return int(cached.get('total_tracks') or 0) if cached.get('release_mbid') == requested_id else 0
+
     def _present_tracks(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         return [{
             "title": row.get("title") or Path(row.get("filepath") or "").stem,
@@ -1873,10 +1897,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
             if matched_tracks:
                 unique_tracks = _distinct_tracks(matched_tracks)
                 cnt = len(unique_tracks)
-                cached_list = durable_tracklists.get(
-                    (matched_tracks[0].get("artist_norm"), matched_tracks[0].get("album_norm")), {}
-                )
-                expected = item.expected_tracks or cached_list.get("total_tracks") or 0
+                expected = await _expected_album_total(item, matched_tracks)
                 results.append({
                     "artist": item.artist,
                     "title": item.title,
@@ -1902,10 +1923,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
             if matched_tracks:
                 unique_tracks = _distinct_tracks(matched_tracks)
                 cnt = len(unique_tracks)
-                cached_list = durable_tracklists.get(
-                    (matched_tracks[0].get("artist_norm"), matched_tracks[0].get("album_norm")), {}
-                )
-                expected = item.expected_tracks or cached_list.get("total_tracks") or 0
+                expected = await _expected_album_total(item, matched_tracks)
                 results.append({
                     "artist": item.artist,
                     "title": item.title,

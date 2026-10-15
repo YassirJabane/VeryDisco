@@ -172,6 +172,7 @@ export const SearchMusic: React.FC = () => {
       const check = checks[0];
       setSelectedVersions(prev => ({ ...prev, [item.id]: { ...version,
         albumStatus: check?.status || 'unknown', upgradeAvailable: check?.upgrade_available ?? false,
+        matchedTracks: check?.matched_tracks, expectedTracks: check?.expected_tracks,
       } }));
     } catch {
       if (search !== searchGeneration.current || generation !== versionGeneration.current[item.id]) return;
@@ -252,7 +253,8 @@ export const SearchMusic: React.FC = () => {
               ...item,
               exists: check.exists,
               albumStatus: check.status,
-              upgradeAvailable: check.upgrade_available
+              upgradeAvailable: check.upgrade_available,
+              matchedTracks: check.matched_tracks, expectedTracks: check.expected_tracks,
             };
           });
           setSearchResults(enriched);
@@ -317,7 +319,7 @@ export const SearchMusic: React.FC = () => {
     setDownloadingKeys(prev => new Set(prev).add(key));
     try {
       await apiService.downloadAlbum(artist, album, force);
-      notify(`Full album download queued for "${artist} - ${album}".`, "success");
+      notify(`${force ? 'Full replacement' : 'Missing-track check/download'} queued for "${artist} - ${album}".`, "success");
       setQueuedKeys(prev => new Set(prev).add(key));
     } catch (err: any) {
       notify(err.response?.data?.detail || "Failed to queue album download.", "error");
@@ -330,19 +332,20 @@ export const SearchMusic: React.FC = () => {
     }
   };
 
-  const handleDownloadAlbum = async (artist: string, album: string, existingStatus?: string, existingUpgradeAvailable?: boolean) => {
+  const handleDownloadAlbum = async (artist: string, album: string) => {
     const key = `album-${artist}-${album}`;
-    if (existingStatus === 'full' && !existingUpgradeAvailable) {
-      confirm({
-        title: "Re-download Album?",
-        message: `The library check reports "${artist} - ${album}" as complete. Re-downloading forces a new download of all tracks and may replace existing files. This is not needed to complete an edition. Continue only if you want to replace the album.`,
-        confirmText: "Download Anyway",
-        isDangerous: true,
-        onConfirm: () => executeDownloadAlbum(artist, album, true, key)
-      });
-      return;
-    }
-    executeDownloadAlbum(artist, album, false, key);
+    await executeDownloadAlbum(artist, album, false, key);
+  };
+
+  const handleReplaceAlbum = (artist: string, album: string) => {
+    const key = `album-${artist}-${album}`;
+    confirm({
+      title: "Replace all album tracks?",
+      message: `This forces a new download of every track in "${artist} - ${album}", including files already present. To add an edition's extra tracks, cancel and use the normal Download / Complete album action instead.`,
+      confirmText: "Replace all tracks",
+      isDangerous: true,
+      onConfirm: () => executeDownloadAlbum(artist, album, true, key)
+    });
   };
 
   return (
@@ -531,7 +534,9 @@ export const SearchMusic: React.FC = () => {
                               } else if (status === 'partial') {
                                 return (
                                   <Chip 
-                                    label="Partially in Library" 
+                                      label={typeof selectedVersion?.matchedTracks === 'number'
+                                        ? `Partially in Library · ${selectedVersion.matchedTracks}/${selectedVersion.expectedTracks || '?'}`
+                                        : 'Partially in Library'}
                                     size="small"
                                     sx={{ 
                                       bgcolor: 'rgba(25, 118, 210, 0.1)', 
@@ -645,7 +650,7 @@ export const SearchMusic: React.FC = () => {
                             size="small"
                             startIcon={downloadingKeys.has(albumKey) ? <CircularProgress size={14} color="inherit" /> : <AlbumIcon />}
                             disabled={downloadingKeys.has(albumKey) || !trackAlbum}
-                            onClick={() => handleDownloadAlbum(artistName, trackAlbum, item.albumStatus, item.upgradeAvailable)}
+                            onClick={() => handleDownloadAlbum(artistName, trackAlbum)}
                             sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}
                           >
                             {queuedKeys.has(albumKey) ? 'Queued' : 'Album'}
@@ -680,14 +685,15 @@ export const SearchMusic: React.FC = () => {
                             disabled={downloadingKeys.has(albumKey) || albumStatus === 'checking'}
                             onClick={() => handleDownloadAlbum(
                               artistName, 
-                              titleLabel, 
-                              albumStatus,
-                              albumUpgrade
+                              titleLabel
                             )}
                             sx={{ fontWeight: 700, whiteSpace: 'nowrap' }}
                           >
-                            {queuedKeys.has(albumKey) ? 'Queued' : albumStatus === 'checking' ? 'Checking…' : albumStatus === 'full' && !albumUpgrade ? 'Re-download' : albumStatus === 'partial' ? 'Complete album' : 'Download'}
+                            {queuedKeys.has(albumKey) ? 'Queued' : albumStatus === 'checking' ? 'Checking…' : albumStatus === 'full' && !albumUpgrade ? 'Check missing tracks' : albumStatus === 'partial' ? 'Complete album' : 'Download'}
                           </Button>
+                          <Button variant="text" color="error" size="small"
+                            disabled={downloadingKeys.has(albumKey) || albumStatus === 'checking'}
+                            onClick={() => handleReplaceAlbum(artistName, titleLabel)}>Replace all</Button>
                           <Button
                             variant="outlined"
                             size="small"

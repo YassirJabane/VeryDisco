@@ -559,7 +559,7 @@ async def _download_album_task_internal(
     """Background task to search and download a full album via slskd with fallback strategies."""
     logger.info(
         f"Starting background {record_type or 'album'} download task for {artist} - {album} "
-        f"(ID: {download_id}, release MBID: {release_mbid or 'automatic'})"
+        f"(ID: {download_id}, release MBID: {release_mbid or 'automatic'}, force={force})"
     )
     
     target_album_artist = None
@@ -1224,6 +1224,8 @@ async def _download_album_task_internal(
             # Reused tracks count even when this peer must supply extra tracks.
             # Otherwise a partial/failed transfer makes fallback request them again.
             overall_copied.extend(copied_files)
+            logger.info('Album transfer plan for %s - %s: force=%s, %d local tracks reused this attempt, %d files to queue',
+                artist, album, force, len(copied_files), len(to_download))
             if not to_download:
                 logger.info(f"All tracks of album '{artist} - {album}' were already present in equal/better quality and copied. Album download completed instantly.")
                 album_complete = True

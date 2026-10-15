@@ -23,13 +23,13 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-async function searchAlbums() {
+async function searchAlbums(buttonName = 'Check missing tracks') {
   render(<SearchMusic />);
   fireEvent.mouseDown(screen.getByRole('combobox'));
   fireEvent.click(screen.getByRole('option', { name: 'Album' }));
   fireEvent.change(screen.getByLabelText('Search artist, track or album...'), { target: { value: 'Drake' } });
   fireEvent.click(screen.getByRole('button', { name: 'Search' }));
-  await screen.findByRole('button', { name: 'Re-download' });
+  await screen.findByRole('button', { name: buttonName });
 }
 async function selectEdition() {
   fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Release Version' }));
@@ -50,11 +50,31 @@ test('an edition never inherits completeness from the base and waits for its own
   expect(notifications.confirm).not.toHaveBeenCalled();
 });
 
-test('a genuinely complete album requires an explicit re-download confirmation', async () => {
+test('even a falsely full album keeps the primary action non-forced', async () => {
   await searchAlbums();
-  fireEvent.click(screen.getByRole('button', { name: 'Re-download' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Check missing tracks' }));
+  await waitFor(() => expect(apiService.downloadAlbum).toHaveBeenCalledWith('Drake', base.title, false));
+  expect(notifications.confirm).not.toHaveBeenCalled();
+});
+
+test('direct Scary Hours search with only 23 of 29 tracks offers completion, never full replacement', async () => {
+  vi.mocked(apiService.searchDeezer).mockResolvedValue({ data: [edition] });
+  vi.mocked(apiService.checkAlbumsBatch).mockReset().mockResolvedValue([{
+    status: 'partial', exists: true, upgrade_available: false, matched_tracks: 23, expected_tracks: 29,
+  }]);
+  await searchAlbums('Complete album');
+  expect(screen.getByText('Partially in Library · 23/29')).toBeInTheDocument();
+  expect(apiService.checkAlbumsBatch).toHaveBeenCalledWith([{ artist: 'Drake', title: edition.title, album_id: 200, expected_tracks: 29 }]);
+  fireEvent.click(screen.getByRole('button', { name: 'Complete album' }));
+  await waitFor(() => expect(apiService.downloadAlbum).toHaveBeenCalledWith('Drake', edition.title, false));
+  expect(notifications.confirm).not.toHaveBeenCalled();
+});
+
+test('only the separate Replace all action can force a full download', async () => {
+  await searchAlbums();
+  fireEvent.click(screen.getByRole('button', { name: 'Replace all' }));
   expect(apiService.downloadAlbum).not.toHaveBeenCalled();
-  expect(notifications.confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Re-download Album?' }));
+  expect(notifications.confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Replace all album tracks?', isDangerous: true }));
   await act(async () => notifications.confirm.mock.calls[0][0].onConfirm());
   expect(apiService.downloadAlbum).toHaveBeenCalledWith('Drake', base.title, true);
 });
@@ -79,6 +99,6 @@ test('a late edition check cannot replace the default after switching back', asy
   fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Release Version' }));
   fireEvent.click(screen.getByRole('option', { name: `${base.title} (Default)` }));
   await act(async () => finish([{ status: 'partial', upgrade_available: false }]));
-  expect(screen.getByRole('button', { name: 'Re-download' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: 'Check missing tracks' })).toBeEnabled();
   expect(screen.queryByText('Partially in Library')).not.toBeInTheDocument();
 });
