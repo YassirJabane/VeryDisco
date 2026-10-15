@@ -2,6 +2,12 @@
 import re
 import unicodedata
 
+
+def album_identity_key(value: str) -> str:
+    """Same edition key for scan, incremental updates and availability checks."""
+    clean = re.sub(r'(?i)\s*[\(\[]?\b(?:disc|cd|disk)\s*\d+[\)\]]?\s*$', '', value or '').strip()
+    return re.sub(r'[^\w]', '', clean or value or '').lower()
+
 _REMASTER = re.compile(r"(?i)(?:[\s\-–—:(\[]*)\b(?:(?P<before>(?:19|20)\d{2})\s+)?remaster(?:ed)?(?:\s+(?P<after>(?:19|20)\d{2}))?\s*[)\]]?\s*$")
 
 

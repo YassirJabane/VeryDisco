@@ -16,8 +16,9 @@ const handlers = {
 
 describe('Library album completeness', () => {
   test('persisted full status is shown, then expanded official 6/9 is partial', () => {
-    const view = render(<AlbumCard album={album} expanded={false} tracks={undefined} tracksLoading={false} {...handlers} />);
+    const view = render(<AlbumCard album={{ ...album, date: '1984' }} expanded={false} tracks={undefined} tracksLoading={false} {...handlers} />);
     expect(screen.getByText('Full (6/6)')).toBeInTheDocument();
+    expect(screen.getByText('Release date · 1984')).toBeInTheDocument();
 
     const titles = ["Let's Go Crazy", 'Take Me With U', 'The Beautiful Ones', 'Computer Blue',
       'Darling Nikki', 'When Doves Cry', 'I Would Die 4 U', "Baby I'm a Star", 'Purple Rain'];
@@ -25,8 +26,10 @@ describe('Library album completeness', () => {
       title, track_num: index + 1, exists: index < 6, verified: true,
       filepath: index < 6 ? `/${index + 1}.mp3` : null,
     }));
-    view.rerender(<AlbumCard album={album} expanded={false} tracks={tracks} tracksLoading={false} {...handlers} />);
+    view.rerender(<AlbumCard album={{ ...album, date: '1984-06-25' }} expanded={false} tracks={tracks} tracksLoading={false} {...handlers} />);
     expect(screen.getByText('Partial (6/9)')).toBeInTheDocument();
     expect(screen.queryByText('Full (6/6)')).not.toBeInTheDocument();
+    expect(screen.getByText('Release date · 1984-06-25')).toBeInTheDocument();
+    expect(screen.queryByText('Release date · 1984')).not.toBeInTheDocument();
   });
 });

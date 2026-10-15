@@ -242,6 +242,7 @@ export interface GetTracksResponse {
 export interface AlbumItem {
   artist: string;
   album: string;
+  date?: string;
   track_count: number;
   total_size: number; // bytes
   quality: string;

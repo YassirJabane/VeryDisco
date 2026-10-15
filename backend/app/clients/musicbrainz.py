@@ -95,7 +95,7 @@ async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional
 async def get_release_with_media(release_mbid: str) -> Optional[dict]:
     """Fetch a release with full media+recordings so disc and track positions are accurate."""
     return await _mb_get(f"/release/{release_mbid}", params={
-        "inc": "artist-credits+media+recordings",
+        "inc": "artist-credits+media+recordings+release-groups",
         "fmt": "json"
     })
 
@@ -410,6 +410,7 @@ async def inspect_album_releases(artist: str, album: str, force_refresh: bool = 
                 "status": full.get("status"),
                 "country": full.get("country"),
                 "date": full.get("date"),
+                "original_date": (full.get('release-group') or {}).get('first-release-date') or '',
                 "album_artist": album_artist,
                 "album_artists": album_artists,
                 "disc_total": len(media_list),
@@ -727,6 +728,7 @@ class MusicBrainzClient:
                 "id": full.get("id") or release_mbid,
                 "title": full.get("title") or album,
                 "date": full.get("date") or "",
+                "original_date": (full.get('release-group') or {}).get('first-release-date') or '',
                 "album_artist": album_artist,
                 "album_artists": album_artists,
                 "disc_total": len(media_list) or 1,
@@ -763,6 +765,7 @@ class MusicBrainzClient:
         return {
             "tracks": flat_tracks,
             "release_date": winner.get("date") or "",
+            "date": winner.get('original_date') or winner.get('date') or '',
             "release_mbid": winner.get("id"),
             "nb_tracks": total_tracks,
             "nb_discs": total_discs,
@@ -837,7 +840,7 @@ class MusicBrainzClient:
                                 "album_artist": mb_album.get("album_artist") or clean_art or artist,
                                 "album_artists": mb_album.get("album_artists") or [mb_album.get("album_artist") or clean_art or artist],
                                 "album": mb_album.get("title", album),
-                                "date": mb_album.get("release_date", ""),
+                                "date": mb_album.get('date') or mb_album.get("release_date", ""),
                                 "track_num": t.get("track_position"),
                                 "track_total": mb_album.get("nb_tracks"),
                                 "disc_num": t.get("disk_number", 1),

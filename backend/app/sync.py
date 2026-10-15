@@ -340,7 +340,7 @@ async def fix_directory_tags_and_rescan(
             {"artist-credit": [{"name": mb_album.get("album_artist", "")}]}, folder_artist
         ):
             release_mbid = mb_album.get("release_mbid") or ""
-            release_date = mb_album.get("release_date") or ""
+            release_date = mb_album.get('date') or mb_album.get("release_date") or ""
             official_tracks = mb_album.get("tracks") or []
             max_disc = int(mb_album.get("nb_discs") or 1)
             for tr in official_tracks:
@@ -731,7 +731,7 @@ def harmonize_album_directory(
             needs_update = True
         if target_mbid and info.get("release_mbid") != target_mbid:
             needs_update = True
-        if target_date and not info.get("date"):
+        if target_date and info.get("date") != target_date:
             needs_update = True
         if target_cover_bytes and not info.get("cover"):
             needs_update = True
@@ -1371,7 +1371,7 @@ def embed_metadata(
             from mutagen.id3 import (
                 ID3, ID3NoHeaderError,
                 TIT2, TPE1, TPE2, TALB, TRCK, TPOS, TCMP, TCON,
-                TDRC, TDRL, TYER,
+                TDRC, TDRL,
                 TXXX, UFID,
                 USLT, APIC
             )
@@ -1404,8 +1404,6 @@ def embed_metadata(
                     tags.add(TDRC(encoding=3, text=date))
                     # TDRL → releasedate (Navidrome mappings.yaml: tdrl alias)
                     tags.add(TDRL(encoding=3, text=date))
-                    if len(date) >= 4:
-                        tags.add(TYER(encoding=3, text=date[:4]))
 
                 # ── Multi-value ARTISTS (Navidrome: txxx:artists) ─────────────
                 # When both TPE1 and TXXX:artists exist, Navidrome uses TPE1 as

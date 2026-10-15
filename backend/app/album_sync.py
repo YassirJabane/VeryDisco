@@ -633,7 +633,7 @@ async def _download_album_task_internal(
                 credit_check = {"artist-credit": [{"name": a} for a in mb_aas if a]}
                 if release_mbid or _is_matching_release_artist(credit_check, artist) or mb_aa.lower() == "various artists":
                     official_album_tracks = mb_album.get("tracks", [])
-                    official_album_date = mb_album.get("release_date")
+                    official_album_date = mb_album.get('date') or mb_album.get("release_date")
                     official_mb_release_mbid = mb_album.get("release_mbid")
                     target_album_artist = mb_aa or artist
                     target_album_artists = mb_aas or [target_album_artist]
@@ -1140,7 +1140,7 @@ async def _download_album_task_internal(
                                 deezer_client, artist, clean_title, album, release_mbid=official_mb_release_mbid or ""
                             )
                             title_tag = meta_result["title"]
-                            track_num = meta_result["track_num"] or track_num
+                            track_num = track_num or meta_result["track_num"]
                             if not official_disc_num and meta_result.get("disc_num"):
                                 disc_num = meta_result["disc_num"]
                             if meta_result.get("disc_total"):
@@ -1471,7 +1471,7 @@ async def _download_album_task_internal(
                             else:
                                 if meta_title and not title_diff:
                                     title_tag = meta_title
-                                if meta_result.get("track_num"):
+                                if not matched and meta_result.get("track_num"):
                                     track_num = meta_result["track_num"]
                                 if not official_disc_num and meta_result.get("disc_num"):
                                     disc_num = meta_result["disc_num"]
@@ -1643,7 +1643,19 @@ async def _download_album_task_internal(
                             db=db,
                             force=False,
                             user_id=user_id,
-                            mbid_album_override=official_mb_release_mbid
+                            mbid_album_override=official_mb_release_mbid,
+                            metadata_override={
+                                'title': t_title, 'artist': missing_t.get('artist') or artist,
+                                'album': album, 'album_artist': target_album_artist or artist,
+                                'album_artists': target_album_artists or [target_album_artist or artist],
+                                'credited_artists': missing_t.get('credited_artists') or [],
+                                'track_num': missing_t.get('track_position'),
+                                'track_total': sum(1 for t in official_album_tracks if (t.get('disk_number') or t.get('disc_num') or 1) == (missing_t.get('disk_number') or missing_t.get('disc_num') or 1)),
+                                'disc_num': missing_t.get('disk_number') or missing_t.get('disc_num') or 1,
+                                'disc_total': max((t.get('disk_number') or t.get('disc_num') or 1 for t in official_album_tracks), default=1),
+                                'date': official_album_date, 'mbid_album': official_mb_release_mbid,
+                                'mbid_recording': missing_t.get('id') if official_mb_release_mbid else None,
+                            },
                         )
                         fallback_complete = bool(fallback_ok) and fallback_complete
                     except Exception as fallback_err:
@@ -1746,6 +1758,7 @@ async def download_single_track_task(
     dest_dir_override: Optional[str] = None,
     mbid_album_override: Optional[str] = None,
     replace_path_override: Optional[str] = None,
+    metadata_override: Optional[dict] = None,
 ):
     """Background task to search, download and organize a single track.
 
@@ -1759,6 +1772,7 @@ async def download_single_track_task(
             job_id = await db.create_download_job(artist, title, album, user_id, request={
                 "force": force, "is_explore": is_explore, "dest_dir_override": dest_dir_override,
                 "mbid_album_override": mbid_album_override, "replace_path_override": replace_path_override,
+                **({'metadata_override': metadata_override} if metadata_override else {}),
             })
         except Exception as journal_err:
             logger.warning(f"Could not create download journal for '{artist} - {title}': {journal_err}")
@@ -1768,7 +1782,7 @@ async def download_single_track_task(
                 await db.update_download_job(job_id, "running")
             success = await _download_single_track_internal(
                 artist, title, album, config, db, force, user_id, is_explore,
-                dest_dir_override, mbid_album_override, replace_path_override, job_id
+                dest_dir_override, mbid_album_override, replace_path_override, job_id, metadata_override
             )
     except asyncio.CancelledError:
         if job_id is not None:
@@ -1802,6 +1816,7 @@ async def _download_single_track_internal(
     mbid_album_override: Optional[str] = None,
     replace_path_override: Optional[str] = None,
     download_job_id: Optional[int] = None,
+    metadata_override: Optional[dict] = None,
 ) -> bool:
     logger.info(f"Starting background single track download for {artist} - {title} (Album: {album}) (force={force})")
 
@@ -1849,28 +1864,47 @@ async def _download_single_track_internal(
                         # force=True path, which skips this branch.
                         from backend.app.sync import resolve_album_dir, get_library_filename, update_m3u_references
                         dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, artist, album)
-                        if Path(found_path).parent.resolve() != dest_dir.resolve():
-                            clean_filename = get_library_filename(artist, safe_album, None, title, Path(found_path).suffix)
+                        if not Path(found_path).resolve().is_relative_to(dest_dir.resolve()) or metadata_override:
+                            from backend.app.metadata_pipeline.tags import read_track
+                            import base64
+                            local = read_track(Path(found_path), include_cover=True)
+                            known = metadata_override or {}
+                            if local.get('recording_mbid') and known.get('mbid_recording') and local['recording_mbid'] != known['mbid_recording']:
+                                logger.warning('Existing recording differs from selected release for %s; original retained', title)
+                                return False
+                            dest_dir, safe_artist, safe_album = resolve_album_dir(music_dir, artist, album,
+                                disc_num=known.get('disc_num') or local.get('disc') or 1,
+                                disc_total=known.get('disc_total') or local.get('disc_total') or 1)
+                            clean_filename = get_library_filename(known.get('artist') or local.get('artist') or artist, safe_album,
+                                known.get('track_num') or local.get('track'), known.get('title') or local.get('title') or title, Path(found_path).suffix)
                             dest_path = dest_dir / clean_filename
-                            if not dest_path.exists():
+                            if not dest_path.exists() or dest_path.resolve() == Path(found_path).resolve():
                                 try:
-                                    await asyncio.to_thread(safe_move_file, found_path, dest_path)
                                     found_lrc = Path(found_path).with_suffix(".lrc")
-                                    if found_lrc.exists():
-                                        await asyncio.to_thread(safe_move_file, found_lrc, dest_path.with_suffix(".lrc"))
-                                    await asyncio.to_thread(
-                                        embed_metadata,
-                                        file_path=str(dest_path),
-                                        artist=artist,
-                                        title=title,
-                                        album=album,
-                                    )
+                                    lyrics = found_lrc.read_text(encoding='utf-8', errors='ignore') if found_lrc.exists() else None
+                                    await _publish_tagged_track(Path(found_path), dest_path, dict(
+                                        artist=known.get('artist') or local.get('artist') or artist,
+                                        title=known.get('title') or local.get('title') or title, album=album,
+                                        album_artist=known.get('album_artist') or local.get('album_artist') or artist,
+                                        track_num=known.get('track_num') or local.get('track'), track_total=known.get('track_total') or local.get('track_total'),
+                                        disc_num=known.get('disc_num') or local.get('disc') or 1, disc_total=known.get('disc_total') or local.get('disc_total') or 1,
+                                        date=known.get('date') or local.get('date'),
+                                        mbid_album=known.get('mbid_album') or local.get('release_mbid'),
+                                        mbid_recording=known.get('mbid_recording') or local.get('recording_mbid'),
+                                        cover_bytes=base64.b64decode(local['cover']) if local.get('cover') else None,
+                                        credited_artists=known.get('credited_artists') or local.get('artists'),
+                                        album_artists=known.get('album_artists') or local.get('album_artists'),
+                                        album_artist_mbids=local.get('album_artist_mbids'),
+                                    ), lyrics)
                                     if playlists_dir and Path(playlists_dir).exists():
                                         update_m3u_references(Path(playlists_dir), Path(found_path).name, dest_path)
                                     logger.info(f"Relocated and retagged existing track '{title}' into album folder '{dest_dir.name}'.")
+                                    if db and user_id:
+                                        await db.refresh_library_paths(user_id, [str(found_path), str(dest_path)])
                                     found_path = dest_path
                                 except Exception as rel_err:
                                     logger.warning(f"Could not relocate existing track '{title}' into album: {rel_err}")
+                                    return False
 
                     logger.info(f"Single track '{artist} - {title}' already exists in library in same/better quality ({ext.upper()} {bitrate}kbps). Skipping download.")
                     return True
@@ -2031,9 +2065,17 @@ async def _download_single_track_internal(
             disc_num, disc_total, mbid_album, mbid_recording = 1, 1, None, None
             try:
                 meta_result = {}
-                meta_result = await fetch_track_metadata_with_fallback(
-                    deezer_client, artist, title, album
-                )
+                try:
+                    meta_result = await fetch_track_metadata_with_fallback(
+                        deezer_client, artist, title, album,
+                        **({'release_mbid': mbid_album_override} if mbid_album_override else {})
+                    )
+                except Exception:
+                    if not metadata_override:
+                        raise
+                    meta_result = {'artist': artist, 'title': title, 'track_num': None,
+                        'cover_bytes': None, 'album_artist': artist, 'date': None}
+                meta_result.update({key: value for key, value in (metadata_override or {}).items() if value not in (None, '', [])})
                 fetched_artist = meta_result["artist"]
                 title_tag = meta_result["title"] or title
                 fetched_album = album if album else (meta_result.get("album") or title)
@@ -2049,6 +2091,10 @@ async def _download_single_track_internal(
                 dz_date = meta_result["date"]
             except Exception as meta_err:
                 logger.warning(f"Could not retrieve metadata: {meta_err}")
+
+            if mbid_album_override and not track_num:
+                logger.warning('Selected release metadata has no verified position for %s; raw download retained, not publishing track 00', title)
+                continue
 
             # 1.5 AcoustID check on raw downloaded file BEFORE moving/tagging
             from backend.app.clients.acoustid import acoustid_client

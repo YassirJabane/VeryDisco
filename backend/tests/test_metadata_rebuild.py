@@ -409,11 +409,15 @@ async def test_scan_reports_phases_and_can_be_cancelled_without_writing_media(tm
     assert track.read_bytes() == before
 
 
-def test_index_inventory_reuses_unchanged_catalog_rows(tmp_path, monkeypatch):
+def test_index_inventory_reads_full_tags_even_when_catalog_fingerprint_matches(tmp_path, monkeypatch):
     album_dir = tmp_path / "album"
     album_dir.mkdir()
     track = album_dir / "track.mp3"
-    track.write_bytes(b"catalog-only fixture")
+    _make_tagged_mp3(track, title='Track', artist='Artist', album='Album', album_artist='Artist', track=1)
+    from backend.app.metadata_pipeline.tags import write_track
+    snapshot = read_track(track)
+    snapshot.update(date='2020-02-03', release_mbid='release')
+    write_track(track, snapshot)
     stat = track.stat()
     row = {
         "filepath": str(track), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
@@ -423,13 +427,10 @@ def test_index_inventory_reuses_unchanged_catalog_rows(tmp_path, monkeypatch):
         "track_mbid": "recording", "album_mbid": "release", "duration": 123,
         "compilation": 0,
     }
-    monkeypatch.setattr(
-        "backend.app.metadata_pipeline.service.read_track",
-        lambda path: (_ for _ in ()).throw(AssertionError("unchanged file was reparsed")),
-    )
     service = MetadataRebuildService(tmp_path / "state", provider=FakeProvider(), artwork=NoArtwork())
     groups = service._inventory_from_index(tmp_path, {}, [row])
     assert groups[0]["tracks"][0]["release_mbid"] == "release"
+    assert groups[0]['tracks'][0]['date'] == '2020-02-03'
 
 
 def test_index_inventory_skips_unreadable_changed_file(tmp_path, monkeypatch):

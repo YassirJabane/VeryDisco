@@ -1217,7 +1217,7 @@ async def retry_track_download(job_id: int, request: Request):
     owner = job.get("user_id") or user["id"]
     original = json.loads(job.get("request_json") or "{}")
     options = {key: original[key] for key in (
-        "force", "is_explore", "dest_dir_override", "mbid_album_override", "replace_path_override",
+        "force", "is_explore", "dest_dir_override", "mbid_album_override", "replace_path_override", "metadata_override",
     ) if key in original}
     for key in ("dest_dir_override", "replace_path_override"):
         if options.get(key):
@@ -1770,12 +1770,8 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
         return re.sub(r'[^\w]', '', (s or '')).lower()
 
     def _norm_album(s: str) -> str:
-        if not s:
-            return ""
-        # The index preserves edition names. Strip only disc-folder suffixes,
-        # never '(Scary Hours Edition)', Deluxe, Instrumental or remaster identity.
-        clean = re.sub(r'(?i)\s*[\(\[]?\b(?:disc|cd|disk)\s*\d+[\)\]]?\s*$', '', s).strip()
-        return _norm(clean) or _norm(s)
+        from backend.app.media_versions import album_identity_key
+        return album_identity_key(s)
 
     artists_in_items = {_norm(extract_main_artist(it.artist) or it.artist) for it in items if it.artist}
     clean_art = artists_in_items.pop() if len(artists_in_items) == 1 else None
@@ -4380,12 +4376,8 @@ def _build_library_index_sync(
         return re.sub(r'[^\w]', '', (s or '')).lower()
 
     def _norm_album(s: str) -> str:
-        if not s:
-            return ""
-        # Strip disc/cd/disk suffixes and deluxe/explicit/version/edition markers to unify multi-disc albums into 1 row
-        clean = re.sub(r'(?i)\b(?:disc|cd|disk)\s*\d+.*|\b(?:deluxe|explicit|edition|version|remastered|single)\b.*', '', s)
-        clean = re.sub(r'[\(\[\{].*?[\)\]\}]', '', clean).strip()
-        return _norm(clean) or _norm(s)
+        from backend.app.media_versions import album_identity_key
+        return album_identity_key(s)
 
     # ── Phase 1: walk and collect per-file rows ────────────────────────────────
     rows = []
@@ -4543,6 +4535,7 @@ def _build_library_index_sync(
             'disc_num':             disc_num,
             'total_discs':          total_discs,
             'year':                 year or None,
+            'date':                 meta.get('date') or '',
             'album_artist':         album_artist or None,
             'duration':             duration,
             'ext':                  ext,
@@ -4857,6 +4850,7 @@ async def get_library_albums(request: Request):
                 "artist": a.get("artist") or "Unknown Artist",
                 "album": a.get("album") or "Unknown Album",
                 "year": a.get("year") or "",
+                "date": a.get("date") or "",
                 "track_count": t_count,
                 "total_tracks": tot_tracks if status != 'unverified' else 0,
                 "release_mbid": official["release_mbid"] if official else None,

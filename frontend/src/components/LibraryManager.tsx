@@ -112,6 +112,7 @@ export const AlbumCard: React.FC<{
             <Typography variant="caption" color="text.secondary" display="block" noWrap sx={{ mt: 0.3, fontWeight: 600 }}>
               {album.artist}
             </Typography>
+            {album.date && <Typography variant="caption" color="text.secondary" display="block">Release date · {album.date}</Typography>}
           </Box>
 
           <Stack direction="row" alignItems="center" spacing={1} flexShrink={0}>

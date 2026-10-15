@@ -575,6 +575,7 @@ class Database:
                 "inode": "INTEGER DEFAULT 0", "artists_json": "TEXT DEFAULT '[]'",
                 "embedded_cover": "INTEGER DEFAULT 0", "has_comment": "INTEGER DEFAULT 0",
                 "compilation": "INTEGER DEFAULT 0",
+                "date": "TEXT DEFAULT ''",
             }
             for column, definition in library_columns.items():
                 if column not in existing_library_columns:
@@ -1528,7 +1529,7 @@ class Database:
         cols = [
             "user_id", "filepath", "mtime", "file_size",
             "artist", "album", "title", "track_num", "total_tracks",
-            "disc_num", "total_discs", "year", "album_artist", "duration",
+            "disc_num", "total_discs", "year", "date", "album_artist", "duration",
             "ext", "bitrate", "bit_depth", "sample_rate",
             "track_mbid", "album_mbid",
             "lyrics_synced", "lyrics_plain", "has_cover",
@@ -1552,7 +1553,7 @@ class Database:
         """Atomically publish a complete scan so readers never observe an empty index."""
         cols = [
             "user_id", "filepath", "mtime", "artist", "album", "title", "track_num",
-            "total_tracks", "disc_num", "total_discs", "year", "album_artist", "duration",
+            "total_tracks", "disc_num", "total_discs", "year", "date", "album_artist", "duration",
             "ext", "bitrate", "bit_depth", "sample_rate", "track_mbid", "album_mbid",
             "lyrics_synced", "lyrics_plain", "has_cover", "issue_missing_meta",
             "issue_dirty_tags", "issue_dirty_reason", "issue_naming", "issue_naming_expected",
@@ -1603,6 +1604,7 @@ class Database:
         if not paths:
             return
         from backend.app.library_reader import AUDIO_SUFFIXES, read_library_file
+        from backend.app.media_versions import album_identity_key
 
         unique_paths = list(dict.fromkeys(str(Path(value)) for value in paths))
         placeholders = ",".join("?" for _ in unique_paths)
@@ -1649,7 +1651,7 @@ class Database:
                 "artist": artist, "album": album, "title": title,
                 "track_num": meta["track_num"], "total_tracks": meta["total_tracks"],
                 "disc_num": meta["disc_num"], "total_discs": meta["disc_total"],
-                "year": meta["year"], "album_artist": meta["album_artist"],
+                "year": meta["year"], "date": meta.get("date") or "", "album_artist": meta["album_artist"],
                 "duration": meta["duration"], "ext": path.suffix.lower().lstrip("."),
                 "bitrate": meta["bitrate"], "bit_depth": meta["bit_depth"],
                 "sample_rate": meta["sample_rate"], "track_mbid": meta["track_mbid"] or None,
@@ -1667,7 +1669,7 @@ class Database:
                 "issue_misfiled": previous.get("issue_misfiled", 0) or 0,
                 "issue_misfiled_reason": previous.get("issue_misfiled_reason"),
                 "artist_norm": norm(meta["album_artist"] or artist),
-                "album_norm": norm(album), "title_norm": norm(title),
+                "album_norm": album_identity_key(album), "title_norm": norm(title),
                 "size": meta["size"], "mtime_ns": meta["mtime_ns"],
                 "ctime_ns": meta["ctime_ns"], "device": meta["device"], "inode": meta["inode"],
                 "artists_json": meta.get("artists_json") or json.dumps([artist]),
@@ -1847,6 +1849,7 @@ class Database:
                        MAX(bitrate) as bitrate,
                        MAX(has_cover) as has_cover,
                        MAX(year) as year,
+                       MAX(NULLIF(date, '')) as date,
                        SUM(issue_missing_meta + issue_dirty_tags + issue_naming
                            + issue_duplicate + issue_misfiled) as issue_count,
                        SUM(lyrics_synced) as tracks_synced_lyrics,

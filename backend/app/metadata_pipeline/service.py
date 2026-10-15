@@ -274,12 +274,14 @@ class MetadataRebuildService:
             if cancel_event and cancel_event.is_set():
                 raise asyncio.CancelledError
             dirs[:] = [d for d in dirs if not d.startswith(".") and d.casefold() not in {"playlists", "explore"}]
-            audio = [Path(current) / name for name in files if Path(name).suffix.lower() in AUDIO_SUFFIXES]
+            audio = [Path(current) / name for name in files if not name.startswith('.') and Path(name).suffix.lower() in AUDIO_SUFFIXES]
             if audio:
                 tracks = []
                 for path in sorted(audio):
                     if cancel_event and cancel_event.is_set():
                         raise asyncio.CancelledError
+                    if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
+                        continue
                     try:
                         tracks.append(read_track(path))
                     except Exception as exc:
@@ -288,7 +290,14 @@ class MetadataRebuildService:
                     files_scanned += 1
                     if progress and files_scanned % 25 == 0:
                         progress(files_scanned, len(folders) + 1)
-                folders[Path(current)] = tracks
+                if not tracks:
+                    continue
+                folder = Path(current)
+                # The root and Disc 01/Disc 02 are one physical album, not
+                # separate plans. A single-track fallback can live at the root.
+                if re.fullmatch(r'(?i)(?:disc|cd|disk)[ _.-]*\d+', folder.name) and len(folder.relative_to(root).parts) >= 3:
+                    folder = folder.parent
+                folders.setdefault(folder, []).extend(tracks)
                 if progress:
                     progress(files_scanned, len(folders))
         groups: list[dict[str, Any]] = []
@@ -323,63 +332,12 @@ class MetadataRebuildService:
         progress: Optional[Callable[[int, int], None]] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> list[dict[str, Any]]:
-        """Build album groups from the unified index, reopening changed files only."""
-        alias_map = {normalize(key): value for key, value in aliases.items()}
-        folders: dict[Path, list[dict[str, Any]]] = {}
-        for index, row in enumerate(rows, start=1):
-            if cancel_event and cancel_event.is_set():
-                raise asyncio.CancelledError
-            path = Path(row["filepath"])
-            if not path.exists() or not path.resolve().is_relative_to(root):
-                continue
-            try:
-                stat = path.stat()
-                if (int(row.get("size") or -1) != stat.st_size
-                        or int(row.get("mtime_ns") or -1) != stat.st_mtime_ns):
-                    track = read_track(path)
-                else:
-                    try:
-                        artists = json.loads(row.get("artists_json") or "[]")
-                    except Exception:
-                        artists = []
-                    track = {
-                        "path": str(path), "title": row.get("title") or path.stem,
-                        "artist": row.get("artist") or "", "artists": artists,
-                        "album": row.get("album") or "", "album_artist": row.get("album_artist") or "",
-                        "album_artist_mbid": "", "date": row.get("year") or "",
-                        "track": row.get("track_num") or 0, "track_total": row.get("total_tracks") or 0,
-                        "disc": row.get("disc_num") or 1, "disc_total": row.get("total_discs") or 1,
-                        "release_mbid": row.get("album_mbid") or "",
-                        "recording_mbid": row.get("track_mbid") or "",
-                        "compilation": bool(row.get("compilation")), "duration": row.get("duration") or 0,
-                        "mtime_ns": stat.st_mtime_ns, "size": stat.st_size,
-                    }
-            except Exception as exc:
-                logger.warning("Skipping unreadable metadata rebuild file %s: %s", path, exc)
-                continue
-            folders.setdefault(path.parent, []).append(track)
-            if progress and (index % 100 == 0 or index == len(rows)):
-                progress(index, len(folders))
-        groups = []
-        for folder, tracks in sorted(folders.items(), key=lambda item: str(item[0])):
-            albums = [track["album"] for track in tracks if track["album"]]
-            album = Counter(albums).most_common(1)[0][0] if albums else folder.name
-            raw_album_artists = [track["album_artist"] for track in tracks if track["album_artist"]]
-            raw_artists = [track["artist"] for track in tracks if track["artist"]]
-            candidate = Counter(raw_album_artists).most_common(1)[0][0] if raw_album_artists else (
-                Counter(raw_artists).most_common(1)[0][0] if raw_artists else folder.parent.name
-            )
-            candidate = re.split(r"(?i)\s+(?:feat\.?|ft\.?|featuring)\s+", candidate)[0].strip()
-            canonical = alias_map.get(normalize(candidate), candidate)
-            identity = hashlib.sha256("\n".join(track["path"] for track in tracks).encode()).hexdigest()[:20]
-            groups.append({
-                "id": identity, "folder": str(folder), "album": album, "album_artist": canonical,
-                "tracks": tracks, "variants": {
-                    "albums": sorted(set(albums)), "album_artists": sorted(set(raw_album_artists)),
-                    "dates": sorted(set(track["date"] for track in tracks if track["date"])),
-                },
-            })
-        return groups
+        """A rebuild needs complete on-disk tags, not the lossy year-only index.
+
+        Also discover files added since the last library scan. The index remains
+        useful to normal UI queries, but cannot define a repair inventory.
+        """
+        return self._inventory(root, aliases, progress, cancel_event)
 
     def _build_plan(
         self,
@@ -471,7 +429,12 @@ class MetadataRebuildService:
                 title_similarity = _similarity(local.get("title", ""), numbered[0]["title"])
                 if title_similarity >= 0.55:
                     return numbered[0]
-        titled = [item for item in remaining if normalize(item["title"]) == normalize(local.get("title", ""))]
+        def title_key(value: str) -> str:
+            # Featured credits can be in a downloaded title while MusicBrainz
+            # stores them in artist-credit. Do not strip mix/version qualifiers.
+            clean = re.split(r'(?i)\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\s+', value or '', maxsplit=1)[0]
+            return normalize(clean)
+        titled = [item for item in remaining if title_key(item["title"]) == title_key(local.get("title", ""))]
         if len(titled) == 1:
             return titled[0]
         duration_matches = [
