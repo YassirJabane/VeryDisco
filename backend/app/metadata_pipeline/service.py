@@ -538,14 +538,26 @@ class MetadataRebuildService:
             try:
                 for change in plan["tracks"]:
                     path = Path(change["path"])
-                    await asyncio.to_thread(
+                    written.append(path)
+                    write_task = asyncio.create_task(asyncio.to_thread(
                         write_track, path, change["proposed"], cover,
                         bool(include_artwork and cover),
-                    )
-                    written.append(path)
-            except Exception:
-                await asyncio.to_thread(self._restore_backup, backup, root, {str(path) for path in written})
+                    ))
+                    try:
+                        await asyncio.shield(write_task)
+                    except asyncio.CancelledError:
+                        # A thread keeps writing after its waiter is cancelled.
+                        # Finish that write before restoring the album snapshot.
+                        await write_task
+                        raise
+            except BaseException:
+                await asyncio.shield(asyncio.to_thread(self._restore_backup, backup, root, {str(path) for path in written}))
                 raise
+            backup["applied_files"] = {
+                str(path): {"mtime_ns": path.stat().st_mtime_ns, "size": path.stat().st_size}
+                for path in written
+            }
+            _atomic_json(self._backup_path(user_id, plan_id), backup)
             plan["state"] = "applied"
             plan["applied_at"] = _now()
             plan["artwork_source"] = cover_source
@@ -562,21 +574,38 @@ class MetadataRebuildService:
         music_root: Path,
         rescan: Optional[Callable[[], Awaitable[Any]]] = None,
     ) -> dict[str, Any]:
-        backup_path = self._backup_path(user_id, plan_id)
-        if not backup_path.exists():
-            raise FileNotFoundError("No rollback backup exists for this album.")
-        backup = json.loads(backup_path.read_text(encoding="utf-8"))
-        root = music_root.resolve()
-        restored = await asyncio.to_thread(self._restore_backup, backup, root, None)
-        plans = self.plans(user_id)
-        for plan in plans:
-            if plan["id"] == plan_id:
-                plan["state"] = "rolled_back"
-                plan["rolled_back_at"] = _now()
-        _atomic_json(self._plans_path(user_id), plans)
-        if rescan:
-            await rescan()
-        return {"status": "rolled_back", "restored_tracks": restored}
+        lock = self._locks.setdefault(user_id, asyncio.Lock())
+        if lock.locked():
+            raise RuntimeError("A metadata rebuild operation is already running.")
+        async with lock:
+            backup_path = self._backup_path(user_id, plan_id)
+            if not backup_path.exists():
+                raise FileNotFoundError("No rollback backup exists for this album.")
+            backup = json.loads(backup_path.read_text(encoding="utf-8"))
+            root = music_root.resolve()
+            for value, expected in backup.get("applied_files", {}).items():
+                path = Path(value).resolve()
+                if not path.is_relative_to(root):
+                    raise PermissionError("Track is outside the user's library.")
+                stat = path.stat()
+                if stat.st_mtime_ns != expected["mtime_ns"] or stat.st_size != expected["size"]:
+                    raise RuntimeError(f"File changed after apply; rollback would overwrite newer changes: {path}")
+            restored = await asyncio.to_thread(self._restore_backup, backup, root, None)
+            plans = self.plans(user_id)
+            for plan in plans:
+                if plan["id"] == plan_id:
+                    plan["state"] = "rolled_back"
+                    plan["rolled_back_at"] = _now()
+            backup["applied_files"] = {
+                item["path"]: {"mtime_ns": Path(item["path"]).stat().st_mtime_ns,
+                               "size": Path(item["path"]).stat().st_size}
+                for item in backup["tracks"] if Path(item["path"]).is_file()
+            }
+            _atomic_json(backup_path, backup)
+            _atomic_json(self._plans_path(user_id), plans)
+            if rescan:
+                await rescan()
+            return {"status": "rolled_back", "restored_tracks": restored}
 
     @staticmethod
     def _restore_backup(backup: dict[str, Any], root: Path, only: Optional[set[str]]) -> int:

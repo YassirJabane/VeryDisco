@@ -214,6 +214,8 @@ def check_quality_status(existing_ext: str, existing_bitrate: int, existing_dept
       'same'   - if existing file is of equal quality
       'better' - if existing file is of better quality (e.g. existing is FLAC, target is MP3)
     """
+    existing_ext = existing_ext or ""
+    existing_bitrate, existing_depth, existing_sr = existing_bitrate or 0, existing_depth or 0, existing_sr or 0
     best_profile = get_best_target_profile(config)
     if not best_profile:
         return 'same' # No profiles configured, assume same
@@ -2711,11 +2713,9 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
           user_cfg = await db.get_user_config(user_id)
           if user_cfg:
               user_features = user_cfg.get("enabled_features", {})
-              if user_cfg.get("lb_username"):
-                  lb_username = user_cfg["lb_username"]
-              if user_cfg.get("lb_token"):
-                  lb_token = user_cfg["lb_token"]
           user_row = await db.get_user_by_id(user_id)
+          from backend.app.integrations import listenbrainz_credentials
+          lb_username, lb_token = listenbrainz_credentials(config, user_row or {}, user_cfg)
           if user_row:
               if user_row.get("music_dir"):
                   music_dir = user_row["music_dir"]
@@ -2732,6 +2732,8 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
       logger.info(f"Starting synchronization run #{run_id} for source '{playlist_source}'")
 
       try:
+          if tracks_override is None and not lb_username:
+              raise ValueError("Configure your own ListenBrainz username before synchronizing playlists.")
           # Pre-create parent directory to avoid FileNotFoundError
           try:
               await asyncio.to_thread(parent_dir.mkdir, parents=True, exist_ok=True)

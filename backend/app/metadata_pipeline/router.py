@@ -128,13 +128,14 @@ def create_metadata_rebuild_router(
     async def apply_album(plan_id: str, body: ApplyRequest, request: Request):
         user, root = await context(request)
         try:
-            result = await service.apply(
-                user["id"], plan_id, root, body.include_artwork,
-                body.allow_itunes_artwork, rescan,
-            )
-            await db.refresh_library_paths(
-                user["id"], [track["path"] for track in service.plan(user["id"], plan_id)["tracks"]]
-            )
+            async with library_scan_coordinator.operation(user["id"], "metadata-apply"):
+                result = await service.apply(
+                    user["id"], plan_id, root, body.include_artwork,
+                    body.allow_itunes_artwork, rescan,
+                )
+                await db.refresh_library_paths(
+                    user["id"], [track["path"] for track in service.plan(user["id"], plan_id)["tracks"]]
+                )
             return result
         except KeyError:
             raise HTTPException(status_code=404, detail="Metadata plan not found.")
@@ -147,12 +148,17 @@ def create_metadata_rebuild_router(
     async def rollback_album(plan_id: str, request: Request):
         user, root = await context(request)
         try:
-            result = await service.rollback(user["id"], plan_id, root, rescan)
-            await db.refresh_library_paths(
-                user["id"], [track["path"] for track in service.plan(user["id"], plan_id)["tracks"]]
-            )
+            async with library_scan_coordinator.operation(user["id"], "metadata-rollback"):
+                result = await service.rollback(user["id"], plan_id, root, rescan)
+                await db.refresh_library_paths(
+                    user["id"], [track["path"] for track in service.plan(user["id"], plan_id)["tracks"]]
+                )
             return result
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc))
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc))
 
     return router

@@ -177,9 +177,6 @@ class SchedulerManager:
                     except Exception:
                         user_playlists = []
                 
-                if not user_playlists and config.listenbrainz.active_playlists:
-                    user_playlists = config.listenbrainz.active_playlists
-                
                 sources = [s for s in user_playlists if active_sources is None or s in active_sources]
                 for source in sources:
                     try:
@@ -213,12 +210,13 @@ class SchedulerManager:
 
         # Collect if anyone has active playlists
         has_any_active = False
-        if config.listenbrainz.active_playlists:
+        if not users and config.listenbrainz.active_playlists:
             has_any_active = True
         else:
             for u in users:
                 u_cfg = await self.db.get_user_config(u["id"])
-                if u_cfg and any(p for p in u_cfg.get("active_playlists", [])):
+                if (u_cfg and u_cfg.get("enabled_features", {}).get("listenbrainz_sync", True)
+                        and any(p for p in u_cfg.get("active_playlists", []))):
                     has_any_active = True
                     break
 
@@ -486,11 +484,12 @@ class SchedulerManager:
             if u.get("playlist_dir"):
                 user_playlists_dir = u["playlist_dir"]
 
-            lb_username = config.listenbrainz.username
-            lb_token = config.listenbrainz.token
             active_playlists = config.listenbrainz.active_playlists or ["weekly-exploration"]
 
             user_cfg = await self.db.get_user_config(uid)
+            user_features = (user_cfg or {}).get("enabled_features", {})
+            from backend.app.integrations import listenbrainz_credentials
+            lb_username, lb_token = listenbrainz_credentials(config, u, user_cfg)
             if user_cfg:
                 # Check feature toggle
                 user_features = user_cfg.get("enabled_features", {})
@@ -498,10 +497,6 @@ class SchedulerManager:
                     logger.debug(f"Starred sync is disabled for user '{username}'. Skipping.")
                     continue
 
-                if user_cfg.get("lb_username"):
-                    lb_username = user_cfg["lb_username"]
-                if user_cfg.get("lb_token"):
-                    lb_token = user_cfg["lb_token"]
                 active_playlists = user_cfg.get("active_playlists") or []
                 if isinstance(active_playlists, str):
                     try:
@@ -646,7 +641,7 @@ class SchedulerManager:
                             download_album_task(download_id, artist, title, album, config, self.db, user_id=uid),
                             task_id=f"album:{download_id}",
                             task_type="album",
-                            metadata={"download_id": download_id, "artist": artist, "album": album}
+                            metadata={"download_id": download_id, "artist": artist, "album": album, "user_id": uid}
                         )
                     except Exception as e:
                         logger.error(f"Failed to queue album download for starred track: {e}")

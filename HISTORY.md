@@ -1,5 +1,11 @@
 # HISTORY
 
+## 2026-10-15 — Audit pre-release e correzioni su beta
+
+- Revisione di pipeline applicative e di distribuzione; risultati e problemi residui in `docs/audit/2026-10-15-pre-release.md`.
+- Corretti isolamento credenziali/task/statistiche, matching Explore per recording MBID, completezza album dai totali esterni, qualità FLAC con proprietà mancanti, artwork cache, preservazione delle modifiche alle playlist importate, retry persistenti e cancellazione download, staging dei singoli, rollback metadata, fallback lyrics e feedback remoto.
+- CI: smoke test dell'immagine di produzione necessario prima del publish, serializzazione per ref, tag stabili validati; contesto Docker ripulito e APScheduler limitato all'API 3.x. Nessuna promozione a main né tag stabile: pubblicazione richiesta esclusivamente su beta.
+
 ## 2026-10-02 — Revisione iniziale dello snapshot
 
 - Analizzato il progetto locale (Docker/Compose, backend FastAPI e SQLite, sincronizzazione e scheduler, frontend React/Vite, test e dipendenze). Lo snapshot iniziale non aveva `HISTORY.md` né `.git`; il confronto con la repository remota non è riuscito.

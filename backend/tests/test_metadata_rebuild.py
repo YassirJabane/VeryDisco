@@ -473,3 +473,73 @@ async def test_musicbrainz_progressive_loading_and_persistent_cache():
     assert first[0]["confidence"] >= 0.9
     assert second[0]["release_mbid"] == "release-1"
     assert calls == ["/release", "/release/release-1"]
+
+
+async def _rollback_fixture(tmp_path):
+    album = tmp_path / "album"
+    album.mkdir()
+    tracks = [album / "01.mp3", album / "02.mp3"]
+    for index, (path, title) in enumerate(zip(tracks, ("the ends", "goosebumps")), 1):
+        _make_tagged_mp3(path, title=title, artist="Travi$ Scott", album="Birds in the Trap Sing McKnight", album_artist="Travi$ Scott", track=index)
+    service = MetadataRebuildService(tmp_path / "state", provider=FakeProvider(), artwork=NoArtwork())
+    plan = (await service.scan("user", album))[0]
+    return service, plan, album, tracks
+
+
+@pytest.mark.asyncio
+async def test_apply_restores_current_file_when_writer_fails_after_modifying_it(tmp_path, monkeypatch):
+    service, plan, album, tracks = await _rollback_fixture(tmp_path)
+    snapshots = [read_track(path) for path in tracks]
+    failed = False
+
+    def fail_after_second_write(path, *args, **kwargs):
+        nonlocal failed
+        write_track(path, *args, **kwargs)
+        if path == tracks[1] and not failed:
+            failed = True
+            raise OSError("simulated partial write failure")
+
+    monkeypatch.setattr("backend.app.metadata_pipeline.service.write_track", fail_after_second_write)
+    with pytest.raises(OSError, match="partial write"):
+        await service.apply("user", plan["id"], album)
+    assert [read_track(path)["artist"] for path in tracks] == [item["artist"] for item in snapshots]
+
+
+@pytest.mark.asyncio
+async def test_rollback_rejects_changes_made_after_apply(tmp_path):
+    service, plan, album, tracks = await _rollback_fixture(tmp_path)
+    await service.apply("user", plan["id"], album)
+    changed = read_track(tracks[0])
+    changed["title"] = "A newer manual correction"
+    write_track(tracks[0], changed)
+    with pytest.raises(RuntimeError, match="newer changes"):
+        await service.rollback("user", plan["id"], album)
+    assert read_track(tracks[0])["title"] == "A newer manual correction"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_apply_finishes_writer_before_restoring_album(tmp_path, monkeypatch):
+    import asyncio
+    import threading
+    service, plan, album, tracks = await _rollback_fixture(tmp_path)
+    started, release = threading.Event(), threading.Event()
+    first = True
+
+    def slow_write(path, *args, **kwargs):
+        nonlocal first
+        if first:
+            first = False
+            started.set()
+            assert release.wait(5)
+        write_track(path, *args, **kwargs)
+
+    monkeypatch.setattr("backend.app.metadata_pipeline.service.write_track", slow_write)
+    task = asyncio.create_task(service.apply("user", plan["id"], album))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert read_track(tracks[0])["artist"] == "Travi$ Scott"

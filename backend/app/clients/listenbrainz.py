@@ -228,7 +228,7 @@ class ListenBrainzClient:
                 "could not resolve a MusicBrainz recording ID. "
                 "The track will still be downloaded/promoted."
             )
-            return True  # Return True so callers don't treat this as a hard failure
+            return False  # Music actions may continue, but no remote feedback was saved.
 
         url = f"{self.base_url}/1/feedback/recording-feedback"
         payload = {

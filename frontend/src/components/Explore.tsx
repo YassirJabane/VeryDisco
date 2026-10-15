@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { 
   Box, Card, CardContent, Typography, CircularProgress, 
   List, ListItem, ListItemAvatar, ListItemText, Avatar, 
@@ -21,6 +21,7 @@ import {
 } from '@mui/icons-material';
 import { apiService, GetStatusResponse } from '../api';
 import { useNotification } from '../context/NotificationContext';
+import { resolveTrackArtwork, trackKey } from '../trackArtwork';
 
 const PLAYLIST_KINDS = ['daily-jams', 'weekly-jams', 'weekly-exploration'] as const;
 
@@ -28,6 +29,7 @@ export const Explore: React.FC = () => {
   const { notify } = useNotification();
   const theme = useTheme();
   const [playlist, setPlaylist] = useState<any[]>([]);
+  const playlistRequest = useRef(0);
   const [loading, setLoading] = useState(false);
   const [source, setSource] = useState<string>('daily-jams');
   const [activePlaylists, setActivePlaylists] = useState<string[]>([]);
@@ -43,7 +45,7 @@ export const Explore: React.FC = () => {
     let active = true;
     const refreshFeedback = async () => {
       try {
-        const data = await apiService.getFeedback(undefined, 100);
+        const data = await apiService.getFeedback(undefined, 1000);
         if (!active) return;
         const key = (track: any) => `${track.artist}-${track.title}`;
         setLikedTracks(new Set(data.feedback.filter((track: any) => track.score === 1).map(key)));
@@ -115,58 +117,43 @@ export const Explore: React.FC = () => {
   };
 
   const fetchPlaylist = async (targetSource: string, silent: boolean = false) => {
+    const requestId = ++playlistRequest.current;
     if (!silent) setLoading(true);
     try {
       const data = await apiService.getCurrentPlaylist(targetSource);
       
       const initialTracks = data.tracks || [];
-      const itemsToCheck = initialTracks.map((t: any) => ({ artist: t.artist, title: t.title }));
+      const itemsToCheck = initialTracks.map((t: any) => ({ artist: t.artist, title: t.title, album: t.album, track_mbid: t.recording_mbid || t.mbid }));
       
       let libraryStatusMap = new Map();
       if (itemsToCheck.length > 0) {
         try {
           const checkResults = await apiService.checkAlbumsBatch(itemsToCheck);
-          checkResults.forEach((res: any) => {
-            libraryStatusMap.set(`${res.artist}-${res.title}`, res);
+          checkResults.forEach((res: any, index: number) => {
+            libraryStatusMap.set(index, res);
           });
         } catch (e) {
           console.error("Library check failed", e);
         }
       }
 
-      const missingCovers = initialTracks.filter((t: any) => !t.artwork && !t.cover_medium && !t.cover_small && !t.cover && !t.image_url);
-      let coverMap = new Map();
-      if (missingCovers.length > 0) {
-        const batchCovers = missingCovers.slice(0, 10);
-        await Promise.allSettled(batchCovers.map(async (t: any) => {
-          try {
-            const deezerRes = await apiService.searchDeezer(t.artist + ' ' + t.title, 'track');
-            if (deezerRes && deezerRes.data && deezerRes.data.length > 0) {
-              const normalize = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-              const match = deezerRes.data.find((candidate: any) =>
-                normalize(candidate.artist?.name || '') === normalize(t.artist || '') &&
-                normalize(candidate.title || '') === normalize(t.title || '')
-              );
-              const coverUrl = match?.album?.cover_medium;
-              if (coverUrl) coverMap.set(`${t.artist}-${t.title}`, coverUrl);
-            }
-          } catch (e) {
-            // ignore
-          }
-        }));
-      }
-
-      const enrichedTracks = initialTracks.map((t: any) => ({
+      const enrichedTracks = initialTracks.map((t: any, index: number) => ({
         ...t,
-        cover_url: t.artwork || t.cover_medium || t.cover_small || t.cover || t.image_url || coverMap.get(`${t.artist}-${t.title}`) || '',
-        libraryStatus: libraryStatusMap.get(`${t.artist}-${t.title}`)
+        cover_url: t.artwork || t.cover_medium || t.cover_small || t.cover || t.image_url || '',
+        libraryStatus: libraryStatusMap.get(index)
       }));
 
+      if (requestId !== playlistRequest.current) return;
       setPlaylist(enrichedTracks);
+      if (!silent) setLoading(false);
+      const covers = await resolveTrackArtwork(initialTracks);
+      if (requestId === playlistRequest.current) {
+        setPlaylist(enrichedTracks.map((t: any) => ({ ...t, cover_url: t.cover_url || covers.get(trackKey(t)) || '' })));
+      }
     } catch (e: any) {
       console.error("Failed to load playlist", e);
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && requestId === playlistRequest.current) setLoading(false);
     }
   };
 
@@ -188,6 +175,7 @@ export const Explore: React.FC = () => {
 
   useEffect(() => {
     if (source) fetchPlaylist(source);
+    return () => { playlistRequest.current++; };
   }, [source]);
 
   useEffect(() => {
@@ -264,7 +252,13 @@ export const Explore: React.FC = () => {
     });
 
     try {
-      await apiService.likeTrack(track.artist, track.title, track.album, finalScore);
+      const response = await apiService.likeTrack(track.artist, track.title, track.album, finalScore, track.recording_mbid || track.mbid);
+      if (response.feedback_submitted === false) {
+        setLikedTracks(previousLiked);
+        setHatedTracks(previousHated);
+        notify(response.message, 'warning');
+        return;
+      }
       window.dispatchEvent(new Event('verydisco-feedback-changed'));
     } catch (e: any) {
       console.error("Failed to submit feedback", e);
@@ -497,7 +491,7 @@ export const Explore: React.FC = () => {
                             <Typography sx={{ fontWeight: 700, fontSize: '1.15rem' }}>{track.title}</Typography>
                             {(() => {
                               const lib = track.libraryStatus;
-                              if (lib && lib.exists) {
+                              if (lib && lib.exists && lib.location !== 'explore') {
                                 if (lib.quality_status === 'worse') {
                                   return <Chip label="Upgrade" size="small" sx={{ bgcolor: 'orange', color: 'white', fontWeight: 700, height: 20, fontSize: '0.7rem' }} />;
                                 }

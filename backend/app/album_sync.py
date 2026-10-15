@@ -25,6 +25,42 @@ def safe_copy_file(src: Any, dst: Any):
     return atomic_copy(src, dst)
 
 
+async def _publish_tagged_track(source: Path, destination: Path, metadata: dict, lyrics: Optional[str]) -> None:
+    """Keep the previous library file and raw transfer until tagging succeeds."""
+    import uuid
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staged = destination.with_name(f".verydisco-download-{uuid.uuid4().hex}{destination.suffix}")
+    staged_lyrics = staged.with_suffix(".lrc")
+
+    async def finish_io(function, *args, **kwargs):
+        task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
+    try:
+        await finish_io(safe_copy_file, source, staged)
+        await finish_io(embed_metadata, file_path=str(staged), **metadata)
+        if lyrics:
+            staged_lyrics.write_text(lyrics, encoding="utf-8")
+        await finish_io(safe_move_file, staged, destination)
+        if staged_lyrics.exists():
+            try:
+                await finish_io(safe_move_file, staged_lyrics, destination.with_suffix(".lrc"))
+            except OSError as error:
+                logger.warning("Audio saved, but lyrics sidecar could not be published for %s: %s", destination, error)
+        if source.resolve() != destination.resolve():
+            try:
+                source.unlink(missing_ok=True)
+            except OSError as error:
+                logger.warning("Audio saved; raw transfer retained at %s: %s", source, error)
+    finally:
+        staged.unlink(missing_ok=True)
+        staged_lyrics.unlink(missing_ok=True)
+
+
 async def fetch_track_metadata_with_fallback(
     deezer_client: "DeezerClient",
     artist: str,
@@ -1115,7 +1151,7 @@ async def _download_album_task_internal(
                             lyrics_text = None
                             l_type = "missing"
                             try:
-                                lyrics_text, l_type = await lrclib_client.get_lyrics(artist, title_tag)
+                                lyrics_text, l_type = await lrclib_client.get_lyrics(artist, title_tag, album)
                             except Exception:
                                 pass
                             if lyrics_text:
@@ -1510,7 +1546,7 @@ async def _download_album_task_internal(
                     # 5. Embed metadata & lyrics
                     try:
                         l_type = "missing"
-                        lyrics_text, l_type = await lrclib_client.get_lyrics(artist, title_tag)
+                        lyrics_text, l_type = await lrclib_client.get_lyrics(artist, title_tag, album)
                         if lyrics_text:
                             lrc_path = dest_path.with_suffix(".lrc")
                             with open(lrc_path, "w", encoding="utf-8") as lf:
@@ -1720,20 +1756,28 @@ async def download_single_track_task(
     job_id = None
     if db and hasattr(db, "create_download_job"):
         try:
-            job_id = await db.create_download_job(artist, title, album, user_id)
-            await db.update_download_job(job_id, "running")
+            job_id = await db.create_download_job(artist, title, album, user_id, request={
+                "force": force, "is_explore": is_explore, "dest_dir_override": dest_dir_override,
+                "mbid_album_override": mbid_album_override, "replace_path_override": replace_path_override,
+            })
         except Exception as journal_err:
             logger.warning(f"Could not create download journal for '{artist} - {title}': {journal_err}")
-    async with _single_track_semaphore:
-        try:
+    try:
+        async with _single_track_semaphore:
+            if job_id is not None:
+                await db.update_download_job(job_id, "running")
             success = await _download_single_track_internal(
                 artist, title, album, config, db, force, user_id, is_explore,
                 dest_dir_override, mbid_album_override, replace_path_override, job_id
             )
-        except Exception as exc:
-            if job_id is not None:
-                await db.update_download_job(job_id, "failed", error_reason=str(exc))
-            raise
+    except asyncio.CancelledError:
+        if job_id is not None:
+            await asyncio.shield(db.update_download_job(job_id, "interrupted", error_reason="Stopped before completion; retry is available"))
+        raise
+    except Exception as exc:
+        if job_id is not None:
+            await db.update_download_job(job_id, "failed", error_reason=str(exc))
+        raise
     if job_id is not None:
         await db.update_download_job(
             job_id, "completed" if success else "failed",
@@ -1984,6 +2028,7 @@ async def _download_single_track_internal(
             dz_album_artist = None
             credited_artists = None
             album_artists = None
+            disc_num, disc_total, mbid_album, mbid_recording = 1, 1, None, None
             try:
                 meta_result = await fetch_track_metadata_with_fallback(
                     deezer_client, artist, title, album
@@ -2035,11 +2080,10 @@ async def _download_single_track_internal(
 
             from backend.app.sync import resolve_album_dir, get_library_filename, get_safe_filename
             if replace_path_override:
-                import uuid
                 replace_target = Path(replace_path_override).resolve()
                 dest_dir = replace_target.parent
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                dest_audio_path = dest_dir / f".verydisco-replacement-{uuid.uuid4().hex}{ext}"
+                dest_audio_path = replace_target.with_suffix(ext)
             elif dest_dir_override:
                 dest_dir = Path(dest_dir_override)
                 dest_dir.mkdir(parents=True, exist_ok=True)
@@ -2059,32 +2103,16 @@ async def _download_single_track_internal(
                 clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
                 dest_audio_path = dest_dir / clean_filename
 
-            # 2. Move file
-            try:
-                await asyncio.to_thread(safe_move_file, downloaded_file, dest_audio_path)
-                logger.info(f"Moved single track to library: '{dest_audio_path}'")
-            except Exception as e:
-                logger.error(f"Failed to move single track to library: {e}")
-                if attempt_id is not None:
-                    await db.update_download_attempt(attempt_id, "failed", f"Could not move file: {e}")
-                continue
-
-            # 3. Fetch lyrics and embed tags
+            # Tag a private copy before publishing anything over an existing file.
             lyrics_content = None
             l_type = "missing"
             try:
-                lyrics_content, l_type = await lrclib_client.get_lyrics(artist, title_tag)
-                if lyrics_content:
-                    dest_lyrics_path = dest_audio_path.with_suffix(".lrc")
-                    with open(dest_lyrics_path, "w", encoding="utf-8") as lf:
-                        lf.write(lyrics_content)
+                lyrics_content, l_type = await lrclib_client.get_lyrics(artist, title_tag, album)
             except Exception as lyrics_err:
                 logger.warning(f"Could not retrieve lyrics for single track: {lyrics_err}")
 
             try:
-                await asyncio.to_thread(
-                    embed_metadata,
-                    file_path=str(dest_audio_path),
+                await _publish_tagged_track(downloaded_file, dest_audio_path, dict(
                     artist=fetched_artist,
                     title=title_tag,
                     album=album,
@@ -2100,39 +2128,28 @@ async def _download_single_track_internal(
                     mbid_recording=mbid_recording,
                     credited_artists=credited_artists,
                     album_artists=album_artists or [dz_album_artist or artist],
-                )
+                ), lyrics_content)
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
             except Exception as e:
                 logger.warning(f"Could not embed metadata/lyrics for single track: {e}")
                 if attempt_id is not None:
                     await db.update_download_attempt(attempt_id, "failed", f"Metadata staging failed: {e}")
-                try:
-                    await asyncio.to_thread(safe_move_file, dest_audio_path, downloaded_file)
-                except Exception as restore_error:
-                    logger.error(f"Could not restore untagged download {dest_audio_path}: {restore_error}")
                 continue
 
             published_path = dest_audio_path
             replaced_paths: list[str] = []
             if replace_path_override:
                 old_path = Path(replace_path_override).resolve()
-                published_path = old_path if old_path.suffix.lower() == dest_audio_path.suffix.lower() else old_path.with_suffix(dest_audio_path.suffix)
-                temp_lyrics = dest_audio_path.with_suffix(".lrc")
-                final_lyrics = published_path.with_suffix(".lrc")
+                replaced_paths = [str(old_path), str(published_path)]
                 try:
-                    await asyncio.to_thread(safe_move_file, dest_audio_path, published_path)
-                    if temp_lyrics.exists():
-                        await asyncio.to_thread(safe_move_file, temp_lyrics, final_lyrics)
                     if old_path != published_path and old_path.exists():
                         old_path.unlink()
                     old_lyrics = old_path.with_suffix(".lrc")
-                    if old_lyrics != final_lyrics and old_lyrics.exists():
+                    if old_lyrics != published_path.with_suffix(".lrc") and old_lyrics.exists():
                         old_lyrics.unlink()
-                    replaced_paths = [str(old_path), str(published_path)]
                     logger.info("Atomically replaced library track '%s' with '%s'", old_path, published_path)
                 except Exception as publish_error:
-                    logger.error("Could not publish replacement for %s: %s", old_path, publish_error)
-                    continue
+                    logger.warning("Replacement saved, but old sidecars/files could not be cleaned for %s: %s", old_path, publish_error)
 
             if db and user_id and not is_explore:
                 await db.refresh_library_paths(user_id, replaced_paths or [str(published_path)])
@@ -2147,7 +2164,10 @@ async def _download_single_track_internal(
                     username=config.navidrome.username,
                     password=config.navidrome.password
                 )
-                await nd_client.trigger_scan()
+                try:
+                    await nd_client.trigger_scan()
+                except Exception as scan_error:
+                    logger.warning("Track saved, but Navidrome rescan failed: %s", scan_error)
                 
             logger.info(f"Single track download complete for {artist} - {title}")
             if attempt_id is not None:
@@ -2157,10 +2177,14 @@ async def _download_single_track_internal(
             return True
             
         logger.error(f"All candidate attempts failed for single track '{artist} - {title}'")
+        if download_job_id is not None:
+            await db.update_download_job(download_job_id, "failed", error_reason="All candidate attempts failed; inspect the candidate decisions")
         return False
         
     except Exception as e:
         logger.error(f"Error in single track download task: {e}")
+        if download_job_id is not None:
+            await db.update_download_job(download_job_id, "failed", error_reason=str(e))
         return False
 
 
@@ -2273,6 +2297,7 @@ async def grab_single_track_task(
         dz_album_artist = None
         credited_artists = None
         album_artists = None
+        disc_num, disc_total, mbid_album, mbid_recording = 1, 1, None, None
         try:
             meta_result = await fetch_track_metadata_with_fallback(
                 deezer_client, artist, title, album
@@ -2313,30 +2338,16 @@ async def grab_single_track_task(
             clean_filename = get_library_filename(fetched_artist, safe_album, track_num, title_tag, ext)
             dest_audio_path = dest_dir / clean_filename
 
-        # 2. Move file
-        try:
-            await asyncio.to_thread(safe_move_file, downloaded_file, dest_audio_path)
-            logger.info(f"Moved grabbed track to library: '{dest_audio_path}'")
-        except Exception as e:
-            logger.error(f"Failed to move grabbed track to library: {e}")
-            return
-
         # 3. Fetch lyrics and embed tags
         lyrics_content = None
         l_type = "missing"
         try:
-            lyrics_content, l_type = await lrclib_client.get_lyrics(artist, title_tag)
-            if lyrics_content:
-                dest_lyrics_path = dest_audio_path.with_suffix(".lrc")
-                with open(dest_lyrics_path, "w", encoding="utf-8") as lf:
-                    lf.write(lyrics_content)
+            lyrics_content, l_type = await lrclib_client.get_lyrics(artist, title_tag, album)
         except Exception as lyrics_err:
             logger.warning(f"Could not retrieve lyrics for single track: {lyrics_err}")
 
         try:
-            await asyncio.to_thread(
-                embed_metadata,
-                file_path=str(dest_audio_path),
+            await _publish_tagged_track(downloaded_file, dest_audio_path, dict(
                 artist=fetched_artist,
                 title=title_tag,
                 album=album,
@@ -2352,14 +2363,10 @@ async def grab_single_track_task(
                 mbid_recording=mbid_recording,
                 credited_artists=credited_artists,
                 album_artists=album_artists or [dz_album_artist or artist],
-            )
+            ), lyrics_content)
             logger.info(f"Saved and embedded metadata for grabbed track '{fetched_artist} - {title_tag}'")
         except Exception as e:
             logger.warning(f"Could not embed metadata/lyrics for grabbed track: {e}")
-            try:
-                await asyncio.to_thread(safe_move_file, dest_audio_path, downloaded_file)
-            except Exception as restore_error:
-                logger.error(f"Could not restore untagged download {dest_audio_path}: {restore_error}")
             return
 
         # Trigger scan

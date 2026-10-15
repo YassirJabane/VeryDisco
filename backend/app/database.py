@@ -222,11 +222,16 @@ class Database:
                 query_strategy INTEGER DEFAULT 0,
                 destination_path TEXT DEFAULT '',
                 error_reason TEXT DEFAULT '',
+                request_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 completed_at TEXT
             );
             """)
+            async with db.execute("PRAGMA table_info(download_jobs)") as cursor:
+                job_columns = {row[1] for row in await cursor.fetchall()}
+            if "request_json" not in job_columns:
+                await db.execute("ALTER TABLE download_jobs ADD COLUMN request_json TEXT NOT NULL DEFAULT '{}'")
             await db.execute("""
             CREATE TABLE IF NOT EXISTS download_attempts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1166,17 +1171,28 @@ class Database:
     # Durable single-track download journal ---------------------------------
     async def create_download_job(
         self, artist: str, title: str, album: str = "", user_id: Optional[str] = None,
-        kind: str = "track",
+        kind: str = "track", request: Optional[dict] = None,
     ) -> int:
         """Create a resumable job; never hide a prior failed request."""
         async with self.get_db() as conn:
             cursor = await conn.execute(
-                """INSERT INTO download_jobs (user_id, kind, artist, title, album, status)
-                   VALUES (?, ?, ?, ?, ?, 'queued')""",
-                (user_id, kind, artist, title, album),
+                """INSERT INTO download_jobs (user_id, kind, artist, title, album, status, request_json)
+                   VALUES (?, ?, ?, ?, ?, 'queued', ?)""",
+                (user_id, kind, artist, title, album, json.dumps(request or {})),
             )
             await conn.commit()
             return cursor.lastrowid
+
+    async def get_download_job(self, job_id: int, user_id: Optional[str] = None) -> Optional[dict]:
+        query = "SELECT * FROM download_jobs WHERE id = ?"
+        values: list[Any] = [job_id]
+        if user_id is not None:
+            query += " AND user_id = ?"
+            values.append(user_id)
+        async with self.get_db() as conn:
+            cursor = await conn.execute(query, values)
+            row = await cursor.fetchone()
+            return dict(row) if row else None
 
     async def update_download_job(
         self, job_id: int, status: str, *, query_text: Optional[str] = None,
@@ -1704,7 +1720,7 @@ class Database:
             if artist_norm:
                 async with db.execute(
                     "SELECT filepath, artist, album, title, artist_norm, album_norm, title_norm, "
-                    "track_num, disc_num, total_tracks, track_mbid, album_mbid, bitrate, bit_depth, ext "
+                    "track_num, disc_num, total_tracks, track_mbid, album_mbid, bitrate, bit_depth, sample_rate, ext "
                     "FROM library_index WHERE user_id = ? AND (artist_norm = ? OR artist_norm LIKE ?)",
                     (user_id, artist_norm, f"%{artist_norm}%")
                 ) as cursor:
@@ -1713,7 +1729,7 @@ class Database:
             else:
                 async with db.execute(
                     "SELECT filepath, artist, album, title, artist_norm, album_norm, title_norm, "
-                    "track_num, disc_num, total_tracks, track_mbid, album_mbid, bitrate, bit_depth, ext "
+                    "track_num, disc_num, total_tracks, track_mbid, album_mbid, bitrate, bit_depth, sample_rate, ext "
                     "FROM library_index WHERE user_id = ?",
                     (user_id,)
                 ) as cursor:

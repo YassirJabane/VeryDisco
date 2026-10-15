@@ -11,6 +11,7 @@ import {
   Sync as SyncIcon
 } from '@mui/icons-material';
 import { apiService } from '../api';
+import { resolveTrackArtwork, trackKey } from '../trackArtwork';
 
 export const MyFeedback: React.FC = () => {
   const theme = useTheme();
@@ -32,48 +33,29 @@ export const MyFeedback: React.FC = () => {
       const data = await apiService.getFeedback();
       const initialTracks = data.feedback || [];
       
-      const itemsToCheck = initialTracks.map((t: any) => ({ artist: t.artist, title: t.title }));
+      const itemsToCheck = initialTracks.map((t: any) => ({ artist: t.artist, title: t.title, album: t.album, track_mbid: t.mbid }));
       let libraryStatusMap = new Map();
       if (itemsToCheck.length > 0) {
         try {
           const checkResults = await apiService.checkAlbumsBatch(itemsToCheck);
-          checkResults.forEach((res: any) => {
-            libraryStatusMap.set(`${res.artist}-${res.title}`, res);
+          checkResults.forEach((res: any, index: number) => {
+            libraryStatusMap.set(index, res);
           });
         } catch (e) {
           console.error("Library check failed", e);
         }
       }
 
-      const missingCovers = initialTracks.filter((t: any) => !t.artwork && !t.cover_medium && !t.cover_small && !t.cover && !t.image_url);
-      let coverMap = new Map();
-      if (missingCovers.length > 0) {
-        const batchCovers = missingCovers.slice(0, 10);
-        await Promise.allSettled(batchCovers.map(async (t: any) => {
-          try {
-            const deezerRes = await apiService.searchDeezer(t.artist + ' ' + t.title, 'track');
-            if (deezerRes && deezerRes.data && deezerRes.data.length > 0) {
-              const normalize = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-              const match = deezerRes.data.find((candidate: any) =>
-                normalize(candidate.artist?.name || '') === normalize(t.artist || '') &&
-                normalize(candidate.title || '') === normalize(t.title || '')
-              );
-              const coverUrl = match?.album?.cover_medium;
-              if (coverUrl) coverMap.set(`${t.artist}-${t.title}`, coverUrl);
-            }
-          } catch (e) {
-            // ignore
-          }
-        }));
-      }
-
-      const enrichedTracks = initialTracks.map((t: any) => ({
+      const enrichedTracks = initialTracks.map((t: any, index: number) => ({
         ...t,
-        cover_url: t.artwork || t.cover_medium || t.cover_small || t.cover || t.image_url || coverMap.get(`${t.artist}-${t.title}`) || '',
-        libraryStatus: libraryStatusMap.get(`${t.artist}-${t.title}`)
+        cover_url: t.artwork || t.cover_medium || t.cover_small || t.cover || t.image_url || '',
+        libraryStatus: libraryStatusMap.get(index)
       }));
 
       setFeedbackTracks(enrichedTracks);
+      setLoading(false);
+      const covers = await resolveTrackArtwork(initialTracks);
+      setFeedbackTracks(enrichedTracks.map((t: any) => ({ ...t, cover_url: t.cover_url || covers.get(trackKey(t)) || '' })));
     } catch (e: any) {
       console.error("Failed to load feedback", e);
       setError(e.response?.data?.detail || "Failed to load feedback from ListenBrainz.");
@@ -229,7 +211,7 @@ export const MyFeedback: React.FC = () => {
                         <IconButton 
                           onClick={async () => {
                             try {
-                              await apiService.likeTrack(track.artist, track.title, "", 0);
+                              await apiService.likeTrack(track.artist, track.title, track.album || '', 0, track.mbid);
                               setFeedbackTracks(prev => prev.filter(t => t.mbid !== track.mbid || t.title !== track.title));
                               window.dispatchEvent(new Event('verydisco-feedback-changed'));
                               setSnackbar({

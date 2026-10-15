@@ -8,6 +8,10 @@ on:
     branches: [ "main", "beta" ]
   workflow_dispatch:
 
+concurrency:
+  group: verydisco-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -32,8 +36,26 @@ jobs:
           npm test
           npm run build
 
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build production image
+        run: docker build --tag verydisco:smoke .
+      - name: Check clean startup and production runtime
+        run: |
+          docker run --detach --name verydisco-smoke --publish 127.0.0.1:18086:8080 verydisco:smoke
+          curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:18086/healthz
+          docker exec verydisco-smoke python /app/scripts/container_smoke.py
+          docker exec verydisco-smoke fpcalc -version
+      - name: Container diagnostics and cleanup
+        if: always()
+        run: |
+          docker logs verydisco-smoke || true
+          docker rm --force verydisco-smoke || true
+
   build-and-push:
-    needs: test
+    needs: [test, container-smoke]
     if: github.ref == 'refs/heads/beta' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -49,6 +71,7 @@ jobs:
       - name: Require release tag to be on main
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Stable tags must use vMAJOR.MINOR.PATCH"; exit 1; }
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 

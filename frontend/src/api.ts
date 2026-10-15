@@ -367,8 +367,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async likeTrack(artist: string, title: string, album: string, score: number = 1): Promise<{ status: string; message: string }> {
-    const resp = await api.post<{ status: string; message: string }>('/api/playlist/like', { artist, title, album, score });
+  async likeTrack(artist: string, title: string, album: string, score: number = 1, mbid?: string): Promise<{ status: string; message: string; feedback_submitted?: boolean }> {
+    const resp = await api.post<{ status: string; message: string; feedback_submitted?: boolean }>('/api/playlist/like', { artist, title, album: album || '', score, mbid });
     return resp.data;
   },
   
@@ -389,7 +389,7 @@ export const apiService = {
     return resp.data;
   },
 
-  async checkAlbumsBatch(items: Array<{ artist: string; title: string; album_id?: number | string; expected_tracks?: number }>): Promise<any[]> {
+  async checkAlbumsBatch(items: Array<{ artist: string; title: string; album_id?: number | string; expected_tracks?: number; track_mbid?: string; album?: string }>): Promise<any[]> {
     const resp = await api.post<any[]>('/api/search/check/batch', items);
     return resp.data;
   },

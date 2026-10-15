@@ -52,19 +52,19 @@ class LrcLibClient:
         def _normalize(s: str) -> str:
             return re.sub(r'[^\w]', '', s).lower() if s else ""
             
-        n_artist = _normalize(artist)
-        n_title = _normalize(title)
-        
-        best_match = None
+        n_artist, n_title, n_album = _normalize(artist), _normalize(title), _normalize(album)
+        matches = []
         for result in results:
             r_artist = _normalize(result.get("artistName", ""))
             r_title = _normalize(result.get("trackName", ""))
-            if (n_artist in r_artist or r_artist in n_artist) and (n_title in r_title or r_title in n_title):
-                best_match = result
-                break
-                
-        if not best_match:
-            best_match = results[0]
+            artist_matches = bool(n_artist and r_artist and n_artist == r_artist)
+            album_matches = bool(n_album and n_album == _normalize(result.get("albumName", "")))
+            if n_title and n_title == r_title and (artist_matches or album_matches):
+                matches.append((artist_matches, album_matches, bool(result.get("syncedLyrics")), result))
+        if not matches:
+            logger.info("No confident lyrics match for '%s - %s'", artist, title)
+            return None, "missing"
+        best_match = max(matches, key=lambda item: item[:3])[3]
 
         if best_match.get("instrumental") is True:
             logger.info(f"LRCLIB identifies '{artist} - {title}' as instrumental")

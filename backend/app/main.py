@@ -148,7 +148,7 @@ async def lifespan(app: FastAPI):
                         ),
                         task_id=f"album:{pa['id']}",
                         task_type="album",
-                        metadata={"download_id": pa['id'], "artist": pa['artist'], "album": pa['album']}
+                        metadata={"download_id": pa['id'], "artist": pa['artist'], "album": pa['album'], "user_id": pa.get("user_id")}
                     )
             for item in await db.list_queued_music_requests():
                 if item["kind"] == "album" and item["download_id"]:
@@ -732,7 +732,7 @@ async def get_status(request: Request = None):
                 except Exception:
                     active_playlists = []
 
-    if not active_playlists and config_manager.is_configured:
+    if not user_cfg and config_manager.is_configured:
         active_playlists = config_manager.config.listenbrainz.active_playlists
 
     latest_run = await db.get_latest_run(user_id=user_id)
@@ -924,7 +924,15 @@ async def list_imported_playlists(request: Request):
                 new_name = fresh.get("name") or item.get("name") or "Spotify playlist"
                 new_art = fresh.get("artwork_url") or item.get("artwork_url") or ""
                 new_desc = fresh.get("description") or item.get("description") or ""
-                new_tracks = fresh.get("tracks") or item.get("tracks") or []
+                # A read may repair provider metadata, but must never undo songs
+                # added/removed in our playlist editor after a server restart.
+                new_tracks = item.get("tracks") or []
+                if item.get("name") and item["name"] != "Spotify playlist":
+                    new_name = item["name"]
+                if item.get("artwork_url"):
+                    new_art = item["artwork_url"]
+                if item.get("description"):
+                    new_desc = item["description"]
                 if (
                     new_name != item.get("name")
                     or new_art != (item.get("artwork_url") or "")
@@ -1096,7 +1104,7 @@ async def get_active_tasks(request: Request):
         })
     return {"tasks": tasks_list}
 
-@app.post("/api/tasks/{task_id}/stop")
+@app.post("/api/tasks/{task_id:path}/stop")
 async def stop_active_task(task_id: str, request: Request):
     """Stop/cancel a running task by its task_id."""
     from backend.app.auth import get_current_user
@@ -1179,8 +1187,8 @@ async def get_track_download_attempts(job_id: int, request: Request):
     """Expose peer/rejection reasons without requiring operators to inspect logs."""
     from backend.app.auth import get_current_user
     user = await get_current_user(request)
-    jobs = await db.list_download_jobs(None if user["is_admin"] else user["id"], limit=500)
-    if not any(item["id"] == job_id for item in jobs):
+    job = await db.get_download_job(job_id, None if user["is_admin"] else user["id"])
+    if not job:
         raise HTTPException(status_code=404, detail="Track download not found.")
     return {"attempts": await db.get_download_attempts(job_id)}
 
@@ -1192,18 +1200,25 @@ async def retry_track_download(job_id: int, request: Request):
     if not config_manager.config:
         raise HTTPException(status_code=400, detail="App is not configured yet.")
     user = await get_current_user(request)
-    jobs = await db.list_download_jobs(None if user["is_admin"] else user["id"], limit=500)
-    job = next((item for item in jobs if item["id"] == job_id), None)
+    job = await db.get_download_job(job_id, None if user["is_admin"] else user["id"])
     if not job:
         raise HTTPException(status_code=404, detail="Track download not found.")
-    if job["status"] in {"queued", "running", "searching", "downloading", "committing"}:
-        raise HTTPException(status_code=409, detail="This download is already active.")
+    if job["status"] not in {"failed", "interrupted"}:
+        raise HTTPException(status_code=409, detail="Only failed or interrupted downloads can be retried.")
     if f"track:retry:{job_id}" in _active_tasks:
         raise HTTPException(status_code=409, detail="A retry for this download is already active.")
+    owner = job.get("user_id") or user["id"]
+    original = json.loads(job.get("request_json") or "{}")
+    options = {key: original[key] for key in (
+        "force", "is_explore", "dest_dir_override", "mbid_album_override", "replace_path_override",
+    ) if key in original}
+    for key in ("dest_dir_override", "replace_path_override"):
+        if options.get(key):
+            await verify_user_access_to_path(owner, options[key])
     _create_tracked_task(
         download_single_track_task(
             job["artist"], job["title"], job["album"], config_manager.config, db,
-            user_id=job.get("user_id") or user["id"],
+            user_id=owner, **options,
         ),
         task_id=f"track:retry:{job_id}", task_type="track",
         metadata={"artist": job["artist"], "title": job["title"], "retry_of": job_id, "user_id": job.get("user_id") or user["id"]},
@@ -1282,23 +1297,18 @@ async def trigger_acoustid_scan(batch_size: Optional[int] = 50, request: Request
     if not config_manager.config.acoustid.api_key or not config_manager.config.acoustid.api_key.strip():
         raise HTTPException(status_code=400, detail="AcoustID API key is not configured in settings.")
         
-    if "acoustid_scan" in _active_tasks:
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user["id"]
+    task_id = f"acoustid_scan:{user_id}"
+    if task_id in _active_tasks:
         raise HTTPException(status_code=400, detail="AcoustID scan is already running.")
-
-    user_id = None
-    if request:
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-        except Exception:
-            pass
 
     _create_tracked_task(
         scan_acoustid_batch_task(batch_size=batch_size, user_id=user_id),
-        task_id="acoustid_scan",
+        task_id=task_id,
         task_type="acoustid_scan",
-        metadata={"batch_size": batch_size}
+        metadata={"batch_size": batch_size, "user_id": user_id}
     )
     return {"status": "success", "message": f"AcoustID scan triggered for a batch of {batch_size} files."}
 
@@ -1376,7 +1386,7 @@ async def get_acoustid_stats(request: Request = None):
         except Exception:
             pass
 
-    is_running = "acoustid_scan" in _active_tasks
+    is_running = f"acoustid_scan:{user_id}" in _active_tasks
 
     failures = await db.get_acoustid_failures(user_id) if user_id else []
     for failure in failures:
@@ -1405,30 +1415,10 @@ async def resolve_user_lb_credentials(request: Request) -> Tuple[str, str, Optio
     Returns (lb_username, lb_token, user_dict) or raises HTTPException.
     """
     from backend.app.auth import get_current_user
-    try:
-        user = await get_current_user(request)
-    except Exception:
-        # Anonymous or unauthenticated request (if any) -> fall back to global config
-        cfg = config_manager.config
-        return cfg.listenbrainz.username, cfg.listenbrainz.token, None
-
-    user_id = user["id"]
-    cfg = config_manager.config
-    
-    user_cfg = await db.get_user_config(user_id)
-    lb_username = ""
-    lb_token = ""
-    if user_cfg:
-        lb_username = user_cfg.get("lb_username") or ""
-        lb_token = user_cfg.get("lb_token") or ""
-        
-    # If the user is an admin, they can fall back to global credentials
-    if user.get("is_admin"):
-        if not lb_username:
-            lb_username = cfg.listenbrainz.username
-        if not lb_token:
-            lb_token = cfg.listenbrainz.token
-            
+    from backend.app.integrations import listenbrainz_credentials
+    user = await get_current_user(request)
+    user_cfg = await db.get_user_config(user["id"])
+    lb_username, lb_token = listenbrainz_credentials(config_manager.config, user, user_cfg)
     return lb_username, lb_token, user
 
 
@@ -1438,7 +1428,7 @@ _feedback_cache_locks: dict[str, asyncio.Lock] = {}
 
 @app.get("/api/playlist/current")
 async def get_current_playlist(source: Optional[str] = None, request: Request = None):
-    """Fetch current playlist from ListenBrainz with iTunes artwork and merge DB status. Uses 12h cache."""
+    """Cache authoritative ListenBrainz metadata and merge this user's run status."""
     global _cached_playlists
     
     if not config_manager.is_configured or not config_manager.config:
@@ -1471,10 +1461,12 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
     # Fetch DB status
     db_tracks_map = {}
     run_to_use = None
-    if sync_module.current_run_id:
+    if (sync_module.current_run_id
+            and sync_module.sync_progress.get("user_id") == user_id
+            and sync_module.sync_progress.get("playlist_source") == source):
         run_to_use = sync_module.current_run_id
     else:
-        latest_run = await db.get_latest_run(source)
+        latest_run = await db.get_latest_run(source, user_id=user_id)
         if latest_run:
             run_to_use = latest_run["id"]
 
@@ -1604,7 +1596,8 @@ async def get_feedback(request: Request, score: Optional[int] = None, count: int
         cache_ready = await db.get_cache(f"feedback_ready_{user_id}", max_age=86400 * 365, allow_stale=True)
         if cached_feedback or cache_ready is not None:
             return {"feedback": cached_feedback, "cached": True}
-        feedback = await refresh_feedback_cache_for_user(user_id, lb_username, lb_token, score, count, offset)
+        await refresh_feedback_cache_for_user(user_id, lb_username, lb_token)
+        feedback = await db.get_feedback_cache(user_id, score=score, count=count, offset=offset)
         return {"feedback": feedback, "cached": False}
 
 async def refresh_feedback_cache_for_user(user_id: str, lb_username: Optional[str] = None,
@@ -1617,8 +1610,11 @@ async def refresh_feedback_cache_for_user(user_id: str, lb_username: Optional[st
         return []
     if not lb_username or not lb_token:
         user_cfg = await db.get_user_config(user_id)
-        lb_username = (user_cfg or {}).get("lb_username") or cfg.listenbrainz.username
-        lb_token = (user_cfg or {}).get("lb_token") or cfg.listenbrainz.token
+        from backend.app.integrations import listenbrainz_credentials
+        user = await db.get_user_by_id(user_id)
+        if not user:
+            return []
+        lb_username, lb_token = listenbrainz_credentials(cfg, user, user_cfg)
     if not lb_username or not lb_token:
         return []
     active_playlists = []
@@ -1683,6 +1679,11 @@ async def refresh_feedback_cache_for_user(user_id: str, lb_username: Optional[st
 async def deezer_search(query: str, type: str = "track"):
     """Proxy request to Deezer public search API."""
     import urllib.parse
+    import hashlib
+    cache_key = "deezer-search-v1:" + hashlib.sha256(f"{type}:{query}".encode()).hexdigest()
+    cached = await db.get_provider_cache(cache_key)
+    if cached is not None:
+        return cached
     if type == "album":
         url = f"https://api.deezer.com/search/album?q={urllib.parse.quote(query)}"
     elif type == "artist":
@@ -1701,6 +1702,8 @@ async def deezer_search(query: str, type: str = "track"):
                     key=lambda item: _deezer_artist_rank(query, item),
                     reverse=True,
                 )
+            if not payload.get("error"):
+                await db.set_provider_cache(cache_key, payload, 86400 if payload.get("data") else 3600)
             return payload
     except Exception as e:
         logger.error(f"Deezer API search failed: {e}")
@@ -1711,6 +1714,8 @@ class BatchCheckItem(BaseModel):
     title: str
     album_id: Optional[str | int] = None
     expected_tracks: Optional[int] = None
+    track_mbid: Optional[str] = None
+    album: Optional[str] = None
 
 def _album_completion_status(track_count: int, expected_tracks: Optional[int] = None) -> str:
     """Only an external release total can certify completion; local tags may be 6/6 of 9."""
@@ -1734,7 +1739,8 @@ def _matching_album_rows(
     """
     return (
         album_norm_map.get((artist_norm, album_norm), [])
-        or album_title_map.get(album_norm, [])
+        or [row for row in album_title_map.get(album_norm, [])
+            if artist_norm and artist_norm in (row.get("artist_norm") or "")]
     )
 
 @app.post("/api/search/check/batch")
@@ -1767,7 +1773,10 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
     clean_art = artists_in_items.pop() if len(artists_in_items) == 1 else None
     
     # 1. Fetch library_index rows in a single DB query
-    db_rows = await db.query_library_index_for_user(user_id, artist_norm=clean_art)
+    # Track artists may differ from the album artist (compilations/features).
+    db_rows = await db.query_library_index_for_user(
+        user_id, artist_norm=clean_art if all(item.album_id for item in items) else None
+    )
 
     # Explore files cache for single track lookups
     playlists_dir = cfg.paths.navidrome_playlists_dir
@@ -1789,7 +1798,8 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
     album_mbid_map: Dict[str, List[Dict[str, Any]]] = {}
     album_norm_map: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     album_title_map: Dict[str, List[Dict[str, Any]]] = {}
-    track_title_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    track_title_map: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    track_mbid_map: Dict[str, List[Dict[str, Any]]] = {}
     
     for row in db_rows:
         a_mbid = row.get("album_mbid")
@@ -1803,8 +1813,12 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
             album_title_map.setdefault(a_norm, []).append(row)
             
         t_norm = row.get("title_norm")
-        if t_norm and art_norm:
-            track_title_map[(art_norm, t_norm)] = row
+        if row.get("track_mbid"):
+            track_mbid_map.setdefault(row["track_mbid"], []).append(row)
+        if t_norm:
+            track_artists = {art_norm, _norm(row.get("artist")), _norm(extract_main_artist(row.get("artist") or ""))}
+            for track_artist in track_artists - {None, ""}:
+                track_title_map.setdefault((track_artist, t_norm), []).append(row)
 
     results = []
     durable_tracklists = await db.get_album_tracklists(user_id)
@@ -1827,9 +1841,10 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
             matched_tracks = album_mbid_map.get(album_id_str, [])
             if matched_tracks:
                 cnt = len(matched_tracks)
-                expected = item.expected_tracks or max(
-                    (int(row.get("total_tracks") or 0) for row in matched_tracks), default=0
+                cached_list = durable_tracklists.get(
+                    (matched_tracks[0].get("artist_norm"), matched_tracks[0].get("album_norm")), {}
                 )
+                expected = item.expected_tracks or cached_list.get("total_tracks") or 0
                 results.append({
                     "artist": item.artist,
                     "title": item.title,
@@ -1856,9 +1871,7 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                 cached_list = durable_tracklists.get(
                     (matched_tracks[0].get("artist_norm"), matched_tracks[0].get("album_norm")), {}
                 )
-                expected = item.expected_tracks or cached_list.get("total_tracks") or max(
-                    (int(row.get("total_tracks") or 0) for row in matched_tracks), default=0
-                )
+                expected = item.expected_tracks or cached_list.get("total_tracks") or 0
                 results.append({
                     "artist": item.artist,
                     "title": item.title,
@@ -1880,32 +1893,40 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
         else:
             # Single track match by artist_norm + title_norm
             track_clean = _norm(item.title)
-            matched_track = track_title_map.get((artist_clean, track_clean))
-            if not matched_track and clean_art and clean_art != artist_clean:
-                matched_track = track_title_map.get((clean_art, track_clean))
+            candidates = track_mbid_map.get(item.track_mbid, []) if item.track_mbid else []
+            if not candidates:
+                candidates = track_title_map.get((artist_clean, track_clean), [])
+                candidates = [row for row in candidates
+                              if (not item.track_mbid or not row.get("track_mbid")
+                                  or row["track_mbid"] == item.track_mbid)
+                              and (not item.album or _norm(row.get("album")) == _norm(item.album))]
+            matched_track = max(candidates, key=lambda row: (
+                (row.get("ext") or "").lower() == "flac", row.get("bit_depth") or 0,
+                row.get("bitrate") or 0, row.get("filepath") or "",
+            ), default=None)
                 
             if matched_track:
                 ext = matched_track.get("ext", "mp3")
                 bitrate = matched_track.get("bitrate", 320)
                 bit_depth = matched_track.get("bit_depth", 16)
-                status = check_quality_status(ext, bitrate, bit_depth, None, cfg)
+                status = check_quality_status(ext, bitrate, bit_depth, matched_track.get("sample_rate") or 0, cfg)
                 results.append({
                     "artist": item.artist,
                     "title": item.title,
                     "exists": True,
                     "quality_status": status,
                     "existing_quality": ext.upper() if ext else None,
-                    "path": matched_track.get("filepath", "")
+                    "path": matched_track.get("filepath", ""),
+                    "location": "library",
                 })
             else:
                 # Fallback: check explore tracks folder
                 matched_explore = None
                 if explore_files:
-                    c_title = _norm(item.title)
-                    c_art = _norm(item.artist)
+                    from backend.app.sync import get_safe_filename
+                    expected_stem = Path(get_safe_filename(item.artist, item.title, ".mp3")).stem
                     for ef in explore_files:
-                        c_ef = _norm(ef.name)
-                        if c_title in c_ef and (c_art in c_ef or not c_art):
+                        if ef.stem.casefold() == expected_stem.casefold():
                             matched_explore = ef
                             break
                 if matched_explore:
@@ -1916,7 +1937,8 @@ async def batch_check_existence(items: List[BatchCheckItem], request: Request):
                         "exists": True,
                         "quality_status": "same",
                         "existing_quality": ext.upper() if ext else None,
-                        "path": str(matched_explore)
+                        "path": str(matched_explore),
+                        "location": "explore",
                     })
                 else:
                     results.append({
@@ -2074,9 +2096,9 @@ async def download_single_track(req: DownloadTrackRequest, request: Request = No
             user_id=user_id,
             is_explore=req.is_explore or False
         ),
-        task_id=f"track:{req.artist}:{req.title}",
+        task_id=f"track:{user_id}:{req.artist}:{req.title}:{req.album}",
         task_type="track",
-        metadata={"artist": req.artist, "title": req.title, "album": req.album}
+        metadata={"artist": req.artist, "title": req.title, "album": req.album, "user_id": user_id}
     )
     return {"status": "success", "message": f"Single track search/download queued for '{req.title}'."}
 
@@ -2515,7 +2537,7 @@ async def grab_single_album(req: GrabAlbumRequest, request: Request = None):
         ),
         task_id=f"album:{download_id}",
         task_type="album",
-        metadata={"download_id": download_id, "artist": req.artist, "album": req.album}
+        metadata={"download_id": download_id, "artist": req.artist, "album": req.album, "user_id": user_id}
     )
     return {"status": "success", "message": f"Grabbed album from peer '{req.username}'."}
 
@@ -2606,9 +2628,9 @@ async def grab_single_track(req: GrabTrackRequest, request: Request = None):
             user_id=user_id,
             is_explore=req.is_explore or False
         ),
-        task_id=f"track:grab:{req.artist}:{req.title}",
+        task_id=f"track:grab:{user_id}:{req.artist}:{req.title}:{req.album}",
         task_type="track",
-        metadata={"artist": req.artist, "title": req.title, "album": req.album}
+        metadata={"artist": req.artist, "title": req.title, "album": req.album, "user_id": user_id}
     )
     return {"status": "success", "message": f"Grabbed single track '{req.title}' from peer '{req.username}'."}
 
@@ -2646,9 +2668,9 @@ async def download_missing_tracks(req: DownloadMissingTracksRequest, request: Re
                 force=True,
                 user_id=user_id
             ),
-            task_id=f"track:{req.artist}:{track.title}",
+            task_id=f"track:{user_id}:{req.artist}:{track.title}:{req.album}",
             task_type="track",
-            metadata={"artist": req.artist, "title": track.title, "album": req.album}
+            metadata={"artist": req.artist, "title": track.title, "album": req.album, "user_id": user_id}
         )
         
     return {"status": "success", "message": f"Queued {len(req.missing_tracks)} missing tracks for download."}
@@ -3131,6 +3153,7 @@ class LikeRequest(BaseModel):
     title: str
     album: str
     score: int = 1
+    mbid: Optional[str] = None
 
 @app.post("/api/playlist/like")
 async def like_track(req: LikeRequest, request: Request = None):
@@ -3183,8 +3206,8 @@ async def like_track(req: LikeRequest, request: Request = None):
     lb_success = False
     lb_message = ""
     try:
-        mbid = getattr(req, "mbid", None) or None
-        lb_success = await lb_client.submit_feedback(req.artist, req.title, req.score, mbid=mbid)
+        mbid = req.mbid or await lb_client.resolve_recording_mbid(req.artist, req.title)
+        lb_success = bool(mbid) and await lb_client.submit_feedback(req.artist, req.title, req.score, mbid=mbid)
         if lb_success:
             lb_message = "Feedback submitted to ListenBrainz."
             await db.upsert_feedback_cache(user_id, {
@@ -3207,12 +3230,12 @@ async def like_track(req: LikeRequest, request: Request = None):
                 download_album_task(download_id, req.artist, req.title, req.album, cfg, db, user_id=user_id),
                 task_id=f"album:{download_id}",
                 task_type="album",
-                metadata={"download_id": download_id, "artist": req.artist, "album": req.album}
+                metadata={"download_id": download_id, "artist": req.artist, "album": req.album, "user_id": user_id}
             )
             msg = "Love noted and album download queued."
             if not lb_success:
                 msg += f" (Warning: {lb_message})"
-            return {"status": "success", "message": msg}
+            return {"status": "success", "message": msg, "feedback_submitted": lb_success}
         except Exception as e:
             logger.error(f"Error queuing album download: {e}")
             raise HTTPException(status_code=500, detail=f"Album download could not be queued: {e}")
@@ -5770,9 +5793,9 @@ async def fix_maintenance(req: FixIssueRequest, request: Request):
                         force=True,
                         user_id=user_id
                     ),
-                    task_id=f"track:{artist}:{title}",
+                    task_id=f"track:{user_id}:{artist}:{title}:{album}",
                     task_type="track",
-                    metadata={"artist": artist, "title": title, "album": album}
+                    metadata={"artist": artist, "title": title, "album": album, "user_id": user_id}
                 )
                 return {"status": "success", "message": f"Deleted mismatched file and queued redownload for '{artist} - {title}'."}
             else:
@@ -7346,7 +7369,10 @@ async def resolve_duplicates_endpoint(req: ResolveDuplicatesRequest, request: Re
         music_dir = Path(user_row["music_dir"]).resolve()
         
     deleted_count, errors = await asyncio.to_thread(_resolve_duplicates_sync, req.paths_to_delete, music_dir)
-    await db.invalidate_library_paths(user_id, req.paths_to_delete)
+    failed_paths = {item["path"] for item in errors}
+    deleted_paths = [path for path in req.paths_to_delete if path not in failed_paths]
+    await db.invalidate_library_paths(user_id, deleted_paths)
+    await db.invalidate_user_caches(user_id)
             
     await trigger_navidrome_scan_debounced()
     return {"status": "success", "deleted_count": deleted_count, "errors": errors}
@@ -7374,16 +7400,13 @@ async def get_stats_summary_endpoint(request: Request):
     user_cfg = await db.get_user_config(user_id)
     lb_username = user_cfg.get("lb_username") if user_cfg else ""
     
-    from backend.app.clients.navidrome import NavidromeClient
-    nav_client = NavidromeClient(
-        url=config_manager.config.navidrome.url,
-        username=config_manager.config.navidrome.username,
-        password=config_manager.config.navidrome.password,
-        timeout=15
-    )
-    
-    history = await nav_client.get_history()
-    top_albums = await nav_client.get_top_albums()
+    from backend.app.integrations import navidrome_client_for_user
+    user_row = await db.get_user_by_id(user_id)
+    nav_client = navidrome_client_for_user(config_manager.config, user_row or {})
+    # getNowPlaying is a snapshot, not play history. Never derive listening
+    # counts/heatmaps from it or show an administrator's listening data.
+    history = []
+    top_albums = await nav_client.get_top_albums() if nav_client else []
     
     top_artists = {}
     top_tracks = {}
@@ -7428,7 +7451,7 @@ async def get_stats_summary_endpoint(request: Request):
         except Exception as e:
             logger.warning(f"Failed to fetch ListenBrainz stats: {e}")
     total_tracks_count = 0
-    listened_count = 0
+    listened_count = None
     try:
         user_row = await db.get_user_by_id(user_id)
         music_dir = Path(config_manager.config.paths.music_dir).resolve()
@@ -7437,13 +7460,13 @@ async def get_stats_summary_endpoint(request: Request):
         
         total_tracks_count = await asyncio.to_thread(_count_library_tracks_sync, music_dir)
                         
-        unique_played = len(top_tracks)
-        listened_count = min(unique_played, total_tracks_count)
     except Exception:
         pass
         
     return {
         "navidrome_history": {
+            "available": False,
+            "message": "Historical listening statistics are not available from the now-playing endpoint.",
             "top_artists": sorted_artists,
             "top_tracks": sorted_tracks,
             "top_albums": top_albums,
@@ -7454,7 +7477,7 @@ async def get_stats_summary_endpoint(request: Request):
         "library_stats": {
             "total_tracks": total_tracks_count,
             "listened_tracks": listened_count,
-            "discovery_rate": round(listened_count / total_tracks_count * 100, 2) if total_tracks_count > 0 else 0.0
+            "discovery_rate": None,
         }
     }
 
@@ -7977,7 +8000,7 @@ async def retag_library_musicbrainz(req: RetageRequest, request: Request):
     user = await get_current_user(request)
     user_id = user["id"]
 
-    if "retag_scan" in _active_tasks:
+    if f"retag_scan:{user_id}" in _active_tasks:
         raise HTTPException(status_code=400, detail="A re-tag operation is already running.")
 
     cfg = config_manager.config
@@ -8090,7 +8113,7 @@ async def retag_library_musicbrainz(req: RetageRequest, request: Request):
             "errors": len(errors),
             "dry_run": req.dry_run,
         }
-        await db.set_cache("retag_last_summary", summary)
+        await db.set_cache(f"retag_last_summary_{user_id}", summary)
         if not req.dry_run:
             await db.refresh_library_paths(
                 user_id, [item["path"] for item in results if item.get("applied")]
@@ -8101,23 +8124,25 @@ async def retag_library_musicbrainz(req: RetageRequest, request: Request):
         # Run synchronously for small batches / dry runs and return results directly
         # For full library async, use tracked task
         await _retag_task()
-        cached_summary = await db.get_cache("retag_last_summary")
+        cached_summary = await db.get_cache(f"retag_last_summary_{user_id}")
         return {"status": "success", "summary": cached_summary}
     else:
         _create_tracked_task(
             _retag_task(),
-            task_id="retag_scan",
+            task_id=f"retag_scan:{user_id}",
             task_type="retag_scan",
-            metadata={"update_cover": req.update_cover}
+            metadata={"update_cover": req.update_cover, "user_id": user_id}
         )
         return {"status": "started", "message": "MusicBrainz re-tag task started for entire library."}
 
 
 @app.get("/api/library/retag/status")
-async def get_retag_status():
+async def get_retag_status(request: Request):
     """Get the status of the last / running re-tag operation."""
-    is_running = "retag_scan" in _active_tasks
-    summary = await db.get_cache("retag_last_summary")
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    is_running = f"retag_scan:{user['id']}" in _active_tasks
+    summary = await db.get_cache(f"retag_last_summary_{user['id']}")
     return {"running": is_running, "last_summary": summary}
 
 
