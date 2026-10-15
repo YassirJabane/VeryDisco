@@ -36,6 +36,7 @@ Il contesto originale dei job precedenti alla nuova colonna non è ricostruibile
 
 - Le ultime otto Actions prima di queste modifiche risultano completate con successo; l'ultima è [run 38750546105](https://github.com/YassirJabane/VeryDisco/actions/runs/38750546105), SHA `0af14a7`.
 - Aggiunto job `container-smoke`: costruzione dell'immagine di produzione e verifica avvio non-root, SQLite, frontend, protezione API e fpcalc. Pubblicazione condizionata sia ai test sia a questo job. Verifica di bootstrap, non simulazione dei servizi esterni.
+- Primo run del nuovo job: immagine costruita e test applicativi passati, ma la sonda HTTP ha incontrato un reset della connessione prima che Uvicorn fosse pronto. Corretta l'attesa per ritentare anche questi errori transitori, con timeout complessivo limitato; il gate resta obbligatorio.
 - Aggiunta serializzazione dei workflow per ref per evitare corse fra pubblicazioni beta. Tag stabili limitati a `vMAJOR.MINOR.PATCH` e commit contenuti in main.
 - `.dockerignore` esclude librerie musicali, download, configurazione privata, database, virtualenv e node_modules dal contesto di build.
 - APScheduler vincolato a `<4`, coerentemente con l'API 3.x importata dal codice.

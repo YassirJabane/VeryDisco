@@ -45,7 +45,7 @@ jobs:
       - name: Check clean startup and production runtime
         run: |
           docker run --detach --name verydisco-smoke --publish 127.0.0.1:18086:8080 verydisco:smoke
-          curl --fail --silent --show-error --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:18086/healthz
+          curl --fail --silent --show-error --max-time 10 --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 http://127.0.0.1:18086/healthz
           docker exec verydisco-smoke python /app/scripts/container_smoke.py
           docker exec verydisco-smoke fpcalc -version
       - name: Container diagnostics and cleanup
