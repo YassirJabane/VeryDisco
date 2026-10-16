@@ -1364,7 +1364,7 @@ class Database:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_acoustid_candidates(self, user_id: str, limit: int = 50) -> list:
+    async def get_acoustid_candidates(self, user_id: str, limit: int = 50, retry_failed: bool = False) -> list:
         sql = """
             SELECT li.filepath, li.size, li.mtime_ns
             FROM library_index li LEFT JOIN acoustid_results ar ON ar.file_path = li.filepath
@@ -1372,6 +1372,13 @@ class Database:
                 ar.file_path IS NULL OR ar.size != li.size OR ar.mtime_ns != li.mtime_ns
             ) ORDER BY li.filepath
         """
+        if retry_failed:
+            sql = """
+                SELECT li.filepath, li.size, li.mtime_ns
+                FROM library_index li JOIN acoustid_results ar ON ar.file_path = li.filepath
+                WHERE li.user_id = ? AND (ar.status != 'verified' OR ar.reason LIKE 'Skipped:%')
+                ORDER BY ar.scanned_at, li.filepath
+            """
         params: tuple[Any, ...] = (user_id,)
         if limit > 0:
             sql += " LIMIT ?"
@@ -1388,11 +1395,11 @@ class Database:
     async def get_acoustid_failures(self, user_id: str) -> list:
         async with self.get_db() as conn:
             async with conn.execute("""
-                SELECT ar.file_path, ar.reason, ar.scanned_at,
+                SELECT ar.file_path, ar.reason, ar.scanned_at, ar.status,
                        li.artist, li.title, li.album
                 FROM acoustid_results ar
                 JOIN library_index li ON li.filepath = ar.file_path
-                WHERE li.user_id = ? AND ar.status = 'failed'
+                WHERE li.user_id = ? AND (ar.status != 'verified' OR ar.reason LIKE 'Skipped:%')
                 ORDER BY ar.scanned_at DESC, ar.file_path
             """, (user_id,)) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]

@@ -72,6 +72,9 @@ async def test_retry_preserves_explore_and_replacement_context(audit_app, test_d
 
     def capture(coro, **kwargs):
         captured.update(coro.cr_frame.f_locals)
+        if "function" in captured and "args" in captured:
+            import inspect
+            captured.update(inspect.signature(captured["function"]).bind(*captured["args"], **captured["kwargs"]).arguments)
         coro.close()
 
     monkeypatch.setattr(audit_app, "_create_tracked_task", capture)

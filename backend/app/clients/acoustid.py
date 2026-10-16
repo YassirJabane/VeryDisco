@@ -1,24 +1,43 @@
 import json
 import logging
 import subprocess
+import asyncio
+import time
 from pathlib import Path
 from typing import Optional, List, Tuple
 import httpx
 
 logger = logging.getLogger(__name__)
+_lookup_lock = asyncio.Lock()
+_last_lookup = 0.0
+
+
+def verification_status(is_valid: bool, reason: str, stored_status: str = "") -> str:
+    """Classify both new results and historical bool/reason database rows."""
+    text = (reason or "").lower()
+    if stored_status in {"unknown", "unavailable", "skipped", "mismatch"}:
+        return stored_status
+    if "api unavailable" in text or "unexpected error" in text:
+        return "unavailable"
+    if "no match found" in text or "insufficient" in text:
+        return "unknown"
+    if text.startswith("skipped:") or "not configured" in text:
+        return "skipped"
+    return "verified" if is_valid else "mismatch"
 
 class AcoustIDClient:
     def __init__(self):
         self.base_url = "https://api.acoustid.org/v2/lookup"
         self._fpcalc_checked = False
         self._fpcalc_ok = False
+        self._fpcalc_lock = asyncio.Lock()
 
     def _check_fpcalc(self):
         if self._fpcalc_checked:
             return
         self._fpcalc_checked = True
         try:
-            result = subprocess.run(["fpcalc", "-version"], capture_output=True, text=True, check=True)
+            result = subprocess.run(["fpcalc", "-version"], capture_output=True, text=True, check=True, timeout=10)
             logger.debug(f"fpcalc found: {result.stdout.strip()}")
             self._fpcalc_ok = True
         except Exception as e:
@@ -27,23 +46,29 @@ class AcoustIDClient:
 
     def get_api_key(self) -> Optional[str]:
         from backend.app.main import config_manager
-        key = config_manager.config.acoustid.api_key
-        return key if key and key.strip() else None
+        key = config_manager.config.acoustid.api_key if config_manager.config else ""
+        return key.strip() if key and key.strip() else None
 
     async def generate_fingerprint(self, file_path: Path) -> Optional[dict]:
         """Runs fpcalc to generate the audio fingerprint."""
-        self._check_fpcalc()
+        async with self._fpcalc_lock:
+            await asyncio.to_thread(self._check_fpcalc)
         if not self._fpcalc_ok:
             return None
         try:
-            # We run it in a thread since subprocess is blocking
-            import asyncio
+            # Fingerprint generation is bounded and does not block the event loop.
             process = await asyncio.create_subprocess_exec(
                 "fpcalc", "-json", str(file_path),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE
             )
-            stdout, stderr = await process.communicate()
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                if process.returncode is None:
+                    process.kill()
+                    await process.communicate()
+                raise
             if process.returncode != 0:
                 logger.error(f"fpcalc failed for {file_path}: {stderr.decode()}")
                 return None
@@ -52,9 +77,9 @@ class AcoustIDClient:
             logger.error(f"Error generating fingerprint for {file_path}: {e}")
             return None
 
-    async def lookup_fingerprint(self, fingerprint: str, duration: int, meta: str = "recordingids") -> Optional[dict]:
+    async def lookup_fingerprint(self, fingerprint: str, duration: int, meta: str = "recordingids", api_key: Optional[str] = None) -> Optional[dict]:
         """Looks up the fingerprint and returns the raw AcoustID response dict."""
-        api_key = self.get_api_key()
+        api_key = api_key.strip() if api_key else self.get_api_key()
         if not api_key:
             return None
 
@@ -65,25 +90,51 @@ class AcoustIDClient:
             "fingerprint": fingerprint
         }
 
-        try:
-            from backend.app.clients.http_client import get_http_client
-            client = await get_http_client()
-            response = await client.post(self.base_url, data=params)
-            response.raise_for_status()
-            data = response.json()
-            if data.get("status") == "ok":
-                return data
-            else:
-                logger.warning(f"AcoustID API error: {data.get('error', 'Unknown')}")
-                return None
-        except Exception as e:
-            logger.error(f"AcoustID lookup failed: {e}")
-            return None
+        global _last_lookup
+        from backend.app.clients.http_client import get_http_client
+        client = await get_http_client()
+        failure = "Unknown API error"
+        for attempt in range(3):
+            retryable = True
+            delay = 1.0 * (2 ** attempt)
+            try:
+                # Shared by scans and all downloads: at most two calls/second.
+                async with _lookup_lock:
+                    await asyncio.sleep(max(0, .5 - (time.monotonic() - _last_lookup)))
+                    _last_lookup = time.monotonic()
+                    response = await client.post(self.base_url, data=params, timeout=20)
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, dict):
+                    raise ValueError("Invalid JSON response shape")
+                if data.get("status") == "ok":
+                    if not isinstance(data.get("results"), list):
+                        raise ValueError("Missing results in successful response")
+                    return data
+                error = data.get("error") or {}
+                failure = str(error.get("message") or "API rejected the lookup") if isinstance(error, dict) else str(error)
+                retryable = any(word in failure.lower() for word in ("internal", "temporar", "limit", "timeout", "unavailable"))
+            except httpx.HTTPStatusError as exc:
+                failure = f"HTTP {exc.response.status_code}"
+                retryable = exc.response.status_code in (408, 429) or exc.response.status_code >= 500
+                retry_after = exc.response.headers.get("Retry-After", "")
+                try:
+                    delay = max(delay, float(retry_after))
+                except ValueError:
+                    pass
+            except (httpx.TransportError, ValueError) as exc:
+                failure = type(exc).__name__
+            if not retryable or attempt == 2 or delay > 30:
+                break
+            logger.warning("AcoustID lookup unavailable (%s); retry %s/3 in %.1fs", failure, attempt + 2, delay)
+            await asyncio.sleep(delay)
+        logger.warning("AcoustID lookup unavailable after attempts: %s", failure)
+        return {"status": "error", "error": {"message": failure}}
 
     async def lookup_mbids(self, fingerprint: str, duration: int) -> List[str]:
         """Looks up the fingerprint and returns a list of recording MBIDs."""
         data = await self.lookup_fingerprint(fingerprint, duration, "recordings artists releasegroups")
-        if not data:
+        if not data or data.get("status") == "error":
             return []
         
         mbids = set()
@@ -132,7 +183,8 @@ class AcoustIDClient:
         self,
         file_path: Path,
         expected_artist: Optional[str] = None,
-        expected_title: Optional[str] = None
+        expected_title: Optional[str] = None,
+        expected_mbid: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Verifies if the track fingerprint matches the expected or embedded metadata.
@@ -145,18 +197,19 @@ class AcoustIDClient:
         # 1. Read metadata from file or fallback to expected metadata
         tagged_artist = expected_artist
         tagged_title = expected_title
-        tagged_mbid = None
+        # Never trust peer-supplied ID tags over explicitly requested metadata.
+        tagged_mbid = expected_mbid
 
         if not tagged_artist or not tagged_title:
             from backend.app.main import read_basic_tags
             try:
-                meta = read_basic_tags(file_path)
+                meta = read_basic_tags(file_path, allow_path_fallback=False)
                 tagged_artist = tagged_artist or meta.get("artist")
                 tagged_title = tagged_title or meta.get("title")
             except Exception:
                 pass
 
-        if not tagged_mbid:
+        if not tagged_mbid and expected_artist is None and expected_title is None:
             tagged_mbid = self.read_musicbrainz_recording_id(file_path)
 
         # 2. Generate fingerprint
@@ -165,11 +218,17 @@ class AcoustIDClient:
             return True, "Skipped: Failed to generate audio fingerprint (check if fpcalc is installed)"
 
         # 3. Lookup with recordings metadata
-        data = await self.lookup_fingerprint(fp_data["fingerprint"], fp_data["duration"], "recordings artists releasegroups")
-        if not data or not data.get("results"):
+        data = await self.lookup_fingerprint(fp_data["fingerprint"], fp_data["duration"], "recordings releasegroups")
+        if not data or data.get("status") == "error":
+            error = (data or {}).get("error") or {}
+            message = error.get("message", "No API response") if isinstance(error, dict) else str(error)
+            return False, f"AcoustID API unavailable: {message}"
+        if not data.get("results"):
             return False, "No match found in AcoustID database"
 
         results = data.get("results", [])
+        logger.info("AcoustID lookup: %s results, best score %.6f, expected recording %s",
+                    len(results), max((float(r.get("score") or 0) for r in results), default=0), tagged_mbid or "not available")
 
         # Check if there is any actual non-empty metadata in the results to compare against
         has_any_valid_metadata = False
@@ -182,9 +241,6 @@ class AcoustIDClient:
                 if has_any_valid_metadata:
                     break
 
-        if not has_any_valid_metadata:
-            return False, "No match found in AcoustID database"
-
         # 4. If we have a tagged MBID, check if it matches AcoustID
         if tagged_mbid:
             for result in results:
@@ -193,6 +249,11 @@ class AcoustIDClient:
                         if rec.get("id") == tagged_mbid:
                             logger.info(f"[AcoustID] Track: '{tagged_title}' — Generated MBID: {tagged_mbid} | Expected MBID: {tagged_mbid} | Match: True")
                             return True, f"Verified by MusicBrainz Recording ID match ({tagged_mbid})"
+
+        if not has_any_valid_metadata:
+            return False, "No match found: insufficient AcoustID score or recording metadata"
+        if not tagged_artist or not tagged_title:
+            return False, "Insufficient local artist/title metadata for verification"
 
         # 5. Fallback: string matching
         import re
@@ -230,6 +291,20 @@ class AcoustIDClient:
             artist_aliases.append(tagged_artist.replace("$", "S"))
 
         norm_aliases = list({norm(a) for a in artist_aliases if norm(a)})
+        from backend.app.artist_identity import current_artist_aliases
+        identity = current_artist_aliases()
+        if identity:
+            if not identity.names_for(tagged_artist or "") and not any(
+                norm(artist.get("name", "")) == norm(tagged_artist)
+                for result in results if float(result.get("score") or 0) >= .6
+                for recording in result.get("recordings", []) for artist in recording.get("artists", [])
+            ):
+                await identity.ingest({"artist-credit": [
+                    {"name": artist.get("name"), "artist": dict(artist)}
+                    for result in results[:3] if float(result.get("score") or 0) >= .6
+                    for recording in result.get("recordings", []) for artist in recording.get("artists", [])
+                ]})
+            norm_aliases.extend(norm(name) for name in identity.names_for(tagged_artist or ""))
         # AcoustID/MusicBrainz returns joint credits as separate artist entities,
         # while our expected credit can be a display string such as
         # "Drake & 21 Savage feat. Travis Scott". Only compare the complete
@@ -261,6 +336,8 @@ class AcoustIDClient:
 
         for result in results:
             score = float(result.get("score") or 0.01)
+            if score < 0.6:
+                continue
 
             for rec in result.get("recordings", []):
                 rec_title = norm(rec.get("title", ""))
@@ -278,6 +355,8 @@ class AcoustIDClient:
                     else:
                         for art in rec_artists:
                             art_name = art.get("name", "")
+                            if identity and identity.ids_for(tagged_artist or "") and art.get("id") and not identity.same_artist(tagged_artist or "", art_name, art["id"]):
+                                continue
                             art_candidates = [art_name]
                             rec_backing = re.search(r"(?i)^(.+?)\s+(?:and|&)\s+the\s+", art_name or "")
                             if rec_backing:
@@ -290,7 +369,8 @@ class AcoustIDClient:
                                 art_candidates.append(art_name.replace("$", "s"))
                             for cand in art_candidates:
                                 rec_art = norm(cand)
-                                if rec_art and any(alias == rec_art for alias in norm_aliases if alias):
+                                same_identity = identity and identity.same_artist(tagged_artist or "", cand, art.get("id"))
+                                if same_identity or (rec_art and any(alias == rec_art for alias in norm_aliases if alias)):
                                     artist_match = True
                                     break
                             if artist_match:
@@ -307,8 +387,11 @@ class AcoustIDClient:
                                     norm(art.get("name", "")) for art in rec_artists
                                 ]
                                 expected_idx = 0
-                                for recording_part in recording_parts:
-                                    if recording_part == expected_credit_parts[expected_idx]:
+                                for recording_part, credited in zip(recording_parts, rec_artists):
+                                    same_identity = identity and identity.same_artist(
+                                        expected_credit_parts[expected_idx], credited.get("name", ""), credited.get("id")
+                                    )
+                                    if recording_part == expected_credit_parts[expected_idx] or same_identity:
                                         expected_idx += 1
                                         if expected_idx == len(expected_credit_parts):
                                             artist_match = True
@@ -355,30 +438,13 @@ class AcoustIDClient:
         Returns True if the track matches the expected MBID, or if AcoustID matches the track metadata.
         Returns False ONLY if AcoustID successfully checked and fingerprint belongs to a different track.
         """
-        api_key = self.get_api_key()
-        if not api_key:
-            return True # Opt-out/skip
-
-        fp_data = await self.generate_fingerprint(file_path)
-        if not fp_data or "fingerprint" not in fp_data or "duration" not in fp_data:
-            logger.warning(f"Could not generate fingerprint for {file_path}. Skipping acoustID check.")
-            return True
-
-        mbids = await self.lookup_mbids(fp_data["fingerprint"], fp_data["duration"])
-        if not mbids:
-            logger.info(f"AcoustID returned no matches for {file_path}. Allowing track.")
-            return True
-
-        if expected_mbid in mbids:
-            logger.info(f"AcoustID VERIFIED: {file_path} matches expected MBID {expected_mbid}.")
-            return True
-
-        # Fallback: check metadata matching (handles album vs single vs remaster MBIDs)
+        # Generate/lookup once, then compare identity and text against that response.
         is_valid, reason = await self.verify_track_against_metadata(
-            file_path, expected_artist=expected_artist, expected_title=expected_title
+            file_path, expected_artist=expected_artist, expected_title=expected_title,
+            expected_mbid=expected_mbid,
         )
-        if is_valid or "No match found" in reason or "not configured" in reason:
-            logger.info(f"AcoustID metadata verification passed for {file_path}: {reason}")
+        if verification_status(is_valid, reason) != "mismatch":
+            logger.info("AcoustID result for %s: %s", file_path, reason)
             return True
 
         logger.warning(f"AcoustID MISMATCH: {file_path} - {reason}")

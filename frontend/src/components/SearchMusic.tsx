@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { 
   Box, Card, CardContent, Typography, TextField, FormControl, 
   InputLabel, Select, MenuItem, Button, Grid, CircularProgress, 
-  List, ListItem, ListItemAvatar, ListItemText, Avatar, Chip, 
+  List, ListItem, ListItemAvatar, ListItemText, Chip,
   Tooltip, IconButton, useTheme, Dialog, DialogTitle, DialogContent, DialogActions,
   Collapse, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper
 } from '@mui/material';
 import MusicIcon from '@mui/icons-material/LibraryMusic';
+import Avatar from './ThumbnailAvatar';
 import DownloadIcon from '@mui/icons-material/CloudDownload';
 import AlbumIcon from '@mui/icons-material/FolderZip';
 import ExistIcon from '@mui/icons-material/CheckCircle';

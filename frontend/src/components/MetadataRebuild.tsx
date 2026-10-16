@@ -5,6 +5,7 @@ import {
   Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, TextField, Typography,
 } from '@mui/material';
 import RebuildIcon from '@mui/icons-material/AutoFixHigh';
+import { thumbnailUrl } from '../thumbnail';
 import ExpandIcon from '@mui/icons-material/ExpandMore';
 import RestoreIcon from '@mui/icons-material/Restore';
 import ScanIcon from '@mui/icons-material/Search';
@@ -188,7 +189,7 @@ const MetadataRebuild: React.FC = () => {
             </AccordionSummary>
             <AccordionDetails>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} mb={2}>
-                {release?.artwork_url && <Stack spacing={.5}><Box component="img" src={release.artwork_url} alt="MusicBrainz cover preview" sx={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 2, bgcolor: 'action.hover' }} /><Typography variant="caption" color="text.secondary">Selected MusicBrainz release artwork comes first. Verified digital artwork is only a fallback when enabled.</Typography></Stack>}
+                {release?.artwork_url && <Stack spacing={.5}><Box component="img" src={thumbnailUrl(release.artwork_url)} loading="lazy" decoding="async" alt="MusicBrainz cover preview" sx={{ width: 150, height: 150, objectFit: 'cover', borderRadius: 2, bgcolor: 'action.hover' }} /><Typography variant="caption" color="text.secondary">Selected MusicBrainz release artwork comes first. Verified digital artwork is only a fallback when enabled.</Typography></Stack>}
                 <Box flex={1}>
                   <Typography variant="subtitle2" mb={1}>Selected MusicBrainz release</Typography>
                   <Select size="small" fullWidth value={release?.release_mbid || ''} displayEmpty

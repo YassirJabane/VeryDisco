@@ -197,11 +197,13 @@ export interface AcoustidStats {
   scanned: number;
   verified: number;
   failed: number;
+  inconclusive?: number;
   remaining: number;
   running: boolean;
   failures: Array<{
     file_path: string; reason: string; scanned_at: string;
     artist: string; title: string; album: string; suggestion: string;
+    status?: 'verified' | 'mismatch' | 'unknown' | 'unavailable' | 'skipped';
   }>;
 }
 
@@ -737,8 +739,13 @@ export const apiService = {
     return resp.data;
   },
 
-  async acoustidScan(batchSize: number = 50): Promise<{ status: string; message: string }> {
-    const resp = await api.post<{ status: string; message: string }>(`/api/acoustid/scan?batch_size=${batchSize}`);
+  async acoustidScan(batchSize: number = 50, retryFailed: boolean = false): Promise<{ status: string; message: string }> {
+    const resp = await api.post<{ status: string; message: string }>(`/api/acoustid/scan?batch_size=${batchSize}&retry_failed=${retryFailed}`);
+    return resp.data;
+  },
+
+  async recheckAcoustid(filePath: string): Promise<{ status: string; reason: string }> {
+    const resp = await api.post('/api/acoustid/recheck', { file_path: filePath });
     return resp.data;
   },
 

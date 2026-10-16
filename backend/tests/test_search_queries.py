@@ -181,7 +181,7 @@ def test_acoustid_accepts_secondary_result_matching_expected_artist_and_title(mo
                     ],
                 },
                 {
-                    "score": 0.52,
+                    "score": 0.62,
                     "recordings": [
                         {"id": "mbid-2", "title": "Sally", "artists": [{"name": "Vasco Rossi"}]}
                     ],

@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { 
   Box, Card, CardContent, Typography, CircularProgress, 
-  List, ListItem, ListItemAvatar, ListItemText, Avatar, 
+  List, ListItem, ListItemAvatar, ListItemText,
   Chip, Tooltip, IconButton, useTheme, Tabs, Tab, Button,
   LinearProgress, Grid, Alert, Dialog, DialogTitle, DialogContent, 
   DialogActions, Table, TableBody, TableCell, TableContainer, 
   TableHead, TableRow, Paper
 } from '@mui/material';
 import MusicIcon from '@mui/icons-material/LibraryMusic';
+import Avatar from './ThumbnailAvatar';
 import FavoriteIcon from '@mui/icons-material/Favorite';
 import FavoriteBorderIcon from '@mui/icons-material/FavoriteBorder';
 import HeartBrokenIcon from '@mui/icons-material/HeartBroken';
@@ -478,6 +479,7 @@ export const Explore: React.FC = () => {
                         <Avatar 
                           variant="rounded" 
                           src={track.cover_url || track.artwork || track.cover_medium || track.image_url || track.cover_small} 
+                          track={track}
                           sx={{ width: 64, height: 64, mr: 2, boxShadow: '0 4px 10px rgba(0,0,0,0.15)' }}
                         >
                           <MusicIcon />

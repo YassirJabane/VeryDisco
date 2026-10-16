@@ -308,17 +308,16 @@ class AcoustIDRecordingVerifier:
             if process.returncode != 0:
                 return {"status": "unavailable", "reason": "fpcalc failed"}
             fingerprint = json.loads(stdout.decode("utf-8"))
-            client = await get_http_client()
-            response = await client.post("https://api.acoustid.org/v2/lookup", data={
-                "client": api_key,
-                "meta": "recordingids",
-                "duration": int(fingerprint["duration"]),
-                "fingerprint": fingerprint["fingerprint"],
-            })
-            response.raise_for_status()
+            from backend.app.clients.acoustid import acoustid_client
+            data = await acoustid_client.lookup_fingerprint(
+                fingerprint["fingerprint"], int(fingerprint["duration"]),
+                "recordingids", api_key=api_key,
+            )
+            if not data or data.get("status") != "ok":
+                return {"status": "unavailable", "reason": "AcoustID API unavailable after retries"}
             mbids = {
                 recording.get("id")
-                for result in response.json().get("results", [])
+                for result in data.get("results", [])
                 if float(result.get("score", 0)) >= 0.6
                 for recording in result.get("recordings", [])
                 if recording.get("id")

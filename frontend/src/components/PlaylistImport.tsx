@@ -1,7 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import {
   Alert,
-  Avatar,
   Box,
   Button,
   Card,
@@ -33,6 +32,7 @@ import {
   useTheme,
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import Avatar from './ThumbnailAvatar';
 import DeleteIcon from '@mui/icons-material/Delete';
 import DownloadIcon from '@mui/icons-material/Download';
 import EditIcon from '@mui/icons-material/Edit';
@@ -434,7 +434,7 @@ const PlaylistImport: React.FC = () => {
               <Stack direction="row" spacing={2.5} alignItems="center">
                 {previewData.artwork_url && (
                   <Avatar
-                    src={previewData.artwork_url}
+                    src={previewData.thumbnail_url || previewData.artwork_url}
                     variant="rounded"
                     sx={{ width: 92, height: 92, boxShadow: '0 4px 12px rgba(0,0,0,0.15)' }}
                   />
@@ -605,7 +605,7 @@ const PlaylistImport: React.FC = () => {
                     >
                       <ListItemAvatar>
                         <Avatar
-                          src={item.artwork_url}
+                          src={item.thumbnail_url || item.artwork_url}
                           variant="rounded"
                           sx={{ width: 56, height: 56, mr: 1, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' }}
                         />
@@ -724,7 +724,7 @@ const PlaylistImport: React.FC = () => {
             </Typography>
             <Stack direction="row" spacing={2.5} alignItems="center">
               <Avatar
-                src={editing.artwork_url}
+                src={editing.thumbnail_url || editing.artwork_url}
                 variant="rounded"
                 sx={{ width: 80, height: 80, boxShadow: '0 2px 8px rgba(0,0,0,0.15)' }}
               />
@@ -744,7 +744,7 @@ const PlaylistImport: React.FC = () => {
             <TextField
               label="Artwork URL"
               value={editing.artwork_url || ''}
-              onChange={e => setEditing({ ...editing, artwork_url: e.target.value })}
+              onChange={e => setEditing({ ...editing, artwork_url: e.target.value, thumbnail_url: '' })}
               fullWidth
             />
 

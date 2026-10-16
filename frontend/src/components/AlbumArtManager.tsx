@@ -258,6 +258,8 @@ const AlbumArtManager: React.FC = () => {
                     <Box sx={{ position: 'relative', width: '100%', pt: '100%', bgcolor: 'grey.900' }}>
                       <img
                         src={c.thumbnail || c.url}
+                        loading="lazy"
+                        decoding="async"
                         alt="cover art"
                         style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', objectFit: 'cover' }}
                       />

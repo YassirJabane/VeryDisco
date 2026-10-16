@@ -2,11 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { 
   Box, Card, CardContent, Typography, Grid, Button, IconButton, 
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, 
-  CircularProgress, Avatar, Tooltip, CardActionArea, Divider, Chip,
+  CircularProgress, Tooltip, CardActionArea, Divider, Chip,
   List, ListItem, ListItemAvatar, ListItemText, useTheme, useMediaQuery,
   Select, MenuItem
 } from '@mui/material';
 import ArtistIcon from '@mui/icons-material/Person';
+import Avatar from './ThumbnailAvatar';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import CloseIcon from '@mui/icons-material/Close';

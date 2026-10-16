@@ -29,7 +29,8 @@ def test_spotify_embed_next_data_extracts_playlist_name_and_artwork():
                             "title": "This Is Vasco Rossi",
                             "coverArt": {
                                 "sources": [
-                                    {"url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/5l4nhyz8876RhgE2d18h65/en", "width": None, "height": None}
+                                    {"url": "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/5l4nhyz8876RhgE2d18h65/en", "width": 640, "height": 640},
+                                    {"url": "https://example.org/small.jpg", "width": 300, "height": 300}
                                 ]
                             },
                             "trackList": [
@@ -46,6 +47,7 @@ def test_spotify_embed_next_data_extracts_playlist_name_and_artwork():
     parsed = _parse_embed_playlist(html)
 
     assert parsed["name"] == "This Is Vasco Rossi"
+    assert parsed["thumbnail_url"] == "https://example.org/small.jpg"
     assert parsed["artwork_url"] == "https://pickasso.spotifycdn.com/image/ab67c0de0000deef/dt/v1/img/thisisv3/5l4nhyz8876RhgE2d18h65/en"
     assert parsed["tracks"] == [
         {"artist": "Vasco Rossi", "title": "Una Canzone D'Amore Buttata Via", "album": "", "duration": 271376},

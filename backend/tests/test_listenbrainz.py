@@ -63,6 +63,9 @@ async def test_get_playlist_tracks():
                 {
                     "creator": "Daft Punk",
                     "title": "One More Time",
+                    "extension": {"https://musicbrainz.org/doc/jspf#track": {"additional_metadata": {
+                        "caa_release_mbid": "76df3287-6cda-33eb-8e9a-044b5e15ffdd", "caa_id": 829521842
+                    }}},
                     "identifier": "https://musicbrainz.org/recording/33333333-3333-3333-3333-333333333333",
                 },
                 {
@@ -82,6 +85,8 @@ async def test_get_playlist_tracks():
     assert tracks[0]["artist"] == "Daft Punk"
     assert tracks[0]["title"] == "One More Time"
     assert tracks[0]["recording_mbid"] == "33333333-3333-3333-3333-333333333333"
+    assert tracks[0]["caa_release_mbid"] == "76df3287-6cda-33eb-8e9a-044b5e15ffdd"
+    assert tracks[0]["artwork"].endswith('/829521842-250.jpg')
     assert tracks[1]["artist"] == "Justice"
     assert tracks[1]["title"] == "D.A.N.C.E."
     assert tracks[1]["recording_mbid"] is None

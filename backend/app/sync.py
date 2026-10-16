@@ -18,6 +18,7 @@ from backend.app.clients.slskd import SlskdClient
 from backend.app.clients.lrclib import LrcLibClient
 from backend.app.clients.deezer import DeezerClient
 from backend.app.metadata_pipeline.extras import atomic_tag_update
+from backend.app.artist_identity import artist_alias_scope, current_artist_aliases
 
 logger = app_logger.get_logger()
 
@@ -1673,6 +1674,9 @@ def get_artist_aliases(artist_name: str) -> list[str]:
     elif any(k in aliases for k in ["kanyewest", "ye"]) and any(k in aliases for k in ["tydolla", "tydollasign"]):
         aliases.update(["¥$", "ys"])
 
+    context = current_artist_aliases()
+    if context:
+        aliases.update(re.sub(r'[^\w]', '', name).lower() for name in context.names_for(artist_name))
     return list(aliases)
 
 def extract_audio_mbids(file_path: Union[str, Path]) -> Tuple[Optional[str], Optional[str]]:
@@ -2279,6 +2283,11 @@ def build_track_search_queries(artist: str, title: str, album: str = "") -> list
     }:
         queries_to_add.append(query_part(f"{clean_title} {main_artist} {clean_album}"))
 
+    context = current_artist_aliases()
+    if context:
+        for alias in context.names_for(artist, search=True)[:8]:
+            queries_to_add.append(query_part(f"{clean_title} {alias}"))
+
     # 5. Clean title only fallback
     queries_to_add.append(query_part(clean_title))
 
@@ -2754,6 +2763,7 @@ async def save_playlist_artwork_and_m3u(
     return m3u_path
 
 
+@artist_alias_scope
 async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[str] = None, user_id: Optional[str] = None,
                    tracks_override: Optional[List[Dict[str, Any]]] = None,
                    album_override: Optional[str] = None,
@@ -3152,7 +3162,14 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
                                               pass
                                       downloaded_file.unlink(missing_ok=True)
                               else:
-                                  logger.info(f"No MusicBrainz recording MBID found for '{artist} - {title}'. Skipping AcoustID fingerprint check.")
+                                  is_valid, reason = await acoustid_client.verify_track_against_metadata(
+                                      downloaded_file, expected_artist=artist, expected_title=title
+                                  )
+                                  from backend.app.clients.acoustid import verification_status
+                                  if verification_status(is_valid, reason) == "mismatch":
+                                      final_state = "acoustid_mismatch"
+                                      downloaded_file.unlink(missing_ok=True)
+                                  logger.info("AcoustID result for '%s - %s': %s", artist, title, reason)
                           if final_state == "succeeded":
                               break
                       elif final_state in ["xfer_failed", "stuck"]:

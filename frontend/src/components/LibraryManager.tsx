@@ -3,9 +3,10 @@ import {
   Box, Typography, Button, CircularProgress, Alert,
   InputAdornment, TextField, Stack, Paper, Chip,
   Dialog, DialogTitle, DialogContent, DialogContentText, DialogActions,
-  IconButton, Tooltip, LinearProgress, Divider, Avatar, Collapse,
+  IconButton, Tooltip, LinearProgress, Divider, Collapse,
 } from '@mui/material';
 import LibraryIcon from '@mui/icons-material/LibraryMusic';
+import Avatar from './ThumbnailAvatar';
 import SearchIcon from '@mui/icons-material/Search';
 import DeleteIcon from '@mui/icons-material/Delete';
 import RefreshIcon from '@mui/icons-material/Refresh';

@@ -1,4 +1,5 @@
 import { apiService } from './api';
+import { thumbnailUrl } from './thumbnail';
 
 type Track = { artist: string; title: string; album?: string; [key: string]: any };
 const cache = new Map<string, { expiresAt: number; result: Promise<string> }>();
@@ -16,7 +17,7 @@ function coverFor(track: Track): Promise<string> {
         normalize(item.title || '') === normalize(track.title) &&
         (!track.album || normalize(item.album?.title || '') === normalize(track.album))
       );
-      return candidate?.album?.cover_medium || '';
+      return thumbnailUrl(candidate?.album?.cover_medium || candidate?.album?.cover_small || '');
     }).catch(() => '');
   if (cache.size >= 1000) cache.delete(cache.keys().next().value!);
   cache.set(key, { expiresAt: Date.now() + 3600000, result });

@@ -86,7 +86,16 @@ async def musicbrainz_request(path: str, params: dict = None, timeout: int = 30)
 async def _mb_get(path: str, params: dict = None, timeout: int = 30) -> Optional[dict]:
     """Legacy optional lookups retain their contract; rebuild uses the raising API."""
     try:
-        return await musicbrainz_request(path, params, timeout)
+        from backend.app.artist_identity import current_artist_aliases
+        context = current_artist_aliases()
+        if context and not context.artists and path.split("/")[1] in ("recording", "release", "release-group"):
+            params = dict(params or {})
+            includes = params.get("inc", "").split("+")
+            params["inc"] = "+".join(dict.fromkeys([*filter(None, includes), "aliases"]))
+        result = await musicbrainz_request(path, params, timeout)
+        if context and result:
+            await context.ingest(result)
+        return result
     except (httpx.HTTPError, ValueError) as error:
         logger.warning('MusicBrainz lookup unavailable for %s (%s)', path, type(error).__name__)
         return None
@@ -121,6 +130,13 @@ def _parse_artist_credit(credits) -> tuple[str, list[str]]:
     return "".join(display_parts).strip(), artists
 
 
+def _artist_identity_credits(credits) -> list[dict]:
+    """Cache stable IDs/credits, never the operation's transient alias lists."""
+    return [{"name": credit.get("name") or "", "artist": {
+        "id": credit["artist"].get("id"), "name": credit["artist"].get("name") or "",
+    }} for credit in credits or [] if isinstance(credit, dict) and isinstance(credit.get("artist"), dict)]
+
+
 def _fuzzy_match(a: str, b: str) -> bool:
     na, nb = _normalize(a), _normalize(b)
     if not na or not nb:
@@ -150,6 +166,10 @@ def _valid_artist_norms(artist: str) -> set[str]:
         norms.update({"asaprocky", "aaprocky"})
     if "¥$" in artist or (norms & {"ys"}):
         norms.update({"ys", "kanyewest", "tydollasign", "ye", "kanyewesttydollasign"})
+    from backend.app.artist_identity import current_artist_aliases
+    context = current_artist_aliases()
+    if context:
+        norms.update(_normalize(name) for name in context.names_for(artist))
     return norms
 
 
@@ -406,6 +426,7 @@ async def inspect_album_releases(artist: str, album: str, force_refresh: bool = 
                 })
             winner_details = {
                 "id": best_candidate["id"],
+                "artist-credit": _artist_identity_credits(full.get("artist-credit")),
                 "title": full.get("title"),
                 "status": full.get("status"),
                 "country": full.get("country"),
@@ -726,6 +747,7 @@ class MusicBrainzClient:
                 })
             winner = {
                 "id": full.get("id") or release_mbid,
+                "artist-credit": _artist_identity_credits(full.get("artist-credit")),
                 "title": full.get("title") or album,
                 "date": full.get("date") or "",
                 "original_date": (full.get('release-group') or {}).get('first-release-date') or '',
@@ -739,6 +761,12 @@ class MusicBrainzClient:
             winner = res.get("winner")
         if not winner:
             return None
+
+        from backend.app.artist_identity import current_artist_aliases
+        context = current_artist_aliases()
+        if context:
+            # This also runs on album-cache hits in a subsequent operation.
+            await context.ingest({"artist-credit": winner.get("artist-credit") or []})
 
         flat_tracks = []
         total_discs = winner.get("disc_total", 1)

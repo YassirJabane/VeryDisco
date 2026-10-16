@@ -1,4 +1,6 @@
 import re
+import time
+import asyncio
 import httpx
 from typing import List, Dict, Any, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -6,6 +8,7 @@ from backend.app.logger import get_logger
 from backend.app.clients.http_client import get_http_client
 
 logger = get_logger()
+_artwork_metadata_cache: dict[str, tuple[float, dict]] = {}
 
 def find_key_recursive(d: Any, target_key: str) -> Optional[Any]:
     """Recursively search for a key in a nested dict or list."""
@@ -42,6 +45,21 @@ def extract_recording_mbid(track: Dict[str, Any]) -> Optional[str]:
         return extract_uuid(identifier)
     return None
 
+def extract_artwork(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep CAA release identity separate from recording identity."""
+    release = find_key_recursive(metadata, "caa_release_mbid")
+    release = extract_uuid(release) if isinstance(release, str) else None
+    image_id = find_key_recursive(metadata, "caa_id")
+    image_id = str(image_id) if image_id is not None else ""
+    if not image_id.isdigit() or int(image_id) <= 0:
+        image_id = ""
+    artwork = ""
+    if release:
+        suffix = f"{image_id}-250.jpg" if image_id else "front-250"
+        artwork = f"https://coverartarchive.org/release/{release}/{suffix}"
+    return {"caa_release_mbid": release, "caa_id": image_id or None, "artwork": artwork}
+
+
 class ListenBrainzClient:
     def __init__(self, username: str, playlist_source: str, token: str = "", timeout: int = 20):
         self.username = username
@@ -55,6 +73,62 @@ class ListenBrainzClient:
         if self.token:
             headers["Authorization"] = f"Token {self.token}"
         return headers
+
+    async def enrich_artwork(self, tracks: list[dict]) -> None:
+        """Fill missing CAA artwork in batches, never replacing a known album."""
+        now = time.monotonic()
+        ids = list(dict.fromkeys(
+            mbid for t in tracks
+            if not t.get("artwork")
+            and isinstance(mbid := (t.get("recording_mbid") or t.get("mbid")), str)
+            and extract_uuid(mbid) == mbid
+        ))
+        missing = [mbid for mbid in ids if _artwork_metadata_cache.get(mbid, (0, {}))[0] <= now]
+        client = await get_http_client() if missing else None
+        semaphore = asyncio.Semaphore(4)
+
+        async def fetch_batch(batch):
+            try:
+                async with semaphore:
+                    response = await client.post(
+                        f"{self.base_url}/1/metadata/recording/",
+                        json={"recording_mbids": batch, "inc": "release"},
+                        headers=self._get_headers(), timeout=min(self.timeout, 5),
+                    )
+                response.raise_for_status()
+                payload = response.json()
+                for mbid in batch:
+                    release = (payload.get(mbid) or {}).get("release") or {}
+                    if not isinstance(release, dict):
+                        release = {}
+                    _artwork_metadata_cache[mbid] = (now + 21600, release)
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError) as exc:
+                logger.debug("ListenBrainz artwork metadata unavailable: %s", exc)
+                # Short negative cache prevents polling storms during outages.
+                for mbid in batch:
+                    _artwork_metadata_cache[mbid] = (now + 60, {})
+        try:
+            # Artwork must not hold up a cold feedback page during an outage.
+            await asyncio.wait_for(asyncio.gather(*(
+                fetch_batch(missing[start:start + 50]) for start in range(0, len(missing), 50)
+            )), timeout=5)
+        except asyncio.TimeoutError:
+            for mbid in missing:
+                if _artwork_metadata_cache.get(mbid, (0, {}))[0] <= now:
+                    _artwork_metadata_cache[mbid] = (now + 60, {})
+        while len(_artwork_metadata_cache) > 2000:
+            _artwork_metadata_cache.pop(next(iter(_artwork_metadata_cache)))
+        normalize = lambda value: re.sub(r"[\W_]", "", str(value).casefold())
+        for track in tracks:
+            if track.get("artwork"):
+                continue
+            mbid = track.get("recording_mbid") or track.get("mbid")
+            release = _artwork_metadata_cache.get(mbid, (0, {}))[1]
+            # A recording can appear on many releases: don't attach a different
+            # edition/compilation to the authoritative playlist album.
+            if track.get("album") and normalize(track["album"]) != normalize(release.get("name") or ""):
+                continue
+            track.update(extract_artwork(release))
 
     @retry(
         stop=stop_after_attempt(2),
@@ -152,6 +226,7 @@ class ListenBrainzClient:
                     "duration": duration,  # can be None
                     "album": album.strip() if album else None,
                     "recording_mbid": extract_recording_mbid(t),
+                    **extract_artwork(t),
                 })
         
         logger.info(f"Loaded {len(tracks)} tracks from playlist MBID '{mbid}'")

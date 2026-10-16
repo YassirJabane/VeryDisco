@@ -12,6 +12,7 @@ from backend.app.clients.lrclib import LrcLibClient
 from backend.app.sync import sanitize_filename, find_downloaded_file, embed_metadata
 from backend.app.clients.deezer import DeezerClient
 from backend.app.config import AppConfig
+from backend.app.artist_identity import artist_alias_scope
 
 logger = get_logger()
 
@@ -518,6 +519,7 @@ def get_quality_priority(filename: str, bitrate: int, bit_depth: int, sample_rat
 # Limit concurrent album downloads to prevent Slskd daemon CPU/network overload
 album_download_semaphore = asyncio.Semaphore(1)
 
+@artist_alias_scope
 async def download_album_task(
     download_id: int,
     artist: str,
@@ -814,6 +816,12 @@ async def _download_album_task_internal(
                         for wildcard_query in build_album_wildcard_queries(mb_art_q, stripped_alb or raw_alb):
                             add_query(wildcard_query, False)
                         add_query(f"{stripped_alb or raw_alb} {mb_art_q}", False)
+
+                from backend.app.artist_identity import current_artist_aliases
+                identities = current_artist_aliases()
+                if identities:
+                    for alias in identities.names_for(artist, search=True)[:8]:
+                        add_query(f"{raw_alb or stripped_alb or clean_alb_q} {alias}", True)
 
                 # 5. Album-only fallback
                 if raw_alb and raw_alb.lower() != (stripped_alb or clean_alb_q).lower():
@@ -1442,6 +1450,8 @@ async def _download_album_task_internal(
                     dz_date = None
                     dz_album_artist = None
                     dz_artist = artist
+                    mbid_recording = matched.get("id") if matched else None
+                    mbid_album = official_mb_release_mbid
                     credited_artists = matched.get("credited_artists") if matched else None
                     try:
                         meta_result = {}
@@ -1492,16 +1502,17 @@ async def _download_album_task_internal(
 
                         
                     # 2. AcoustID verification check on raw downloaded file BEFORE moving/tagging
-                    from backend.app.clients.acoustid import acoustid_client
+                    from backend.app.clients.acoustid import acoustid_client, verification_status
                     acoustid_mismatch = False
                     try:
                         is_valid, reason = await acoustid_client.verify_track_against_metadata(
                             local_path,
                             expected_artist=dz_artist or artist,
-                            expected_title=title_tag
+                            expected_title=title_tag,
+                            expected_mbid=mbid_recording,
                         )
                         if not is_valid:
-                            if "not configured" in reason or "No match found" in reason or "Skipped" in reason:
+                            if verification_status(is_valid, reason) != "mismatch":
                                 logger.info(f"AcoustID verification skipped for '{title_tag}': {reason}")
                             else:
                                 logger.warning(f"AcoustID mismatch detected for '{title_tag}': {reason}. Discarding downloaded file and queuing single-track replacement...")
@@ -1746,6 +1757,7 @@ def _is_instrumental_track(title: str, album: str = "", lyrics_type: str = "") -
         f"{title or ''} {album or ''}",
     ))
 
+@artist_alias_scope
 async def download_single_track_task(
     artist: str,
     title: str,
@@ -2097,16 +2109,17 @@ async def _download_single_track_internal(
                 continue
 
             # 1.5 AcoustID check on raw downloaded file BEFORE moving/tagging
-            from backend.app.clients.acoustid import acoustid_client
+            from backend.app.clients.acoustid import acoustid_client, verification_status
             acoustid_mismatch = False
             try:
                 is_valid, reason = await acoustid_client.verify_track_against_metadata(
                     downloaded_file,
                     expected_artist=fetched_artist,
-                    expected_title=title_tag
+                    expected_title=title_tag,
+                    expected_mbid=mbid_recording,
                 )
                 if not is_valid:
-                    if "not configured" in reason or "No match found" in reason or "Skipped" in reason:
+                    if verification_status(is_valid, reason) != "mismatch":
                         logger.info(f"AcoustID verification skipped for single track '{title_tag}': {reason}")
                     else:
                         acoustid_retry_count += 1
@@ -2237,6 +2250,7 @@ async def _download_single_track_internal(
         return False
 
 
+@artist_alias_scope
 async def grab_single_track_task(
     artist: str,
     title: str,
@@ -2367,6 +2381,17 @@ async def grab_single_track_task(
             dz_date = meta_result["date"]
         except Exception as meta_err:
             logger.warning(f"Could not retrieve metadata: {meta_err}")
+
+        from backend.app.clients.acoustid import acoustid_client, verification_status
+        valid, reason = await acoustid_client.verify_track_against_metadata(
+            downloaded_file, expected_artist=fetched_artist, expected_title=title_tag,
+            expected_mbid=mbid_recording,
+        )
+        if verification_status(valid, reason) == "mismatch":
+            logger.warning("Chosen transfer rejected by AcoustID: %s", reason)
+            # Preserve the existing library file; this raw candidate isn't published.
+            downloaded_file.unlink(missing_ok=True)
+            return False
 
         from backend.app.sync import resolve_album_dir, get_library_filename, get_safe_filename
         if dest_dir_override:

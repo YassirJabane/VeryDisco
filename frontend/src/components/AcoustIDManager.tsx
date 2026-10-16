@@ -15,7 +15,8 @@ export const AcoustIDManager: React.FC = () => {
   const [acoustidStats, setAcoustidStats] = useState<AcoustidStats | null>(null);
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' } | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: 'success' | 'error' | 'info' } | null>(null);
+  const [checkingPath, setCheckingPath] = useState<string | null>(null);
   const [failureToFix, setFailureToFix] = useState<any | null>(null);
   const [fixArtist, setFixArtist] = useState('');
   const [fixTitle, setFixTitle] = useState('');
@@ -36,14 +37,30 @@ export const AcoustIDManager: React.FC = () => {
     }
   }, []);
 
-  const handleStartScan = async (batchSize: number = 50) => {
+  const handleStartScan = async (batchSize: number = 50, retryFailed: boolean = false) => {
     setScanning(true);
     try {
-      await apiService.acoustidScan(batchSize);
-      setToast({ msg: `AcoustID verification scan started for a batch of ${batchSize} tracks.`, type: 'success' });
+      await apiService.acoustidScan(batchSize, retryFailed);
+      setToast({ msg: retryFailed ? 'Rechecking previously inconclusive and mismatched tracks. No audio will be replaced.' : `AcoustID verification scan started for a batch of ${batchSize} tracks.`, type: 'success' });
     } catch (e: any) {
       setScanning(false);
       setToast({ msg: e?.response?.data?.detail ?? 'Failed to start AcoustID scan.', type: 'error' });
+    }
+  };
+
+  const recheckTrack = async (failure: any) => {
+    setCheckingPath(failure.file_path);
+    try {
+      const result = await apiService.recheckAcoustid(failure.file_path);
+      setToast({ msg: result.reason, type: result.status === 'verified' ? 'success' : 'info' });
+      if (failureToFix?.file_path === failure.file_path) {
+        setFailureToFix(result.status === 'verified' ? null : { ...failure, ...result });
+      }
+      await fetchStats();
+    } catch (error: any) {
+      setToast({ msg: error?.response?.data?.detail || 'Unable to recheck this audio file.', type: 'error' });
+    } finally {
+      setCheckingPath(null);
     }
   };
 
@@ -148,6 +165,7 @@ export const AcoustIDManager: React.FC = () => {
                   <Typography variant="body2" color="text.secondary">
                     Fingerprinting matches your audio files against millions of registered tracks. Files with AcoustID mismatches (corrupted or mislabeled audio) are flagged in Server Health. Tracks simply not found in the AcoustID database are <strong>not</strong> flagged as issues.
                   </Typography>
+                  {!!acoustidStats.inconclusive && <Chip size="small" variant="outlined" label={`${acoustidStats.inconclusive} inconclusive / not checked`} />}
 
                   <Box sx={{ pt: 1 }}>
                     <Stack direction="row" justifyContent="space-between" mb={1}>
@@ -205,7 +223,7 @@ export const AcoustIDManager: React.FC = () => {
                       variant="contained"
                       color="primary"
                       startIcon={scanning ? <CircularProgress size={16} color="inherit" /> : <FingerprintIcon />}
-                      disabled={scanning || acoustidStats.remaining === 0}
+                      disabled={scanning || !!checkingPath || acoustidStats.remaining === 0}
                       onClick={() => handleStartScan(50)}
                       sx={{ borderRadius: 2.5, fontWeight: 700, textTransform: 'none', px: 3, py: 1 }}
                     >
@@ -214,7 +232,7 @@ export const AcoustIDManager: React.FC = () => {
                     <Button
                       variant="outlined"
                       color="primary"
-                      disabled={scanning || acoustidStats.remaining === 0}
+                      disabled={scanning || !!checkingPath || acoustidStats.remaining === 0}
                       onClick={() => handleStartScan(0)}
                       sx={{ borderRadius: 2.5, fontWeight: 700, textTransform: 'none', px: 3, py: 1 }}
                     >
@@ -233,20 +251,25 @@ export const AcoustIDManager: React.FC = () => {
       {acoustidStats && acoustidStats.failures?.length > 0 && (
         <Card sx={{ borderRadius: 4, border: '1px solid', borderColor: 'divider', boxShadow: 'none' }}>
           <CardContent>
-            <Typography variant="h6" fontWeight={800}>Failed verification</Typography>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
+              <Typography variant="h6" fontWeight={800}>Checks needing review</Typography>
+              <Button startIcon={<RefreshIcon />} disabled={scanning || !!checkingPath} onClick={() => handleStartScan(0, true)}>Recheck all unsuccessful</Button>
+            </Stack>
             <Typography variant="body2" color="text.secondary" mb={2}>
-              Review the detected mismatch. You can correct artist/title before safely replacing the audio; the current file remains until a verified replacement is ready.
+              Recheck the existing audio first. An unavailable service or an unknown fingerprint does not mean the file is wrong. A replacement is offered only for a detected mismatch.
             </Typography>
             <List disablePadding>
               {acoustidStats.failures.map((failure) => (
-                <ListItem key={failure.file_path} divider secondaryAction={
-                  <Button size="small" variant="outlined" onClick={() => openFailureFix(failure)}>Correct / Replace</Button>
-                }>
+                <ListItem key={failure.file_path} divider sx={{ flexWrap: 'wrap', gap: 1 }}>
                   <ListItemText
                     primary={`${failure.artist || 'Unknown artist'} — ${failure.title || 'Unknown title'}`}
                     secondary={<>{failure.reason}<br />{failure.suggestion}</>}
-                    sx={{ pr: 18 }}
                   />
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                    <Chip size="small" label={{ mismatch: 'Mismatch', unknown: 'Unknown fingerprint', unavailable: 'Service unavailable', skipped: 'Not checked', verified: 'Verified' }[failure.status || 'mismatch']} />
+                    <Button size="small" variant="outlined" startIcon={checkingPath === failure.file_path ? <CircularProgress size={14} /> : <RefreshIcon />} disabled={scanning || !!checkingPath} onClick={() => recheckTrack(failure)}>Recheck audio</Button>
+                    {failure.status === 'mismatch' && <Button size="small" variant="outlined" disabled={scanning || !!checkingPath} onClick={() => openFailureFix(failure)}>Correct / Replace</Button>}
+                  </Stack>
                 </ListItem>
               ))}
             </List>
@@ -254,7 +277,7 @@ export const AcoustIDManager: React.FC = () => {
         </Card>
       )}
 
-      <Dialog open={Boolean(failureToFix)} onClose={() => !queueingFix && setFailureToFix(null)} fullWidth maxWidth="sm">
+      <Dialog open={Boolean(failureToFix)} onClose={() => !queueingFix && !checkingPath && setFailureToFix(null)} fullWidth maxWidth="sm">
         <DialogTitle>Correct AcoustID mismatch</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1.5 }}>
           <TextField label="Artist" value={fixArtist} onChange={event => setFixArtist(event.target.value)} />
@@ -263,8 +286,9 @@ export const AcoustIDManager: React.FC = () => {
           <Alert severity="info">{failureToFix?.reason}</Alert>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setFailureToFix(null)} disabled={queueingFix}>Cancel</Button>
-          <Button variant="contained" onClick={queueReplacement} disabled={queueingFix || !fixArtist.trim() || !fixTitle.trim()}>
+          <Button onClick={() => recheckTrack(failureToFix)} disabled={queueingFix || !!checkingPath || scanning}>Recheck existing audio</Button>
+          <Button onClick={() => setFailureToFix(null)} disabled={queueingFix || !!checkingPath}>Cancel</Button>
+          <Button variant="contained" onClick={queueReplacement} disabled={queueingFix || !!checkingPath || failureToFix?.status !== 'mismatch' || !fixArtist.trim() || !fixTitle.trim()}>
             {queueingFix ? 'Queueing…' : 'Replace safely'}
           </Button>
         </DialogActions>

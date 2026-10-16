@@ -57,6 +57,7 @@ def _parse_embed_playlist(html: str) -> Dict[str, Any]:
     name = ""
     description = ""
     artwork_url = ""
+    thumbnail_url = ""
     tracks: List[Dict[str, Any]] = []
 
     next_data_match = re.search(
@@ -87,6 +88,11 @@ def _parse_embed_playlist(html: str) -> Dict[str, Any]:
                 )
                 if best_source:
                     artwork_url = str(best_source.get("url") or "").strip()
+                    # Keep the original for sidecars; use a supplied small
+                    # variant for the preview without inventing CDN URLs.
+                    suitable = [s for s in sources if isinstance(s, dict) and s.get("url") and int(s.get("width") or 0) >= 250]
+                    thumbnail = min(suitable, key=lambda s: int(s.get("width") or 0), default=best_source)
+                    thumbnail_url = str(thumbnail.get("url") or "").strip()
 
             track_list = entity.get("trackList") or []
             if isinstance(track_list, list):
@@ -146,6 +152,7 @@ def _parse_embed_playlist(html: str) -> Dict[str, Any]:
         "name": name,
         "description": description,
         "artwork_url": artwork_url,
+        "thumbnail_url": thumbnail_url or artwork_url,
         "tracks": tracks,
     }
 
@@ -224,6 +231,7 @@ class SpotifyClient:
                 "name": title or "Spotify playlist",
                 "description": description,
                 "artwork_url": artwork_url,
+                "thumbnail_url": (parsed_embed.get("thumbnail_url") if artwork_url == parsed_embed.get("artwork_url") else artwork_url) or artwork_url,
                 "tracks": embed_tracks,
             }
 
@@ -254,4 +262,6 @@ class SpotifyClient:
             page = response.json()
         data["tracks"] = tracks
         data["artwork_url"] = ((data.get("images") or [{}])[0].get("url") or "")
+        images = [i for i in data.get("images", []) if i.get("url") and int(i.get("width") or 0) >= 250]
+        data["thumbnail_url"] = min(images, key=lambda i: int(i.get("width") or 0), default={}).get("url") or data["artwork_url"]
         return data

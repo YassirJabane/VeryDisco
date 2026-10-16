@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Response, Request
+from fastapi import FastAPI, HTTPException, Response, Request, Query
 from pydantic import BaseModel
 import httpx
 from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse
@@ -21,6 +21,7 @@ from backend.app.sync import run_sync
 import backend.app.sync as sync_module
 import backend.app.logger as app_logger
 from backend.app.clients.spotify import SpotifyClient
+from backend.app.artist_identity import artist_alias_scope
 
 # Locate the configuration path
 CONFIG_PATH = os.getenv("CONFIG_PATH", "config.yml")
@@ -877,6 +878,7 @@ async def _spotify_playlist(request: Request, body: SpotifyPlaylistRequest) -> t
         "id": playlist_id, "name": playlist.get("name") or "Spotify playlist",
         "description": playlist.get("description") or "",
         "artwork_url": playlist.get("artwork_url") or ((playlist.get("images") or [{}])[0].get("url") or ""),
+        "thumbnail_url": playlist.get("thumbnail_url") or playlist.get("artwork_url") or "",
         "tracks": playlist.get("tracks", []),
     }
 
@@ -988,6 +990,8 @@ async def list_imported_playlists(request: Request):
                         tracks=item.get("tracks", []),
                     )
                     await trigger_navidrome_scan_debounced()
+                if cover_img.exists() or sidecar_img.exists():
+                    item["thumbnail_url"] = f"/api/playlists/imported/{item['id']}/thumbnail"
             except Exception as heal_err:
                 logger.debug("Could not auto-heal M3U for playlist %s: %s", item.get("source"), heal_err)
 
@@ -1232,7 +1236,13 @@ async def retry_track_download(job_id: int, request: Request):
     )
     return {"status": "success", "message": "Track download retried as a new job."}
 
-async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] = None):
+@artist_alias_scope
+async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] = None, retry_failed: bool = False):
+    async with _acoustid_recheck_locks.setdefault(user_id or "global", asyncio.Lock()):
+        await _scan_acoustid_batch_internal(batch_size, user_id, retry_failed)
+
+
+async def _scan_acoustid_batch_internal(batch_size: int = 50, user_id: Optional[str] = None, retry_failed: bool = False):
     """
     Scans a batch of up to `batch_size` files in the library using AcoustID.
     Respects rate limits (2 queries/sec).
@@ -1253,8 +1263,9 @@ async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] 
     if not user_id:
         logger.error("Cannot run incremental AcoustID scan without a user library index.")
         return
-    candidates = await db.get_acoustid_candidates(user_id, batch_size or 0)
-    unscanned_files = [Path(row["filepath"]) for row in candidates if Path(row["filepath"]).exists()]
+    candidates = await db.get_acoustid_candidates(user_id, batch_size or 0, retry_failed=retry_failed)
+    unscanned_files = [Path(row["filepath"]) for row in candidates
+                      if Path(row["filepath"]).is_file() and Path(row["filepath"]).resolve().is_relative_to(music_dir.resolve())]
     candidate_stats = {row["filepath"]: row for row in candidates}
 
     if not unscanned_files:
@@ -1263,32 +1274,32 @@ async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] 
 
     logger.info(f"Selected {len(unscanned_files)} files for AcoustID verification. Processing...")
 
-    from backend.app.clients.acoustid import acoustid_client
+    from backend.app.clients.acoustid import acoustid_client, verification_status
     
     for idx, file_path in enumerate(unscanned_files, 1):
         try:
+            before = file_path.stat()
             is_valid, reason = await acoustid_client.verify_track_against_metadata(file_path)
-            status = "verified" if is_valid else "failed"
+            status = verification_status(is_valid, reason)
+            after = file_path.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                logger.warning("Audio changed during AcoustID verification; result discarded for %s", file_path)
+                continue
             indexed = candidate_stats[str(file_path)]
             await db.save_acoustid_result(
-                str(file_path), status, reason, indexed.get("size") or 0,
-                indexed.get("mtime_ns") or 0,
+                str(file_path), status, reason, after.st_size, after.st_mtime_ns,
             )
             
-            if is_valid:
-                logger.info(f"[{idx}/{len(unscanned_files)}] Verified: {file_path.name}")
-            else:
-                logger.warning(f"[{idx}/{len(unscanned_files)}] Failure: {file_path.name} -> {reason}")
+            logger.info("[%s/%s] AcoustID %s: %s -> %s", idx, len(unscanned_files), status, file_path.name, reason)
         except Exception as e:
             logger.error(f"Error scanning {file_path}: {e}")
             indexed = candidate_stats[str(file_path)]
             await db.save_acoustid_result(
-                str(file_path), "failed", f"Unexpected error during scan: {e}",
+                str(file_path), "unavailable", f"Unexpected error during scan: {type(e).__name__}",
                 indexed.get("size") or 0, indexed.get("mtime_ns") or 0,
             )
 
-        # Sleep for 0.5 seconds to respect the 2 queries/sec rate limit
-        await asyncio.sleep(0.5)
+        # The client gate applies the rate limit across scans AND downloads.
 
     # Invalidate maintenance cache so failures appear immediately in Server Health
     if user_id:
@@ -1297,7 +1308,7 @@ async def scan_acoustid_batch_task(batch_size: int = 50, user_id: Optional[str] 
     logger.info("AcoustID verification batch scan completed.")
 
 @app.post("/api/acoustid/scan")
-async def trigger_acoustid_scan(batch_size: Optional[int] = 50, request: Request = None):
+async def trigger_acoustid_scan(batch_size: Optional[int] = 50, request: Request = None, retry_failed: bool = False):
     """Trigger a batch scan of AcoustID verification."""
     if not config_manager.is_configured or not config_manager.config:
         raise HTTPException(status_code=400, detail="App is not configured yet.")
@@ -1308,16 +1319,60 @@ async def trigger_acoustid_scan(batch_size: Optional[int] = 50, request: Request
     user = await get_current_user(request)
     user_id = user["id"]
     task_id = f"acoustid_scan:{user_id}"
-    if task_id in _active_tasks:
+    if task_id in _active_tasks or _acoustid_recheck_locks.setdefault(user_id, asyncio.Lock()).locked():
         raise HTTPException(status_code=400, detail="AcoustID scan is already running.")
 
     _create_tracked_task(
-        scan_acoustid_batch_task(batch_size=batch_size, user_id=user_id),
+        scan_acoustid_batch_task(batch_size=batch_size, user_id=user_id, retry_failed=retry_failed),
         task_id=task_id,
         task_type="acoustid_scan",
         metadata={"batch_size": batch_size, "user_id": user_id}
     )
     return {"status": "success", "message": f"AcoustID scan triggered for a batch of {batch_size} files."}
+
+
+_acoustid_recheck_locks: dict[str, asyncio.Lock] = {}
+
+
+class AcoustidRecheckRequest(BaseModel):
+    file_path: str
+
+
+@app.post("/api/acoustid/recheck")
+@artist_alias_scope
+async def recheck_acoustid_track(body: AcoustidRecheckRequest, request: Request):
+    """Recheck current audio in place; never queue a replacement or write tags."""
+    from backend.app.auth import get_current_user
+    from backend.app.clients.acoustid import acoustid_client, verification_status
+    user = await get_current_user(request)
+    cfg = config_manager.config
+    if not cfg or not cfg.acoustid.api_key.strip():
+        raise HTTPException(status_code=400, detail="AcoustID API key is not configured.")
+    user_row = await db.get_user_by_id(user["id"])
+    root = Path((user_row or {}).get("music_dir") or cfg.paths.music_dir).resolve()
+    target = Path(body.file_path).resolve()
+    if not target.is_relative_to(root):
+        raise HTTPException(status_code=403, detail="Access denied")
+    # Membership in the user's catalog is required even with a shared root.
+    failures = await db.get_acoustid_failures(user["id"])
+    catalog_path = next((row["file_path"] for row in failures if Path(row["file_path"]).resolve() == target), None)
+    if not catalog_path:
+        raise HTTPException(status_code=404, detail="Track needing verification not found.")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Audio file not found.")
+    lock = _acoustid_recheck_locks.setdefault(user["id"], asyncio.Lock())
+    if lock.locked() or f"acoustid_scan:{user['id']}" in _active_tasks:
+        raise HTTPException(status_code=409, detail="An AcoustID check is already running.")
+    async with lock:
+        before = target.stat()
+        valid, reason = await acoustid_client.verify_track_against_metadata(target)
+        after = target.stat()
+        if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+            raise HTTPException(status_code=409, detail="Audio changed during verification; please retry.")
+        status = verification_status(valid, reason)
+        await db.save_acoustid_result(catalog_path, status, reason, after.st_size, after.st_mtime_ns)
+        await db.delete_cache(f"maintenance_{user['id']}")
+        return {"status": status, "reason": reason, "file_path": catalog_path}
 
 @app.get("/api/acoustid/stats")
 async def get_acoustid_stats(request: Request = None):
@@ -1380,34 +1435,42 @@ async def get_acoustid_stats(request: Request = None):
     scanned_count = 0
     verified_count = 0
     failed_count = 0
+    inconclusive_count = 0
+    from backend.app.clients.acoustid import verification_status
     
     for r in results:
         r_path = Path(r["file_path"])
         try:
             if music_dir in r_path.parents or r_path.parent == music_dir:
                 scanned_count += 1
-                if r["status"] == "verified":
+                status = verification_status(r["status"] == "verified", r.get("reason") or "", r["status"])
+                if status == "verified":
                     verified_count += 1
-                else:
+                elif status == "mismatch":
                     failed_count += 1
+                else:
+                    inconclusive_count += 1
         except Exception:
             pass
 
-    is_running = f"acoustid_scan:{user_id}" in _active_tasks
+    is_running = (f"acoustid_scan:{user_id}" in _active_tasks
+                  or _acoustid_recheck_locks.setdefault(user_id or "global", asyncio.Lock()).locked())
 
     failures = await db.get_acoustid_failures(user_id) if user_id else []
     for failure in failures:
-        reason = (failure.get("reason") or "").lower()
+        status = verification_status(failure.get("status") == "verified", failure.get("reason") or "", failure.get("status") or "")
+        failure["status"] = status
         failure["suggestion"] = (
-            "Correct the artist/title and scan again, or replace the audio file."
-            if "expected" in reason or "matched this audio" in reason
-            else "Replace the audio file or retry the fingerprint scan."
+            "Recheck first. If the mismatch persists, review artist/title before replacing audio."
+            if status == "mismatch"
+            else "Verification is inconclusive. Retry the check; this does not establish that the audio is wrong."
         )
     return {
         "total": total_files,
         "scanned": scanned_count,
         "verified": verified_count,
         "failed": failed_count,
+        "inconclusive": inconclusive_count,
         "remaining": max(0, total_files - scanned_count),
         "running": is_running,
         "failures": failures,
@@ -1490,7 +1553,7 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
     current_time = time.time()
     # Version the cache when record-identity rules change so an old iTunes
     # remix association cannot remain visible for its previous 12-hour TTL.
-    cache_key = f"{lb_username}:{source}:exact-recording-v2"
+    cache_key = f"{lb_username}:{source}:caa-thumbnails-v3"
     cached = _cached_playlists.get(cache_key)
     if cached and (current_time - cached["time"]) < 43200:
         tracks_copy = [dict(t) for t in cached["tracks"]]
@@ -1551,12 +1614,13 @@ async def get_current_playlist(source: Optional[str] = None, request: Request = 
             
         raise HTTPException(status_code=503, detail="ListenBrainz API is temporarily unavailable.")
 
+    await lb_client.enrich_artwork(tracks)
+
     # Enrich metadata in parallel
     async def enrich_track(t):
         # Explore is identity-first: the JSPF recording/release is
-        # authoritative.  Cover art is resolved client-side from an exact
-        # Deezer match only when missing, avoiding an extra iTunes request for
-        # every ten-second page refresh.
+        # authoritative. Prefer ListenBrainz CAA thumbnails; the client uses
+        # an exact Deezer match only when artwork is still missing.
         t['album'] = t.get('album') or ''
         t['artwork'] = t.get('artwork') or ''
         key = f"{t['artist'].lower()}-{t['title'].lower()}"
@@ -1649,6 +1713,7 @@ async def refresh_feedback_cache_for_user(user_id: str, lb_username: Optional[st
         feedback_raw = await lb_client.get_user_feedback(score=score, count=count, offset=offset)
         
         async def enrich_feedback_item(item):
+            from backend.app.clients.listenbrainz import extract_artwork
             scr = item.get("score")
             mbid = item.get("recording_mbid")
             
@@ -1661,11 +1726,12 @@ async def refresh_feedback_cache_for_user(user_id: str, lb_username: Optional[st
                 "title": title,
                 "mbid": mbid,
                 "score": scr,
-                "artwork": "",
+                **extract_artwork(item),
                 "album": track_meta.get("release_name") or track_meta.get("album_name") or ""
             }
 
         feedback_list = await asyncio.gather(*(enrich_feedback_item(item) for item in feedback_raw))
+        await lb_client.enrich_artwork(feedback_list)
         if score is None and offset == 0:
             await db.replace_feedback_cache(user_id, feedback_list)
             # Distinguish a valid empty snapshot from a cache miss, so users with
@@ -4188,7 +4254,8 @@ async def _append_acoustid_failures(issues: list, silenced: set, music_dir: Opti
             return {}
             
     for r in acoustid_results:
-        if r["status"] != "failed":
+        from backend.app.clients.acoustid import verification_status
+        if verification_status(r["status"] == "verified", r.get("reason") or "", r["status"]) != "mismatch":
             continue
         # Skip results that are simply "not found" — only flag true mismatches
         reason_lower = (r.get("reason") or "").lower()
@@ -4879,8 +4946,8 @@ async def get_library_albums(request: Request):
 
 from functools import lru_cache
 
-@lru_cache(maxsize=512)
-def _extract_cover_sync(folder_path_str: str) -> tuple[bytes | None, str | None, str | None]:
+@lru_cache(maxsize=32)
+def _extract_cover_sync(folder_path_str: str, signature: tuple = ()) -> tuple[bytes | None, str | None, str | None]:
     try:
         target = Path(folder_path_str)
         if not target.exists():
@@ -4922,7 +4989,7 @@ def _extract_cover_sync(folder_path_str: str) -> tuple[bytes | None, str | None,
     return None, None, None
 
 @app.get("/api/library/albums/cover")
-async def get_album_cover(folder_path: str, request: Request):
+async def get_album_cover(folder_path: str, request: Request, size: int = Query(160, ge=32, le=512)):
     """Retrieve local or embedded album artwork for current user."""
     if not folder_path or folder_path.strip().lower() in ("undefined", "null", ""):
         raise HTTPException(status_code=400, detail="Invalid folder_path parameter")
@@ -4950,13 +5017,41 @@ async def get_album_cover(folder_path: str, request: Request):
     if not target.exists():
         raise HTTPException(status_code=404, detail="Folder not found")
         
-    data, mime, file_path = await asyncio.to_thread(_extract_cover_sync, str(target))
-    if file_path:
-        return FileResponse(file_path)
+    return await _thumbnail_response(target, size, request)
+
+
+async def _thumbnail_response(target: Path, size: int, request: Request):
+    from backend.app.thumbnails import folder_signature, local_thumbnail
+    import hashlib
+    try:
+        signature = await asyncio.to_thread(folder_signature, target)
+        data = await asyncio.to_thread(local_thumbnail, str(target), signature, size)
+    except OSError:
+        data = None
     if data:
-        return Response(content=data, media_type=mime)
+        etag = '"' + hashlib.sha256(data).hexdigest() + '"'
+        headers = {"Cache-Control": "private, max-age=300", "ETag": etag}
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
+        return Response(content=data, media_type="image/jpeg", headers=headers)
         
     raise HTTPException(status_code=404, detail="No cover art found")
+
+
+@app.get("/api/playlists/imported/{playlist_id}/thumbnail")
+async def get_imported_playlist_thumbnail(playlist_id: int, request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    playlists = await db.list_imported_playlists(user["id"])
+    playlist = next((p for p in playlists if p["id"] == playlist_id), None)
+    if not playlist or not playlist.get("source"):
+        raise HTTPException(status_code=404, detail="Playlist not found")
+    user_row = await db.get_user_by_id(user["id"])
+    root = Path((user_row or {}).get("playlist_dir") or config_manager.config.paths.navidrome_playlists_dir).resolve()
+    target = (root / playlist["source"]).resolve()
+    if not target.is_relative_to(root):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return await _thumbnail_response(target, 250, request)
 
 def _get_local_tracks_for_album_sync(target: Path, metadata_cache: dict, new_cache_entries: list) -> list:
     import os, re
@@ -5107,7 +5202,7 @@ class IgnoreIssueRequest(BaseModel):
     issue_type: str
     target_path: str
 
-def read_basic_tags(file_path: Path) -> dict:
+def read_basic_tags(file_path: Path, allow_path_fallback: bool = True) -> dict:
     ext = file_path.suffix.lower().strip(".")
     title = ""
     artist = ""
@@ -5120,7 +5215,7 @@ def read_basic_tags(file_path: Path) -> dict:
             from mutagen.easyid3 import EasyID3
             audio = EasyID3(file_path)
             title = audio.get("title", [""])[0]
-            artist = audio.get("artist", [""])[0]
+            artist = " & ".join(str(a) for a in audio.get("artist", []) if a)
             album = audio.get("album", [""])[0]
             year = audio.get("date", [""])[0]
             track = audio.get("tracknumber", [""])[0]
@@ -5129,7 +5224,7 @@ def read_basic_tags(file_path: Path) -> dict:
             from mutagen.flac import FLAC
             audio = FLAC(file_path)
             title = audio.get("title", [""])[0]
-            artist = audio.get("artist", [""])[0]
+            artist = " & ".join(str(a) for a in audio.get("artist", []) if a)
             album = audio.get("album", [""])[0]
             year = audio.get("date", [""])[0]
             track = audio.get("tracknumber", [""])[0]
@@ -5138,7 +5233,7 @@ def read_basic_tags(file_path: Path) -> dict:
             from mutagen.easymp4 import EasyMP4
             audio = EasyMP4(file_path)
             title = audio.get("title", [""])[0]
-            artist = audio.get("artist", [""])[0]
+            artist = " & ".join(str(a) for a in audio.get("artist", []) if a)
             album = audio.get("album", [""])[0]
             year = audio.get("date", [""])[0]
             track = audio.get("tracknumber", [""])[0]
@@ -5146,7 +5241,7 @@ def read_basic_tags(file_path: Path) -> dict:
     except Exception:
         pass
     
-    if not title or not artist:
+    if allow_path_fallback and (not title or not artist):
         basename = file_path.stem
         clean_title = re.sub(r'^\d+\s*[-_.]?\s*', '', basename).strip(' -_')
         title = title or clean_title

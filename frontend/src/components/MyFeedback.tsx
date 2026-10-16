@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { 
   Box, Card, CardContent, Typography, CircularProgress, 
-  List, ListItem, ListItemAvatar, ListItemText, Avatar, 
+  List, ListItem, ListItemAvatar, ListItemText,
   Chip, Tooltip, IconButton, useTheme, Alert, Snackbar, Button, Tabs, Tab
 } from '@mui/material';
 import MusicIcon from '@mui/icons-material/LibraryMusic';
+import Avatar from './ThumbnailAvatar';
 import FavoriteIcon from '@mui/icons-material/Favorite';
 import HateIcon from '@mui/icons-material/HeartBroken';
 import SyncIcon from '@mui/icons-material/Sync';
@@ -178,6 +179,7 @@ export const MyFeedback: React.FC = () => {
                       <Avatar 
                         variant="rounded" 
                         src={track.cover_url || track.artwork || undefined}
+                        track={track}
                         sx={{ width: 52, height: 52, mr: 2, borderRadius: 2, boxShadow: '0 2px 8px rgba(0,0,0,0.15)', bgcolor: isLoved ? 'rgba(211, 47, 47, 0.1)' : 'rgba(0, 0, 0, 0.05)' }}
                       >
                         <MusicIcon color={isLoved ? "error" : "action"} />
