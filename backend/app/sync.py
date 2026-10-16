@@ -18,7 +18,7 @@ from backend.app.clients.slskd import SlskdClient
 from backend.app.clients.lrclib import LrcLibClient
 from backend.app.clients.deezer import DeezerClient
 from backend.app.metadata_pipeline.extras import atomic_tag_update
-from backend.app.artist_identity import artist_alias_scope, current_artist_aliases
+from backend.app.artist_identity import artist_alias_scope, current_artist_aliases, search_queries_with_aliases
 
 logger = app_logger.get_logger()
 
@@ -3001,8 +3001,10 @@ async def run_sync(db: Database, config: AppConfig, playlist_source: Optional[st
               audio_quality_dict = config.slskd.audio_quality.model_dump() if hasattr(config.slskd.audio_quality, "model_dump") else dict(config.slskd.audio_quality)
 
               valid_candidates = []
-              for strategy_idx, query in enumerate(search_queries):
-                  logger.info(f"Search strategy {strategy_idx+1}/{len(search_queries)} for '{artist} - {title}': '{query}'")
+              strategy_idx = -1
+              async for query in search_queries_with_aliases(artist, search_queries, title=clean_title, album=album):
+                  strategy_idx += 1
+                  logger.info(f"Search strategy {strategy_idx+1} for '{artist} - {title}': '{query}'")
                   try:
                       candidates, search_id = await slskd_client.search_candidates(
                           artist=artist,

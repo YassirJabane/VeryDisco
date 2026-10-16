@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -141,7 +142,7 @@ async def test_recheck_is_owned_read_only_and_updates_result(tmp_path, monkeypat
     path = tmp_path / 'song.mp3'
     path.write_bytes(b'original audio')
     monkeypatch.setattr('backend.app.auth.get_current_user', AsyncMock(return_value={'id': 'alice'}))
-    monkeypatch.setattr(main, 'config_manager', SimpleNamespace(config=SimpleNamespace(acoustid=SimpleNamespace(api_key='test'), paths=SimpleNamespace(music_dir=str(tmp_path)))))
+    monkeypatch.setattr(main, 'config_manager', SimpleNamespace(config=SimpleNamespace(acoustid=SimpleNamespace(api_key='test'), paths=SimpleNamespace(music_dir=str(tmp_path), navidrome_playlists_dir=str(tmp_path / 'playlists')))))
     database = SimpleNamespace(
         get_user_by_id=AsyncMock(return_value={'music_dir': str(tmp_path)}),
         get_acoustid_failures=AsyncMock(return_value=[{'file_path': str(path), 'reason': 'No match found'}]),
@@ -155,7 +156,7 @@ async def test_recheck_is_owned_read_only_and_updates_result(tmp_path, monkeypat
     assert result['status'] == 'verified'
     assert path.read_bytes() == b'original audio'
     assert database.save_acoustid_result.call_args.args[1] == 'verified'
-    database.get_acoustid_failures.assert_awaited_with('alice')
+    database.get_acoustid_failures.assert_awaited_with('alice', music_dir=tmp_path.resolve(), playlist_dir=str(tmp_path / 'playlists'))
     database.get_acoustid_failures.return_value = []
     with pytest.raises(main.HTTPException) as error:
         await main.recheck_acoustid_track(main.AcoustidRecheckRequest(file_path=str(path)), Request({'type': 'http'}))
@@ -211,3 +212,53 @@ async def test_recheck_candidates_include_unchanged_failed_tracks_only_for_owner
     assert not await test_db.get_acoustid_candidates('bob', 0, retry_failed=True)
     await test_db.save_acoustid_result('/song.mp3', 'verified', 'Verified by ID', 100, 1)
     assert not await test_db.get_acoustid_candidates('alice', 0, retry_failed=True)
+
+
+@pytest.mark.asyncio
+async def test_fpcalc_duration_estimate_is_corrected_before_lookup(monkeypatch, tmp_path):
+    class Process:
+        returncode = 0
+        async def communicate(self):
+            return json.dumps({'fingerprint': 'real-fingerprint', 'duration': 147.5}).encode(), b''
+    client = AcoustIDClient()
+    client._fpcalc_checked = client._fpcalc_ok = True
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', AsyncMock(return_value=Process()))
+    monkeypatch.setattr('mutagen.File', lambda _: SimpleNamespace(info=SimpleNamespace(length=137.15136)))
+    monkeypatch.setattr(client, 'get_api_key', lambda: 'test')
+    lookup = AsyncMock(return_value={'status': 'ok', 'results': [{'score': .9993407, 'recordings': [{'id': 'expected'}]}]})
+    monkeypatch.setattr(client, 'lookup_fingerprint', lookup)
+    valid, _ = await client.verify_track_against_metadata(tmp_path / 'song.mp3', 'Drake', 'Jumbotron Shit Poppin', expected_mbid='expected')
+    assert valid
+    assert lookup.call_args.args[:2] == ('real-fingerprint', 137.15136)
+
+
+@pytest.mark.asyncio
+async def test_partial_fingerprint_from_decoder_failure_is_not_sent(monkeypatch, tmp_path):
+    class Process:
+        returncode = 3
+        async def communicate(self):
+            return json.dumps({'fingerprint': 'partial-fingerprint', 'duration': 178.62}).encode(), b'ERROR: Invalid data found when processing input'
+    client = AcoustIDClient()
+    client._fpcalc_checked = client._fpcalc_ok = True
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', AsyncMock(return_value=Process()))
+    monkeypatch.setattr(client, 'get_api_key', lambda: 'test')
+    lookup = AsyncMock()
+    monkeypatch.setattr(client, 'lookup_fingerprint', lookup)
+    valid, reason = await client.verify_track_against_metadata(tmp_path / 'song.mp3', 'Drake', 'Papi’s Home')
+    assert verification_status(valid, reason) == 'skipped'
+    assert 'fpcalc exit 3' in reason
+    assert 'Invalid data' in reason
+    assert 'installed' not in reason
+    lookup.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rebuild_uses_shared_corrected_fingerprint(monkeypatch):
+    from backend.app.clients.acoustid import acoustid_client
+    from backend.app.metadata_pipeline.providers import AcoustIDRecordingVerifier
+    monkeypatch.setattr(acoustid_client, 'generate_fingerprint', AsyncMock(return_value={'fingerprint': 'fp', 'duration': 137.151}))
+    lookup = AsyncMock(return_value={'status': 'ok', 'results': [{'score': .99, 'recordings': [{'id': 'expected'}]}]})
+    monkeypatch.setattr(acoustid_client, 'lookup_fingerprint', lookup)
+    result = await AcoustIDRecordingVerifier().verify('song.mp3', 'expected', 'test-key')
+    assert result['status'] == 'match'
+    lookup.assert_awaited_once_with('fp', 137, 'recordingids', api_key='test-key')

@@ -7,7 +7,7 @@ import {
 import LyricsIcon from '@mui/icons-material/Lyrics';
 import SearchIcon from '@mui/icons-material/Search';
 import RefreshIcon from '@mui/icons-material/Refresh';
-import apiService, { MissingLyricsTrack } from '../api';
+import apiService, { MissingLyricsTrack, LyricsAutosearchProgress } from '../api';
 import LyricsPreviewDialog from './LyricsPreviewDialog';
 
 export const LyricsManager: React.FC = () => {
@@ -18,6 +18,10 @@ export const LyricsManager: React.FC = () => {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const requestGeneration = useRef(0);
+  const autosearchGeneration = useRef(0);
+  const [autosearch, setAutosearch] = useState<LyricsAutosearchProgress>({ status: 'idle' });
+  const [starting, setStarting] = useState(false);
+  const running = starting || autosearch.status === 'running';
 
   const fetchMissing = async (forceScan: boolean = false) => {
     const generation = ++requestGeneration.current;
@@ -46,8 +50,49 @@ export const LyricsManager: React.FC = () => {
 
   useEffect(() => {
     fetchMissing(false);
-    return () => { requestGeneration.current += 1; };
+    let active = true;
+    const generation = autosearchGeneration.current;
+    apiService.getLyricsAutosearch().then(progress => {
+      if (active && generation === autosearchGeneration.current) setAutosearch(progress);
+    }).catch(() => { /* Status can be retried when starting a search. */ });
+    return () => { active = false; requestGeneration.current += 1; autosearchGeneration.current += 1; };
   }, []);
+
+  useEffect(() => {
+    if (autosearch.status !== 'running') return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      try {
+        const progress = await apiService.getLyricsAutosearch();
+        if (!active) return;
+        setAutosearch(progress);
+        if (progress.status !== 'running') {
+          void fetchMissing(false);
+          return;
+        }
+      } catch {
+        if (active) setError('Could not read autosearch progress. The search may still be running.');
+      }
+      if (active) timer = setTimeout(poll, 2000);
+    };
+    timer = setTimeout(poll, 1500);
+    return () => { active = false; clearTimeout(timer); };
+  }, [autosearch.status]);
+
+  const startAutosearch = async () => {
+    const generation = ++autosearchGeneration.current;
+    setStarting(true);
+    setError(null);
+    try {
+      const progress = await apiService.startLyricsAutosearch();
+      if (generation === autosearchGeneration.current) setAutosearch(progress);
+    } catch {
+      if (generation === autosearchGeneration.current) setError('Could not start lyrics autosearch. Please try again.');
+    } finally {
+      if (generation === autosearchGeneration.current) setStarting(false);
+    }
+  };
 
   const handleOpenSearch = (track: MissingLyricsTrack) => {
     setSelectedTrack(track);
@@ -89,6 +134,16 @@ export const LyricsManager: React.FC = () => {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       {error && <Alert severity="error">{error}</Alert>}
+      {autosearch.status !== 'idle' && (
+        <Alert severity={autosearch.error ? 'warning' : 'info'}>
+          Autosearch {autosearch.status}: {autosearch.processed ?? 0}/{autosearch.total ?? 0}
+          {' · '}{autosearch.synced ?? 0} synced, {autosearch.plain ?? 0} plain,
+          {' '}{autosearch.not_found ?? 0} not found, {autosearch.skipped ?? 0} skipped,
+          {' '}{autosearch.failed ?? 0} failed.
+          {autosearch.current && ` ${autosearch.current}`}
+          {autosearch.error && ` ${autosearch.error}`}
+        </Alert>
+      )}
       <Box display="flex" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" gap={2}>
         <Box>
           <Typography variant="h5" sx={{ fontWeight: 800 }}>Lyrics Manager</Typography>
@@ -96,14 +151,24 @@ export const LyricsManager: React.FC = () => {
             Find missing lyrics and upgrade plain lyrics to synced lyrics
           </Typography>
         </Box>
+        <Box display="flex" gap={1} flexWrap="wrap">
+        <Button
+          variant="contained"
+          startIcon={running ? <CircularProgress size={16} color="inherit" /> : <LyricsIcon />}
+          disabled={running || loading || !tracks.some(track => !track.is_instrumental)}
+          onClick={startAutosearch}
+        >
+          Autosearch all
+        </Button>
         <Button
           variant="outlined"
           startIcon={loading ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
           onClick={() => fetchMissing(true)}
-          disabled={loading}
+          disabled={loading || running}
         >
           Refresh Scan
         </Button>
+        </Box>
       </Box>
 
       <Card sx={{ borderRadius: 4 }}>

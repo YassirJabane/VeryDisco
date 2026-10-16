@@ -12,7 +12,7 @@ from backend.app.clients.lrclib import LrcLibClient
 from backend.app.sync import sanitize_filename, find_downloaded_file, embed_metadata
 from backend.app.clients.deezer import DeezerClient
 from backend.app.config import AppConfig
-from backend.app.artist_identity import artist_alias_scope
+from backend.app.artist_identity import artist_alias_scope, search_queries_with_aliases
 
 logger = get_logger()
 
@@ -832,7 +832,7 @@ async def _download_album_task_internal(
             best_files = []
             candidates = []
 
-            for query, require_artist_match in queries:
+            async for query, require_artist_match in search_queries_with_aliases(artist, queries, album=album, album_search=True):
                 if not query:
                     continue
                 logger.info(f"Attempting album search strategy: '{query}' (require_artist_match={require_artist_match})")
@@ -1938,7 +1938,9 @@ async def _download_single_track_internal(
         search_queries = build_track_search_queries(artist, title, album)
         
         candidates = []
-        for i, query in enumerate(search_queries):
+        i = -1
+        async for query in search_queries_with_aliases(artist, search_queries, title=title, album=album):
+            i += 1
             logger.info(f"Single track search strategy {i+1}: '{query}'")
             if download_job_id is not None:
                 await db.update_download_job(download_job_id, "searching", query_text=query, query_strategy=i + 1)

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import re
-import subprocess
 import urllib.parse
+from pathlib import Path
 import httpx
 from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable, Optional
@@ -300,15 +298,10 @@ class AcoustIDRecordingVerifier:
         if not api_key or not expected_recording_mbid:
             return {"status": "skipped", "reason": "missing API key or recording MBID"}
         try:
-            process = await asyncio.create_subprocess_exec(
-                "fpcalc", "-json", path,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            )
-            stdout, _ = await process.communicate()
-            if process.returncode != 0:
-                return {"status": "unavailable", "reason": "fpcalc failed"}
-            fingerprint = json.loads(stdout.decode("utf-8"))
             from backend.app.clients.acoustid import acoustid_client
+            fingerprint = await acoustid_client.generate_fingerprint(Path(path))
+            if not fingerprint or not fingerprint.get("fingerprint") or not fingerprint.get("duration"):
+                return {"status": "unavailable", "reason": (fingerprint or {}).get("error") or "Fingerprint generation failed"}
             data = await acoustid_client.lookup_fingerprint(
                 fingerprint["fingerprint"], int(fingerprint["duration"]),
                 "recordingids", api_key=api_key,

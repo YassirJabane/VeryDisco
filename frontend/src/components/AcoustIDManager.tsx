@@ -27,9 +27,7 @@ export const AcoustIDManager: React.FC = () => {
     try {
       const stats = await apiService.getAcoustidStats();
       setAcoustidStats(stats);
-      if (stats.running) {
-        setScanning(true);
-      }
+      setScanning(stats.running);
     } catch {
       // ignore
     } finally {
@@ -41,7 +39,7 @@ export const AcoustIDManager: React.FC = () => {
     setScanning(true);
     try {
       await apiService.acoustidScan(batchSize, retryFailed);
-      setToast({ msg: retryFailed ? 'Rechecking previously inconclusive and mismatched tracks. No audio will be replaced.' : `AcoustID verification scan started for a batch of ${batchSize} tracks.`, type: 'success' });
+      setToast({ msg: retryFailed ? 'Rechecking previously inconclusive and mismatched tracks. No audio will be replaced.' : batchSize === 0 ? 'AcoustID scan started for remaining new or changed library files only.' : `AcoustID verification scan started for a batch of ${batchSize} tracks.`, type: 'success' });
     } catch (e: any) {
       setScanning(false);
       setToast({ msg: e?.response?.data?.detail ?? 'Failed to start AcoustID scan.', type: 'error' });
@@ -109,6 +107,9 @@ export const AcoustIDManager: React.FC = () => {
     };
   }, [scanning]);
 
+  const progressPercent = acoustidStats && acoustidStats.total > 0
+    ? Math.min(100, Math.max(0, (acoustidStats.scanned / acoustidStats.total) * 100)) : 0;
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       {/* Header */}
@@ -166,6 +167,9 @@ export const AcoustIDManager: React.FC = () => {
                     Fingerprinting matches your audio files against millions of registered tracks. Files with AcoustID mismatches (corrupted or mislabeled audio) are flagged in Server Health. Tracks simply not found in the AcoustID database are <strong>not</strong> flagged as issues.
                   </Typography>
                   {!!acoustidStats.inconclusive && <Chip size="small" variant="outlined" label={`${acoustidStats.inconclusive} inconclusive / not checked`} />}
+                  <Typography variant="caption" color="text.secondary">
+                    Indexed library files only. Explore, playlists and staging are excluded.
+                  </Typography>
 
                   <Box sx={{ pt: 1 }}>
                     <Stack direction="row" justifyContent="space-between" mb={1}>
@@ -173,12 +177,12 @@ export const AcoustIDManager: React.FC = () => {
                         Overall Progress: {acoustidStats.scanned} / {acoustidStats.total} files
                       </Typography>
                       <Typography variant="body2" fontWeight={800} color="primary.main">
-                        {acoustidStats.total > 0 ? Math.round((acoustidStats.scanned / acoustidStats.total) * 100) : 0}%
+                        {Math.round(progressPercent)}%
                       </Typography>
                     </Stack>
                     <LinearProgress
                       variant="determinate"
-                      value={acoustidStats.total > 0 ? (acoustidStats.scanned / acoustidStats.total) * 100 : 0}
+                      value={progressPercent}
                       sx={{ height: 10, borderRadius: 5, bgcolor: 'divider' }}
                     />
                   </Box>

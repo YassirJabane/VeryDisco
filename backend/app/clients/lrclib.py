@@ -1,15 +1,64 @@
+import asyncio
+import time
 import httpx
-from typing import Dict, Any, Optional, Tuple
+from typing import Optional, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from backend.app.logger import get_logger
 from backend.app.clients.http_client import get_http_client
 
 logger = get_logger()
+_request_lock = asyncio.Lock()
+_next_request = 0.0
 
 class LrcLibClient:
     def __init__(self, base_url: str = "https://lrclib.net", timeout: int = 20):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+
+    async def _search(self, params):
+        global _next_request
+        async with _request_lock:
+            await asyncio.sleep(max(0, _next_request - time.monotonic()))
+            _next_request = time.monotonic() + 1.0
+            client = await get_http_client()
+            response = await client.get(f"{self.base_url}/api/search", params=params, timeout=self.timeout)
+            if response.status_code == 429:
+                try:
+                    delay = max(60, float(response.headers.get('Retry-After', 60)))
+                except ValueError:
+                    delay = 60
+                _next_request = time.monotonic() + delay
+            if response.status_code == 404:
+                return []
+            response.raise_for_status()
+            return response.json() or []
+
+    async def find_automatic(self, artist, title, album='', duration=0, synced_only=False):
+        """Conservative unattended matching; never use an album-only artist match."""
+        import re
+        from backend.app.artist_identity import name_key
+        from backend.app.media_versions import remaster_identity
+        normalize = lambda value: re.sub(r'[^\w]', '', value or '').casefold()
+        results = await self.search_lyrics(artist, title, album, raise_errors=True, prefer_synced=True)
+        matches = []
+        for item in results:
+            if name_key(item.get('artistName') or '') != name_key(artist):
+                continue
+            if normalize(remaster_identity(item.get('trackName') or '')[0]) != normalize(remaster_identity(title)[0]):
+                continue
+            candidate_duration = float(item.get('duration') or 0)
+            if duration and candidate_duration and abs(float(duration) - candidate_duration) > 5:
+                continue
+            synced = item.get('syncedLyrics') or ''
+            plain = item.get('plainLyrics') or ''
+            if synced.strip() and re.search(r'\[\d{1,3}:\d{2}(?:\.\d+)?\]', synced):
+                matches.append((2, synced))
+            elif not synced_only and plain.strip() and not item.get('instrumental'):
+                matches.append((1, plain))
+        if not matches:
+            return None, 'missing'
+        priority, text = max(matches, key=lambda match: match[0])
+        return text, 'synced' if priority == 2 else 'plain'
 
     @retry(
         stop=stop_after_attempt(3),
@@ -22,7 +71,6 @@ class LrcLibClient:
         Search for lyrics on LRCLIB.
         Returns a tuple (lyrics_content, type) where type can be 'synced', 'plain', or 'missing'.
         """
-        url = f"{self.base_url}/api/search"
         params = {
             "artist_name": artist,
             "track_name": title
@@ -32,14 +80,7 @@ class LrcLibClient:
         
         logger.info(f"Searching lyrics for '{artist} - {title}' on LRCLIB...")
         
-        client = await get_http_client()
-        resp = await client.get(url, params=params)
-        
-        if resp.status_code == 404:
-            results = []
-        else:
-            resp.raise_for_status()
-            results = resp.json()
+        results = await self._search(params)
         
         if not results:
             logger.info(f"Strict lyrics lookup missed '{artist} - {title}'; trying album/title and title-only fallbacks")
@@ -87,11 +128,10 @@ class LrcLibClient:
         return None, "missing"
 
     async def search_lyrics(self, artist: str, title: str, album: Optional[str] = None,
-                            include_strict: bool = True) -> list:
+                            include_strict: bool = True, *, raise_errors: bool = False,
+                            prefer_synced: bool = False) -> list:
         """Search LRCLIB progressively: artist+title, album+title, then title only."""
-        url = f"{self.base_url}/api/search"
         try:
-            client = await get_http_client()
             strategies = []
             if include_strict:
                 strategies.append({"artist_name": artist, "track_name": title})
@@ -107,10 +147,8 @@ class LrcLibClient:
                     strategies.append({"album_name": base_album, "track_name": base_title})
             seen, combined = set(), []
             for params in strategies:
-                resp = await client.get(url, params=params)
-                if resp.status_code != 200:
-                    continue
-                for item in resp.json() or []:
+                items = await self._search(params)
+                for item in items:
                     key = item.get("id") or (
                         (item.get("artistName") or "").casefold(),
                         (item.get("trackName") or "").casefold(),
@@ -119,9 +157,11 @@ class LrcLibClient:
                     if key not in seen:
                         seen.add(key)
                         combined.append(item)
-                if combined and params.get("artist_name"):
+                if combined and params.get("artist_name") and not prefer_synced:
                     break
             return combined
         except Exception as e:
+            if raise_errors:
+                raise
             logger.warning(f"LRCLIB search failed: {e}")
             return []

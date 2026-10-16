@@ -20,7 +20,7 @@ class _Client:
         self.responses = list(responses)
         self.params = []
 
-    async def get(self, _url, params):
+    async def get(self, _url, params, **kwargs):
         self.params.append(params)
         return self.responses.pop(0)
 

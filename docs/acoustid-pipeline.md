@@ -39,3 +39,34 @@ treated as identity equivalence. Display/tag credits remain unchanged.
 
 The update is local source code and requires rebuilding/deploying the app. It
 does not change existing audio or verification rows on the production server.
+
+## Incremental scan counters
+
+Statistics, Scan Remaining and manual rechecks now use the same user-scoped
+library-index catalog and path exclusions: Explore/Explore Tracks, playlists
+(including the configured playlist directory), staging and hidden directories
+are excluded. Historical results outside the current catalog cannot inflate the
+counts. All indexed audio formats share the library reader's suffix list.
+The old filesystem total cache is no longer used.
+
+A result counts as scanned only when its size and nanosecond mtime match the
+indexed file. Thus scanned + remaining = total, and verified + mismatches +
+inconclusive = scanned. Unknown/skipped/API errors remain inconclusive, not
+mismatches, and are retried only through the explicit unsuccessful-file recheck
+(or when the file changes). If an outdated index reselects already-checked audio,
+Scan Remaining checks the actual file signature and refreshes the index without
+another fingerprint/API request. Index freshness still depends on library scans
+and point refreshes; changes outside the app require refreshing the library.
+
+## Duration and decoder diagnostics
+
+The audio duration used for lookup is read with Mutagen when available, rather
+than trusting fpcalc's demuxer estimate. A reproduced Jumbotron Shit Poppin case
+had 147.50s from fpcalc versus 137.15s from Mutagen: the same fingerprint returned
+zero results at 147s and a 0.9993407 match at 137s. This does not change the audio.
+Rebuild and downloads share the same duration/fingerprint path.
+
+An fpcalc decoder error is reported with its exit code and diagnostic text,
+not attributed to a missing executable. A partial fingerprint emitted on a
+nonzero exit is not submitted. Client diagnostics use the application's logger
+so corrected durations, lookup scores and decoder failures appear in Live Logs.

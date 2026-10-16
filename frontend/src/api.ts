@@ -265,6 +265,19 @@ export interface LibraryTrackItem {
 }
 
 // ── Lyrics Manager ───────────────────────────────────────────────────────────
+export interface LyricsAutosearchProgress {
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'rate_limited' | 'cancelled';
+  total?: number;
+  processed?: number;
+  synced?: number;
+  plain?: number;
+  not_found?: number;
+  skipped?: number;
+  failed?: number;
+  current?: string;
+  error?: string | null;
+}
+
 export interface MissingLyricsTrack {
   lyrics_status?: 'plain' | 'missing';
   artist: string;
@@ -545,6 +558,14 @@ export const apiService = {
   },
 
   // ── Lyrics Manager ─────────────────────────────────────────────────────────
+  async getLyricsAutosearch(): Promise<LyricsAutosearchProgress> {
+    return (await api.get<LyricsAutosearchProgress>('/api/lyrics/autosearch')).data;
+  },
+
+  async startLyricsAutosearch(): Promise<LyricsAutosearchProgress> {
+    return (await api.post<LyricsAutosearchProgress>('/api/lyrics/autosearch')).data;
+  },
+
   async getMissingLyrics(): Promise<MissingLyricsTrack[]> {
     const resp = await api.get<MissingLyricsTrack[]>('/api/lyrics/missing');
     return resp.data;

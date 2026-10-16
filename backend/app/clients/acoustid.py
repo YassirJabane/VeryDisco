@@ -1,13 +1,13 @@
 import json
-import logging
 import subprocess
 import asyncio
 import time
 from pathlib import Path
 from typing import Optional, List, Tuple
 import httpx
+from backend.app.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger()
 _lookup_lock = asyncio.Lock()
 _last_lookup = 0.0
 
@@ -54,7 +54,7 @@ class AcoustIDClient:
         async with self._fpcalc_lock:
             await asyncio.to_thread(self._check_fpcalc)
         if not self._fpcalc_ok:
-            return None
+            return {"error": "fpcalc is not available; check the installed fingerprint tool"}
         try:
             # Fingerprint generation is bounded and does not block the event loop.
             process = await asyncio.create_subprocess_exec(
@@ -70,12 +70,36 @@ class AcoustIDClient:
                     await process.communicate()
                 raise
             if process.returncode != 0:
-                logger.error(f"fpcalc failed for {file_path}: {stderr.decode()}")
-                return None
-            return json.loads(stdout.decode())
+                detail = " ".join(stderr.decode(errors="replace").split())[:400]
+                reason = f"Audio decoder failed (fpcalc exit {process.returncode}): {detail or 'no diagnostic output'}"
+                logger.warning("%s: %s. Partial fingerprints are not used.", file_path, reason)
+                return {"error": reason}
+            data = json.loads(stdout.decode())
+            if not isinstance(data.get("fingerprint"), str) or not data["fingerprint"]:
+                return {"error": "fpcalc returned an empty or invalid fingerprint"}
+            # Some MP3 demuxers estimate duration using the entire file size,
+            # including large embedded covers. AcoustID filters by duration,
+            # so that estimate can hide an otherwise near-perfect fingerprint.
+            def audio_duration():
+                from mutagen import File
+                audio = File(file_path)
+                return float(audio.info.length) if audio is not None and getattr(audio, "info", None) else 0
+            try:
+                duration = await asyncio.to_thread(audio_duration)
+                if duration > 0:
+                    original = float(data.get("duration") or 0)
+                    if abs(original - duration) > .5:
+                        logger.info("Corrected AcoustID duration for %s: fpcalc %.2fs -> audio %.2fs",
+                                    file_path.name, original, duration)
+                    data["duration"] = duration
+            except Exception as exc:
+                logger.debug("Audio duration unavailable for %s (%s); using fpcalc duration", file_path.name, type(exc).__name__)
+            if float(data.get("duration") or 0) <= 0:
+                return {"error": "Audio duration is unavailable; fingerprint lookup was not sent"}
+            return data
         except Exception as e:
             logger.error(f"Error generating fingerprint for {file_path}: {e}")
-            return None
+            return {"error": f"Fingerprint generation failed: {type(e).__name__}"}
 
     async def lookup_fingerprint(self, fingerprint: str, duration: int, meta: str = "recordingids", api_key: Optional[str] = None) -> Optional[dict]:
         """Looks up the fingerprint and returns the raw AcoustID response dict."""
@@ -215,7 +239,8 @@ class AcoustIDClient:
         # 2. Generate fingerprint
         fp_data = await self.generate_fingerprint(file_path)
         if not fp_data or "fingerprint" not in fp_data or "duration" not in fp_data:
-            return True, "Skipped: Failed to generate audio fingerprint (check if fpcalc is installed)"
+            detail = (fp_data or {}).get("error") or "Failed to generate audio fingerprint"
+            return True, f"Skipped: {detail}"
 
         # 3. Lookup with recordings metadata
         data = await self.lookup_fingerprint(fp_data["fingerprint"], fp_data["duration"], "recordings releasegroups")
@@ -224,6 +249,7 @@ class AcoustIDClient:
             message = error.get("message", "No API response") if isinstance(error, dict) else str(error)
             return False, f"AcoustID API unavailable: {message}"
         if not data.get("results"):
+            logger.info("AcoustID lookup succeeded with no results for %s (duration %.2fs)", file_path.name, fp_data["duration"])
             return False, "No match found in AcoustID database"
 
         results = data.get("results", [])

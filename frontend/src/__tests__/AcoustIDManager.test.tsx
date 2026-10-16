@@ -54,3 +54,24 @@ test('API errors leave the file available for a later recheck', async () => {
   expect(screen.getByText('Drake — Jumbotron Shit Poppin')).toBeInTheDocument();
   expect(apiService.replaceLibraryTrack).not.toHaveBeenCalled();
 });
+
+test('scan remaining does not request an explicit recheck of unsuccessful files', async () => {
+  vi.mocked(apiService.getAcoustidStats).mockResolvedValue({ ...stats(), total: 3, remaining: 2 });
+  vi.mocked(apiService.acoustidScan).mockResolvedValue({ status: 'success', message: 'Started' });
+  render(<AcoustIDManager />);
+  fireEvent.click(await screen.findByRole('button', { name: 'Scan All Remaining (2)' }));
+  await waitFor(() => expect(apiService.acoustidScan).toHaveBeenCalledWith(0, false));
+  expect(await screen.findByText(/remaining new or changed library files only/)).toBeInTheDocument();
+});
+
+test('refresh clears a completed scan indicator and percentages are bounded', async () => {
+  vi.mocked(apiService.getAcoustidStats)
+    .mockResolvedValueOnce({ ...stats(), running: true, total: 747, scanned: 803 })
+    .mockResolvedValue({ ...stats(), running: false });
+  render(<AcoustIDManager />);
+  await screen.findByText('Scanning in Progress...');
+  expect(screen.getByText('100%')).toBeInTheDocument();
+  expect(screen.queryByText('107%')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh Stats' }));
+  await waitFor(() => expect(screen.queryByText('Scanning in Progress...')).not.toBeInTheDocument());
+});

@@ -1263,10 +1263,11 @@ async def _scan_acoustid_batch_internal(batch_size: int = 50, user_id: Optional[
     if not user_id:
         logger.error("Cannot run incremental AcoustID scan without a user library index.")
         return
-    candidates = await db.get_acoustid_candidates(user_id, batch_size or 0, retry_failed=retry_failed)
-    unscanned_files = [Path(row["filepath"]) for row in candidates
+    playlist_dir = (user_row or {}).get('playlist_dir') or cfg.paths.navidrome_playlists_dir
+    candidates = await db.get_acoustid_candidates(user_id, batch_size or 0, retry_failed=retry_failed,
+                                                music_dir=music_dir, playlist_dir=playlist_dir)
+    unscanned_files = [row for row in candidates
                       if Path(row["filepath"]).is_file() and Path(row["filepath"]).resolve().is_relative_to(music_dir.resolve())]
-    candidate_stats = {row["filepath"]: row for row in candidates}
 
     if not unscanned_files:
         logger.info("No unscanned files left in the library.")
@@ -1276,26 +1277,42 @@ async def _scan_acoustid_batch_internal(batch_size: int = 50, user_id: Optional[
 
     from backend.app.clients.acoustid import acoustid_client, verification_status
     
-    for idx, file_path in enumerate(unscanned_files, 1):
+    async def refresh_scanned_index(file_path):
+        try:
+            await db.refresh_library_paths(user_id, [str(file_path)])
+        except Exception:
+            logger.exception('AcoustID result retained, but library index refresh failed for %s', file_path)
+
+    for idx, indexed in enumerate(unscanned_files, 1):
+        file_path = Path(indexed['filepath'])
         try:
             before = file_path.stat()
+            if not retry_failed and indexed.get('file_path') and (
+                indexed.get('checked_size'), indexed.get('checked_mtime_ns')
+            ) == (before.st_size, before.st_mtime_ns):
+                # The file was already checked, but the library index was stale.
+                # Repair the index rather than fingerprinting the same audio again.
+                await refresh_scanned_index(file_path)
+                logger.info('[%s/%s] AcoustID already checked; refreshed stale index: %s',
+                            idx, len(unscanned_files), file_path.name)
+                continue
             is_valid, reason = await acoustid_client.verify_track_against_metadata(file_path)
             status = verification_status(is_valid, reason)
             after = file_path.stat()
             if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 logger.warning("Audio changed during AcoustID verification; result discarded for %s", file_path)
                 continue
-            indexed = candidate_stats[str(file_path)]
             await db.save_acoustid_result(
-                str(file_path), status, reason, after.st_size, after.st_mtime_ns,
+                indexed['filepath'], status, reason, after.st_size, after.st_mtime_ns,
             )
+            if (indexed.get('size'), indexed.get('mtime_ns')) != (after.st_size, after.st_mtime_ns):
+                await refresh_scanned_index(file_path)
             
             logger.info("[%s/%s] AcoustID %s: %s -> %s", idx, len(unscanned_files), status, file_path.name, reason)
         except Exception as e:
             logger.error(f"Error scanning {file_path}: {e}")
-            indexed = candidate_stats[str(file_path)]
             await db.save_acoustid_result(
-                str(file_path), "unavailable", f"Unexpected error during scan: {type(e).__name__}",
+                indexed['filepath'], "unavailable", f"Unexpected error during scan: {type(e).__name__}",
                 indexed.get("size") or 0, indexed.get("mtime_ns") or 0,
             )
 
@@ -1354,7 +1371,8 @@ async def recheck_acoustid_track(body: AcoustidRecheckRequest, request: Request)
     if not target.is_relative_to(root):
         raise HTTPException(status_code=403, detail="Access denied")
     # Membership in the user's catalog is required even with a shared root.
-    failures = await db.get_acoustid_failures(user["id"])
+    failures = await db.get_acoustid_failures(user["id"], music_dir=root,
+                                            playlist_dir=(user_row or {}).get('playlist_dir') or cfg.paths.navidrome_playlists_dir)
     catalog_path = next((row["file_path"] for row in failures if Path(row["file_path"]).resolve() == target), None)
     if not catalog_path:
         raise HTTPException(status_code=404, detail="Track needing verification not found.")
@@ -1378,89 +1396,50 @@ async def recheck_acoustid_track(body: AcoustidRecheckRequest, request: Request)
 async def get_acoustid_stats(request: Request = None):
     """Get the current progress of the library AcoustID verification."""
     cfg = config_manager.config
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    user_id = user['id']
     if not cfg:
-        return {"total": 0, "scanned": 0, "verified": 0, "failed": 0, "running": False}
-
-    music_dir = Path(cfg.paths.music_dir)
-    user_id = None
-    if request:
-        try:
-            from backend.app.auth import get_current_user
-            user = await get_current_user(request)
-            user_id = user["id"]
-            user_row = await db.get_user_by_id(user_id)
-            if user_row and user_row.get("music_dir"):
-                music_dir = Path(user_row["music_dir"])
-        except Exception:
-            pass
-
-    def _count_acoustid_files_sync() -> int:
-        count = 0
-        if music_dir.exists():
-            for root, dirs, files in os.walk(str(music_dir)):
-                dirs[:] = [d for d in dirs if not d.startswith(".") and d.lower() not in ["playlists", "navidrome_playlists", "explore"]]
-                if ".staging" in root:
-                    continue
-                for f in files:
-                    if f.lower().endswith((".mp3", ".flac", ".m4a")):
-                        count += 1
-        return count
-
-    cache_path = get_file_checks_cache_path(user_id or "global")
-    total_files = 0
-    cache_data = {}
-    try:
-        if cache_path.exists():
-            import json
-            with open(cache_path, "r", encoding="utf-8") as f:
-                cache_data = json.load(f)
-                if "acoustid_total_files" in cache_data:
-                    total_files = cache_data["acoustid_total_files"]
-    except Exception:
-        pass
-
-    if total_files == 0:
-        total_files = await asyncio.to_thread(_count_acoustid_files_sync)
-        cache_data["acoustid_total_files"] = total_files
-        try:
-            import json
-            with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump(cache_data, f)
-        except Exception:
-            pass
-
-    results = await db.get_acoustid_results()
-    
-    # Filter results that actually exist in the current user's library directory
+        return {"total": 0, "scanned": 0, "verified": 0, "failed": 0,
+                "inconclusive": 0, "remaining": 0, "running": False, "failures": []}
+    user_row = await db.get_user_by_id(user_id)
+    music_dir = Path((user_row or {}).get('music_dir') or cfg.paths.music_dir)
+    playlist_dir = (user_row or {}).get('playlist_dir') or cfg.paths.navidrome_playlists_dir
+    # One snapshot, exactly the same catalog and freshness predicate as Scan Remaining.
+    # Do not mix cached filesystem totals with historical verification rows.
+    results = await db.get_acoustid_catalog(user_id, music_dir, playlist_dir)
+    total_files = len(results)
     scanned_count = 0
     verified_count = 0
     failed_count = 0
     inconclusive_count = 0
     from backend.app.clients.acoustid import verification_status
     
+    failures = []
     for r in results:
-        r_path = Path(r["file_path"])
-        try:
-            if music_dir in r_path.parents or r_path.parent == music_dir:
-                scanned_count += 1
-                status = verification_status(r["status"] == "verified", r.get("reason") or "", r["status"])
-                if status == "verified":
-                    verified_count += 1
-                elif status == "mismatch":
-                    failed_count += 1
-                else:
-                    inconclusive_count += 1
-        except Exception:
-            pass
+        if r['needs_scan']:
+            continue
+        scanned_count += 1
+        status = verification_status(r['status'] == 'verified', r.get('reason') or '', r['status'] or '')
+        if status == 'verified':
+            verified_count += 1
+        elif status == 'mismatch':
+            failed_count += 1
+        else:
+            inconclusive_count += 1
+        if status != 'verified':
+            failures.append(dict(r, status=status))
+    failures.sort(key=lambda row: (row['scanned_at'] or '', row['filepath']), reverse=True)
 
     is_running = (f"acoustid_scan:{user_id}" in _active_tasks
                   or _acoustid_recheck_locks.setdefault(user_id or "global", asyncio.Lock()).locked())
 
-    failures = await db.get_acoustid_failures(user_id) if user_id else []
     for failure in failures:
         status = verification_status(failure.get("status") == "verified", failure.get("reason") or "", failure.get("status") or "")
         failure["status"] = status
         failure["suggestion"] = (
+            "The audio decoder reported invalid data. Inspect the file before retrying; this is not a missing-fpcalc error."
+            if "audio decoder failed" in (failure.get("reason") or "").lower() else
             "Recheck first. If the mismatch persists, review artist/title before replacing audio."
             if status == "mismatch"
             else "Verification is inconclusive. Retry the check; this does not establish that the audio is wrong."
@@ -6593,6 +6572,41 @@ async def preview_maintenance_fix(req: PreviewIssueRequest, request: Request):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load preview: {str(e)}")
+
+_lyrics_autosearch_progress: dict = {}
+
+
+@app.get("/api/lyrics/autosearch")
+async def lyrics_autosearch_status(request: Request):
+    from backend.app.auth import get_current_user
+    user = await get_current_user(request)
+    return _lyrics_autosearch_progress.get(user['id'], {'status': 'idle'})
+
+
+@app.post("/api/lyrics/autosearch")
+async def start_lyrics_autosearch(request: Request):
+    from backend.app.auth import get_current_user
+    from backend.app.lyrics_autosearch import new_progress, run_autosearch
+    user = await get_current_user(request)
+    if not config_manager.config:
+        raise HTTPException(status_code=400, detail="App is not configured.")
+    user_id = user['id']
+    task_id = f'lyrics_autosearch:{user_id}'
+    if task_id in _active_tasks:
+        return _lyrics_autosearch_progress.get(user_id, {'status': 'running'})
+    user_row = await db.get_user_by_id(user_id)
+    music_dir = (user_row or {}).get('music_dir') or config_manager.config.paths.music_dir
+    # Recheck after the awaited user lookup, so simultaneous starts share one job.
+    if task_id in _active_tasks:
+        return _lyrics_autosearch_progress.get(user_id, {'status': 'running'})
+    progress = new_progress()
+    _lyrics_autosearch_progress[user_id] = progress
+    _create_tracked_task(run_autosearch(db, user_id, music_dir, progress, trigger_navidrome_scan_debounced,
+                                     base_url=config_manager.config.lyrics.base_url,
+                                     timeout=config_manager.config.timeouts.http_seconds),
+                         task_id=task_id, task_type='lyrics_autosearch', metadata={'user_id': user_id})
+    return progress
+
 
 class SaveLyricsRequest(BaseModel):
     filepath: str
