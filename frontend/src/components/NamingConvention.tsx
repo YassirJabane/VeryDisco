@@ -44,7 +44,8 @@ const NamingConvention: React.FC = () => {
     try {
       const data = await apiService.scanNamingConventions();
       setResults(data.mismatches || []);
-      showToast(`Scan complete. Found ${data.mismatches?.length || 0} files to rename.`);
+      const count = data.mismatches?.length || 0;
+      showToast(`Scan complete. Found ${count} file${count === 1 ? '' : 's'} to rename.`);
     } catch (e: any) {
       showToast(e?.response?.data?.detail ?? 'Failed to scan files.', 'error');
     } finally {
@@ -119,7 +120,7 @@ const NamingConvention: React.FC = () => {
           <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} gap={1.5} mb={2}>
             <Box>
               <Typography variant="h6" fontWeight={700}>
-                {results.length === 0 ? 'Naming check complete' : `${results.length} file${results.length === 1 ? '' : 's'} need attention`}
+                {results.length === 0 ? 'Naming check complete' : `${results.length} file${results.length === 1 ? ' needs' : 's need'} attention`}
               </Typography>
               {results.length > 0 && <Typography variant="body2" color="text.secondary">Every mismatched folder and filename is listed below before anything is changed.</Typography>}
             </Box>

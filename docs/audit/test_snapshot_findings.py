@@ -100,6 +100,23 @@ async def test_anonymous_static_route_stays_inside_dist(client, isolated_app, tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("asset", ["sw.js", "manifest.webmanifest", "index.html", "metadata-rebuild"])
+async def test_pwa_entrypoints_revalidate_after_deployment(client, isolated_app, tmp_path, monkeypatch, asset):
+    dist = tmp_path / "pwa-dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html>Static app shell</html>", encoding="utf-8")
+    (dist / "sw.js").write_text("// service worker", encoding="utf-8")
+    (dist / "manifest.webmanifest").write_text('{"name":"VeryDisco"}', encoding="utf-8")
+    monkeypatch.setattr(isolated_app, "frontend_dir", str(dist))
+    response = await client.get(f"/{asset}")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache"
+    if asset == "manifest.webmanifest":
+        assert response.headers["content-type"].startswith("application/manifest+json")
+        assert response.json()["name"] == "VeryDisco"
+
+
+@pytest.mark.asyncio
 async def test_anonymous_album_download_is_denied(client, isolated_app, monkeypatch):
     submitted = []
     def capture(coro, **kwargs):

@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 test('requests startup history and resumes from the last persisted log id', async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   localStorage.clear();
   FakeEventSource.instances = [];
   vi.stubGlobal('EventSource', FakeEventSource);

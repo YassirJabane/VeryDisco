@@ -1,5 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#6200ea"/>
-  <path d="M256 128C185.3 128 128 185.3 128 256C128 326.7 185.3 384 256 384C326.7 384 384 326.7 384 256C384 185.3 326.7 128 256 128ZM256 352C203 352 160 309 160 256C160 203 203 160 256 160C309 160 352 203 352 256C352 309 309 352 256 352Z" fill="white"/>
-  <circle cx="256" cy="256" r="64" fill="#b388ff"/>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="VeryDisco"><rect width="512" height="512" rx="115" fill="#6840DC"/><g transform="translate(92 92) scale(2.733)"><g fill="none" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"><path d="M44.3 103.2A46 46 0 0 1 44.3 16.8" stroke="#D9CCFF"/><path d="M40 38L68 92V14.7A46 46 0 0 1 68 105.3" stroke="#fff"/><circle cx="36" cy="78" r="5.5" fill="#70DED0" stroke="none"/></g></g></svg>

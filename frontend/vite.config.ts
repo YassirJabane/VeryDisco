@@ -7,23 +7,27 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       workbox: {
-        navigateFallback: null,
+        navigateFallback: '/index.html',
         cleanupOutdatedCaches: true,
-        skipWaiting: true,
+        skipWaiting: false,
         clientsClaim: true,
-        navigateFallbackDenylist: [/^\/api/, /^\/healthz/],
+        navigateFallbackDenylist: [/^\/api(?:\/|$)/, /^\/healthz(?:\/|$)/, /^\/assets\//],
       },
-      includeAssets: ['icon.svg', 'icon-192.png', 'icon-512.png', 'screenshot-wide.png', 'screenshot-mobile.png'],
+      includeAssets: ['icon.svg', 'favicon-32.png', 'apple-touch-icon.png', 'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'brand/*.svg', 'screenshot-wide.png', 'screenshot-mobile.png'],
       manifest: {
         id: '/',
         name: 'VeryDisco',
         short_name: 'VeryDisco',
         start_url: '/',
+        scope: '/',
         display: 'standalone',
-        background_color: '#0b0a0f',
-        theme_color: '#6200ea',
+        lang: 'en',
+        categories: ['music', 'utilities'],
+        prefer_related_applications: false,
+        background_color: '#0d1017',
+        theme_color: '#6840dc',
         description: 'VeryDisco - Weekly Jams Sync',
         icons: [
           {
@@ -39,7 +43,7 @@ export default defineConfig({
             purpose: 'any'
           },
           {
-            src: '/icon-512.png',
+            src: '/icon-maskable-512.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable'

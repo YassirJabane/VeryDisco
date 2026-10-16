@@ -488,8 +488,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async getPinnedArtists(): Promise<any[]> {
-    const resp = await api.get<any[]>('/api/pinned_artists');
+  async getPinnedArtists(refresh: boolean = false): Promise<any[]> {
+    const resp = await api.get<any[]>(refresh ? '/api/pinned_artists?refresh=true' : '/api/pinned_artists');
     return resp.data;
   },
 

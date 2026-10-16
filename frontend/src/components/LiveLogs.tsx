@@ -10,6 +10,7 @@ import PauseIcon from '@mui/icons-material/Pause';
 import PlayIcon from '@mui/icons-material/PlayArrow';
 import CopyIcon from '@mui/icons-material/ContentCopy';
 import DownloadIcon from '@mui/icons-material/Download';
+import { alpha } from '@mui/material/styles';
 
 interface LogEntry {
   id?: number;
@@ -140,12 +141,12 @@ export const LiveLogs: React.FC = () => {
 
   const getLogColor = (level: string) => {
     switch (level.toUpperCase()) {
-      case 'DEBUG': return '#808080';
-      case 'WARNING': return '#ffb74d';
+      case 'DEBUG': return theme.palette.text.secondary;
+      case 'WARNING': return theme.palette.warning.main;
       case 'ERROR':
-      case 'CRITICAL': return '#ef5350';
+      case 'CRITICAL': return theme.palette.error.main;
       case 'INFO':
-      default: return '#81c784';
+      default: return theme.palette.success.main;
     }
   };
 
@@ -218,13 +219,13 @@ export const LiveLogs: React.FC = () => {
         </Box>
       </Box>
 
-      <Card sx={{ bgcolor: '#0a090d', border: '1px solid #1a1924', borderRadius: 4 }}>
+      <Card sx={{ bgcolor: 'background.paper', borderColor: 'divider', borderRadius: 4 }}>
         <CardContent sx={{ p: 0, '&:last-child': { pb: 0 } }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.5, borderBottom: '1px solid #1a1924', bgcolor: '#121118' }}>
-            <span style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: '#ef5350', display: 'inline-block' }} />
-            <span style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: '#ffb74d', display: 'inline-block' }} />
-            <span style={{ width: 12, height: 12, borderRadius: '50%', backgroundColor: '#81c784', display: 'inline-block' }} />
-            <Typography variant="body2" sx={{ ml: 2, fontFamily: 'JetBrains Mono', color: '#a5a4b1', fontSize: '0.8rem' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.5, borderBottom: '1px solid', borderColor: 'divider', bgcolor: 'action.hover' }}>
+            <Box aria-hidden="true" sx={{ width: 12, height: 12, flexShrink: 0, borderRadius: '50%', bgcolor: 'error.main' }} />
+            <Box aria-hidden="true" sx={{ width: 12, height: 12, flexShrink: 0, borderRadius: '50%', bgcolor: 'warning.main' }} />
+            <Box aria-hidden="true" sx={{ width: 12, height: 12, flexShrink: 0, borderRadius: '50%', bgcolor: 'success.main' }} />
+            <Typography variant="body2" sx={{ ml: { xs: 0.5, sm: 2 }, fontFamily: 'JetBrains Mono, monospace', color: 'text.secondary', fontSize: '0.8rem', overflowWrap: 'anywhere' }}>
               verydisco@homelab:~ $ tail -f log.stream
             </Typography>
           </Box>
@@ -238,13 +239,13 @@ export const LiveLogs: React.FC = () => {
               flexDirection: 'column',
               gap: 0.5,
               '&::-webkit-scrollbar': { width: '8px' },
-              '&::-webkit-scrollbar-track': { background: '#0a090d' },
-              '&::-webkit-scrollbar-thumb': { background: '#2c2b3c', borderRadius: '4px' },
-              '&::-webkit-scrollbar-thumb:hover': { background: '#3c3b4d' },
+              '&::-webkit-scrollbar-track': { background: theme.palette.background.paper },
+              '&::-webkit-scrollbar-thumb': { background: alpha(theme.palette.primary.main, 0.3), borderRadius: '4px' },
+              '&::-webkit-scrollbar-thumb:hover': { background: alpha(theme.palette.primary.main, 0.5) },
             }}
           >
             {filteredLogs.length === 0 ? (
-              <Typography sx={{ fontFamily: 'JetBrains Mono', color: '#626070', fontSize: '0.9rem', fontStyle: 'italic' }}>
+              <Typography sx={{ fontFamily: 'JetBrains Mono, monospace', color: 'text.secondary', fontSize: '0.9rem', fontStyle: 'italic' }}>
                 -- no log outputs recorded yet --
               </Typography>
             ) : (
@@ -261,11 +262,12 @@ export const LiveLogs: React.FC = () => {
                     lineHeight: '1.5', 
                     wordBreak: 'break-word',
                     py: { xs: 0.75, md: 0.25 },
-                    borderBottom: { xs: '1px dashed rgba(255,255,255,0.06)', md: 'none' }
+                    borderBottom: { xs: '1px dashed', md: 'none' },
+                    borderColor: 'divider',
                   }}
                 >
                   <Box display="flex" alignItems="center" gap={1} flexShrink={0}>
-                    <Typography component="span" sx={{ fontFamily: 'inherit', fontSize: 'inherit', color: '#7a798c', userSelect: 'none' }}>
+                    <Typography component="span" sx={{ fontFamily: 'inherit', fontSize: 'inherit', color: 'text.secondary', userSelect: 'none' }}>
                       {new Date(log.timestamp).toLocaleTimeString()}
                     </Typography>
                     <Typography component="span" sx={{ fontFamily: 'inherit', fontSize: 'inherit', color: getLogColor(log.level), fontWeight: 700 }}>
@@ -277,7 +279,7 @@ export const LiveLogs: React.FC = () => {
                       </Typography>
                     )}
                   </Box>
-                  <Typography component="span" sx={{ fontFamily: 'inherit', fontSize: 'inherit', color: '#e5e5e9', whiteSpace: 'pre-wrap' }}>
+                  <Typography component="span" sx={{ fontFamily: 'inherit', fontSize: 'inherit', color: 'text.primary', whiteSpace: 'pre-wrap' }}>
                     {log.message}
                   </Typography>
                 </Box>
@@ -304,11 +306,11 @@ export const LiveLogs: React.FC = () => {
 
 const ChipStatus: React.FC<{ isConnected: boolean }> = ({ isConnected }) => (
   <Box display="flex" alignItems="center" gap={1} sx={{ mr: 1 }}>
-    <span style={{
+    <Box component="span" sx={{
       width: 8, height: 8, borderRadius: '50%',
-      backgroundColor: isConnected ? '#81c784' : '#ef5350',
+      bgcolor: isConnected ? 'success.main' : 'warning.main',
       display: 'inline-block',
-      boxShadow: isConnected ? '0 0 8px #81c784' : '0 0 8px #ef5350'
+      boxShadow: theme => `0 0 0 3px ${alpha(isConnected ? theme.palette.success.main : theme.palette.warning.main, 0.12)}`,
     }} />
     <Typography variant="caption" sx={{ fontWeight: 600, color: 'text.secondary' }}>
       {isConnected ? 'LIVE' : 'RECONNECTING...'}

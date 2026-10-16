@@ -6,20 +6,33 @@ export const getTheme = (mode: 'light' | 'dark') => {
       mode,
       primary: {
         main: mode === 'dark' ? '#b397ff' : '#6840dc',
+        light: mode === 'dark' ? '#cbb8ff' : '#8665e6',
+        dark: mode === 'dark' ? '#9673ee' : '#5130b4',
         contrastText: mode === 'dark' ? '#171024' : '#ffffff',
       },
       secondary: {
         main: mode === 'dark' ? '#70ded0' : '#067d71',
+        contrastText: mode === 'dark' ? '#102b27' : '#ffffff',
       },
       background: {
-        default: mode === 'dark' ? '#0c0e14' : '#f5f5fa',
-        paper: mode === 'dark' ? '#14171f' : '#ffffff',
+        default: mode === 'dark' ? '#0d1017' : '#f6f7fb',
+        paper: mode === 'dark' ? '#171b25' : '#ffffff',
       },
       text: {
         primary: mode === 'dark' ? '#f0f0f7' : '#202133',
-        secondary: mode === 'dark' ? '#a5a8bb' : '#64667a',
+        secondary: mode === 'dark' ? '#b0b6c8' : '#586176',
+        disabled: mode === 'dark' ? '#81899d' : '#70798c',
       },
-      divider: mode === 'dark' ? 'rgba(255,255,255,0.09)' : 'rgba(24,20,38,0.10)',
+      divider: mode === 'dark' ? 'rgba(176,182,200,0.17)' : 'rgba(58,67,89,0.16)',
+      action: {
+        active: mode === 'dark' ? '#b0b6c8' : '#586176',
+        hover: mode === 'dark' ? 'rgba(179,151,255,0.08)' : 'rgba(104,64,220,0.06)',
+        selected: mode === 'dark' ? 'rgba(179,151,255,0.16)' : 'rgba(104,64,220,0.10)',
+        focus: mode === 'dark' ? 'rgba(179,151,255,0.22)' : 'rgba(104,64,220,0.16)',
+        disabled: mode === 'dark' ? '#81899d' : '#70798c',
+        disabledBackground: mode === 'dark' ? '#252b38' : '#e9ecf3',
+      },
+      info: { main: mode === 'dark' ? '#8fbeff' : '#2866b0', contrastText: mode === 'dark' ? '#101e32' : '#ffffff' },
       success: { main: mode === 'dark' ? '#61cfa6' : '#137b60', contrastText: mode === 'dark' ? '#10271e' : '#ffffff' },
       warning: { main: mode === 'dark' ? '#e6b45e' : '#9b6100', contrastText: mode === 'dark' ? '#261c0b' : '#ffffff' },
       error: { main: mode === 'dark' ? '#f1919c' : '#c13f53', contrastText: mode === 'dark' ? '#33131a' : '#ffffff' },
@@ -43,8 +56,8 @@ export const getTheme = (mode: 'light' | 'dark') => {
         styleOverrides: {
           body: {
             background: mode === 'dark'
-              ? 'radial-gradient(ellipse at 80% 0%, rgba(139,112,238,0.06), transparent 45rem), #0c0e14'
-              : 'radial-gradient(ellipse at 80% 0%, rgba(125,92,255,0.04), transparent 45rem), #f5f5fa',
+              ? 'radial-gradient(ellipse at 80% 0%, rgba(179,151,255,0.035), transparent 45rem), #0d1017'
+              : 'radial-gradient(ellipse at 80% 0%, rgba(104,64,220,0.025), transparent 45rem), #f6f7fb',
             WebkitFontSmoothing: 'antialiased',
           },
           '::selection': {
@@ -84,7 +97,7 @@ export const getTheme = (mode: 'light' | 'dark') => {
             boxShadow: mode === 'dark'
               ? '0 4px 24px rgba(0, 0, 0, 0.12)'
               : '0 4px 24px rgba(35, 36, 65, 0.04)',
-            border: mode === 'dark' ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(31, 20, 68, 0.08)',
+            border: mode === 'dark' ? '1px solid rgba(176,182,200,0.17)' : '1px solid rgba(58,67,89,0.14)',
             backgroundImage: 'none',
           },
         },
@@ -97,13 +110,25 @@ export const getTheme = (mode: 'light' | 'dark') => {
             padding: '9px 16px',
             transition: 'transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease',
             '&.Mui-focusVisible': { outline: '2px solid currentColor', outlineOffset: 3 },
+            '&.Mui-disabled': { color: mode === 'dark' ? '#81899d' : '#70798c' },
           },
+          outlinedPrimary: { borderColor: mode === 'dark' ? 'rgba(179,151,255,0.55)' : 'rgba(104,64,220,0.45)' },
         },
       },
       MuiInputBase: {
         styleOverrides: {
           root: {
             fontSize: '16px', // Prevent iOS Safari from zooming in on focus
+          },
+        },
+      },
+      MuiOutlinedInput: {
+        styleOverrides: {
+          root: {
+            borderRadius: 12,
+            '& .MuiOutlinedInput-notchedOutline': { borderColor: mode === 'dark' ? '#5f687e' : '#949caf' },
+            '&:hover:not(.Mui-disabled) .MuiOutlinedInput-notchedOutline': { borderColor: mode === 'dark' ? '#b0b6c8' : '#586176' },
+            '&.Mui-focused .MuiOutlinedInput-notchedOutline': { borderColor: mode === 'dark' ? '#b397ff' : '#6840dc' },
           },
         },
       },
@@ -133,7 +158,7 @@ export const getTheme = (mode: 'light' | 'dark') => {
       MuiTableCell: {
         styleOverrides: {
           root: { borderColor: mode === 'dark' ? 'rgba(255,255,255,.07)' : 'rgba(24,20,38,.08)', padding: '14px 16px' },
-          head: { color: mode === 'dark' ? '#a5a8bb' : '#64667a', fontSize: '.72rem', fontWeight: 750, letterSpacing: '.05em', textTransform: 'uppercase', backgroundColor: mode === 'dark' ? '#171b25' : '#f8f8fc' },
+          head: { color: mode === 'dark' ? '#b0b6c8' : '#586176', fontSize: '.72rem', fontWeight: 750, letterSpacing: '.05em', textTransform: 'uppercase', backgroundColor: mode === 'dark' ? '#1e2431' : '#f1f3f9' },
         },
       },
       MuiTableRow: { styleOverrides: { root: { '&:last-child td': { borderBottom: 0 } } } },

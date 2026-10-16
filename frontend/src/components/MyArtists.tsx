@@ -56,6 +56,8 @@ export const MyArtists: React.FC = () => {
   const { notify, confirm } = useNotification();
   const [artists, setArtists] = useState<PinnedArtist[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshPending = React.useRef(false);
   const [filterText, setFilterText] = useState<string>('');
   
   // Add Artist Modal
@@ -77,15 +79,21 @@ export const MyArtists: React.FC = () => {
   const [selectedEditionByGroup, setSelectedEditionByGroup] = useState<Record<string, string>>({});
   const [editionLoading, setEditionLoading] = useState<string | null>(null);
 
-  const fetchArtists = async () => {
-    setLoading(true);
+  const fetchArtists = async (refresh = false) => {
+    if (refreshPending.current) return;
+    refreshPending.current = true;
+    if (refresh) setRefreshing(true);
+    else setLoading(true);
     try {
-      const data = await apiService.getPinnedArtists();
+      const data = await apiService.getPinnedArtists(refresh);
       setArtists(Array.isArray(data) ? data : []);
+      if (refresh) notify('Artists updated from your library.', 'success');
     } catch (err) {
       console.error("Failed to load pinned artists", err);
-      setArtists([]);
+      notify(getErrorMessage(err, 'Could not update artists. Your current list is still available.'), 'error');
     } finally {
+      refreshPending.current = false;
+      setRefreshing(false);
       setLoading(false);
     }
   };
@@ -463,14 +471,18 @@ export const MyArtists: React.FC = () => {
             Browse pinned artist discographies, check library coverage, and queue downloads.
           </Typography>
         </Box>
-        <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', width: { xs: '100%', md: 'auto' } }}>
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1.5, alignItems: 'center', width: { xs: '100%', md: 'auto' } }}>
           <TextField
             size="small"
             placeholder="Search artists..."
             value={filterText}
             onChange={(e) => setFilterText(e.target.value)}
-            sx={{ width: 250 }}
+            sx={{ width: { xs: '100%', sm: 230 }, flexGrow: { xs: 1, md: 0 } }}
           />
+          <Button variant="outlined" startIcon={refreshing ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
+            disabled={loading || refreshing} onClick={() => void fetchArtists(true)}>
+            {refreshing ? 'Updating artists…' : 'Update artists'}
+          </Button>
           <Button 
             variant="contained" 
             startIcon={<AddIcon />} 
@@ -480,20 +492,12 @@ export const MyArtists: React.FC = () => {
             Add Artist
           </Button>
           <Button 
-            variant="contained" 
+            variant="outlined"
             color="error" 
             startIcon={<DangerousIcon />} 
             onClick={handlePurgeAllClick}
-            sx={{ 
-              fontWeight: 700, 
-              flexShrink: 0,
-              bgcolor: '#d32f2f',
-              boxShadow: '0 0 12px rgba(211, 47, 47, 0.4)',
-              '&:hover': {
-                bgcolor: '#b71c1c',
-                boxShadow: '0 0 18px rgba(211, 47, 47, 0.8)'
-              }
-            }}
+            disabled={loading || refreshing || artists.length === 0}
+            sx={{ fontWeight: 700, flexShrink: 0 }}
           >
             Purge All
           </Button>

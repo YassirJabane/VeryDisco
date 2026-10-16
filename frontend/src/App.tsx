@@ -35,6 +35,8 @@ import GlobalPlayer from './components/GlobalPlayer';
 import PageErrorBoundary from './components/PageErrorBoundary';
 import Login from './components/Login';
 import Setup from './components/Setup';
+import BrandLogo from './components/BrandLogo';
+import PwaStatus from './components/PwaStatus';
 import { AuthProvider, useAuth } from './context/AuthContext';
 
 const Dashboard = React.lazy(() => import('./components/Dashboard'));
@@ -54,11 +56,9 @@ const DuplicatesManager = React.lazy(() => import('./components/DuplicatesManage
 const UserSettings = React.lazy(() => import('./components/UserSettings'));
 const RunningTasks = React.lazy(() => import('./components/RunningTasks'));
 const AcoustIDManager = React.lazy(() => import('./components/AcoustIDManager'));
-const NamingConvention = React.lazy(() => import('./components/NamingConvention'));
-const FeatFixer = React.lazy(() => import('./components/FeatFixer'));
 const MusicBrainzInspector = React.lazy(() => import('./components/MusicBrainzInspector'));
 const MusicRequests = React.lazy(() => import('./components/MusicRequests'));
-const MetadataRebuild = React.lazy(() => import('./components/MetadataRebuild'));
+const MetadataRebuild = React.lazy(() => import('./components/MetadataWorkspace'));
 const PlaylistImport = React.lazy(() => import('./components/PlaylistImport'));
 
 const DRAWER_WIDTH = 260;
@@ -164,8 +164,8 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
     return (
       <ThemeProvider theme={activeTheme}>
         <CssBaseline />
-        <Box sx={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <MusicIcon sx={{ fontSize: 48, opacity: 0.3, animation: 'pulse 1.5s ease-in-out infinite' }} />
+        <Box role="status" aria-label="Loading VeryDisco" sx={{ minHeight: '100vh', '@supports (min-height: 100dvh)': { minHeight: '100dvh' }, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <BrandLogo variant="symbol" width={64} decorative />
         </Box>
       </ThemeProvider>
     );
@@ -210,8 +210,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         { id: 'album-art', text: 'Artwork', icon: <AlbumArtIcon /> },
         { id: 'lyrics', text: 'Lyrics', icon: <MusicIcon /> },
         { id: 'duplicates', text: 'Duplicates', icon: <DuplicatesIcon /> },
-        { id: 'naming', text: 'Naming conventions', icon: <SettingsIcon /> },
-        { id: 'feat-fixer', text: 'Feature artist fixer', icon: <ArtistsIcon /> },
+        ...(user?.isAdmin ? [{ id: 'acoustid', text: 'AcoustID verification', icon: <FingerprintIcon /> }] : []),
         { id: 'musicbrainz-inspector', text: 'MusicBrainz inspector', icon: <AlbumIcon /> },
       ],
     },
@@ -223,7 +222,6 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         ...(user?.isAdmin ? [
           { id: 'logs', text: 'Live logs', icon: <LogsIcon /> },
           { id: 'server-health', text: 'Server health', icon: <HealthIcon /> },
-          { id: 'acoustid', text: 'AcoustID verification', icon: <FingerprintIcon /> },
           { id: 'config', text: 'Configuration', icon: <SettingsIcon /> },
         ] : []),
       ],
@@ -242,21 +240,17 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
   const activeGroup = destinations.find(item => item.id === activeTab)?.group || 'Workspace';
 
   const drawerContent = (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <Box sx={{ height: '100%', pt: 'env(safe-area-inset-top)', pl: { xs: 'env(safe-area-inset-left)', md: 0 }, pb: 'env(safe-area-inset-bottom)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <Box sx={{ p: navigationCollapsed ? 2 : 2.5, display: 'flex', alignItems: 'center', gap: 1.25, minHeight: 82 }}>
-        <Box sx={{ width: 42, height: 42, borderRadius: 2.5, display: 'grid', placeItems: 'center', flexShrink: 0, background: 'linear-gradient(135deg, #6d3df5, #b084ff)', boxShadow: '0 10px 26px rgba(109,61,245,0.32)' }}>
-          <MusicIcon sx={{ color: '#fff', fontSize: 24 }} />
+        <Box component="a" href="/dashboard" aria-label="VeryDisco home" onClick={(e: React.MouseEvent<HTMLAnchorElement>) => { if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); navigateTo('dashboard'); } }} sx={{ display: 'block', width: '100%', borderRadius: 1, '&:focus-visible': { outline: '2px solid', outlineColor: 'primary.main', outlineOffset: 4 } }}>
+          <BrandLogo variant={navigationCollapsed ? 'symbol' : 'full'} width={navigationCollapsed ? 44 : '100%'} decorative />
         </Box>
-        {!navigationCollapsed && <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h6" sx={{ fontWeight: 850, lineHeight: 1 }}>VeryDisco</Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, letterSpacing: '.12em' }}>MUSIC OPS</Typography>
-        </Box>}
       </Box>
       <Divider />
 
       <List sx={{ px: navigationCollapsed ? 1 : 1.5, py: 1.5, flex: 1, overflowY: 'auto' }}>
         <ListItem disablePadding sx={{ mb: 1 }}>
-          <ListItemButton component="a" href="/dashboard" aria-label="Home" aria-current={activeTab === 'dashboard' ? 'page' : undefined} selected={activeTab === 'dashboard'} onClick={(e) => { if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); navigateTo('dashboard'); setMobileOpen(false); } }} sx={{ borderRadius: 2.5, minHeight: 46, justifyContent: navigationCollapsed ? 'center' : 'initial', px: navigationCollapsed ? 1 : 1.5, '&.Mui-selected': { color: 'primary.main', bgcolor: 'rgba(155,108,255,0.13)', '& .MuiListItemIcon-root': { color: 'primary.main' } } }}>
+          <ListItemButton component="a" href="/dashboard" aria-label="Home" aria-current={activeTab === 'dashboard' ? 'page' : undefined} selected={activeTab === 'dashboard'} onClick={(e) => { if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); navigateTo('dashboard'); setMobileOpen(false); } }} sx={{ borderRadius: 2.5, minHeight: 46, justifyContent: navigationCollapsed ? 'center' : 'initial', px: navigationCollapsed ? 1 : 1.5, '&.Mui-selected': { color: 'primary.main', bgcolor: 'action.selected', '& .MuiListItemIcon-root': { color: 'primary.main' } } }}>
             <ListItemIcon sx={{ minWidth: navigationCollapsed ? 0 : 38, color: activeTab === 'dashboard' ? 'primary.main' : 'text.secondary' }}><DashboardIcon /></ListItemIcon>
             {!navigationCollapsed && <ListItemText primary="Home" primaryTypographyProps={{ fontWeight: activeTab === 'dashboard' ? 750 : 550 }} />}
           </ListItemButton>
@@ -278,7 +272,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
                   const isSelected = activeTab === item.id;
                   return <ListItem key={item.id} disablePadding>
                     <Tooltip title={navigationCollapsed ? item.text : ''} placement="right">
-                      <ListItemButton component="a" href={`/${item.id}`} aria-label={item.text} aria-current={isSelected ? 'page' : undefined} selected={isSelected} onClick={(e) => { if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); navigateTo(item.id); setMobileOpen(false); } }} sx={{ borderRadius: 2.5, minHeight: 42, justifyContent: navigationCollapsed ? 'center' : 'initial', px: navigationCollapsed ? 1 : 1.5, ml: navigationCollapsed ? 0 : 1, '&.Mui-selected': { color: 'primary.main', bgcolor: 'rgba(155,108,255,0.13)', '& .MuiListItemIcon-root': { color: 'primary.main' } } }}>
+                      <ListItemButton component="a" href={`/${item.id}`} aria-label={item.text} aria-current={isSelected ? 'page' : undefined} selected={isSelected} onClick={(e) => { if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) { e.preventDefault(); navigateTo(item.id); setMobileOpen(false); } }} sx={{ borderRadius: 2.5, minHeight: 42, justifyContent: navigationCollapsed ? 'center' : 'initial', px: navigationCollapsed ? 1 : 1.5, ml: navigationCollapsed ? 0 : 1, '&.Mui-selected': { color: 'primary.main', bgcolor: 'action.selected', '& .MuiListItemIcon-root': { color: 'primary.main' } } }}>
                         <ListItemIcon sx={{ minWidth: navigationCollapsed ? 0 : 38, color: isSelected ? 'primary.main' : 'text.secondary' }}>{item.icon}</ListItemIcon>
                         {!navigationCollapsed && <ListItemText primary={item.text} primaryTypographyProps={{ fontWeight: isSelected ? 750 : 550, fontSize: '.9rem' }} />}
                       </ListItemButton>
@@ -301,7 +295,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
   );
 
   return (
-    <Box sx={{ display: 'flex', minHeight: '100vh', maxWidth: '100vw', overflowX: 'hidden' }}>
+    <Box sx={{ display: 'flex', minHeight: '100vh', '@supports (min-height: 100dvh)': { minHeight: '100dvh' }, maxWidth: '100vw', overflowX: 'hidden' }}>
       <Box component="a" href="#main-content" sx={{ position: 'fixed', left: 16, top: -80, zIndex: 1600, px: 2, py: 1.5, bgcolor: 'primary.main', color: 'primary.contrastText', borderRadius: 2, '&:focus': { top: 12 } }}>Skip to content</Box>
       {/* Header App Bar */}
       <AppBar
@@ -316,9 +310,10 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
           borderColor: 'divider',
           backdropFilter: 'blur(24px)',
           backgroundImage: 'none',
+          pt: 'env(safe-area-inset-top)',
         }}
       >
-        <Toolbar sx={{ justifyContent: 'space-between', px: { xs: 2, md: 4 } }}>
+        <Toolbar sx={{ justifyContent: 'space-between', pl: { xs: 'max(16px, env(safe-area-inset-left))', md: 4 }, pr: { xs: 'max(16px, env(safe-area-inset-right))', md: 4 } }}>
           <Box display="flex" alignItems="center">
             <IconButton
               color="inherit"
@@ -334,6 +329,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
                 <MenuIcon sx={{ transform: drawerCollapsed ? 'rotate(180deg)' : 'none', transition: 'transform 180ms ease' }} />
               </IconButton>
             </Tooltip>
+            <BrandLogo variant="symbol" width={30} sx={{ display: { xs: 'block', md: 'none' }, mr: 1 }} />
             <Box sx={{ minWidth: 0 }}><Typography variant="overline" color="text.secondary" sx={{ display: { xs: 'none', sm: 'block' }, fontSize: '.6rem', lineHeight: 1.4 }}>{activeGroup}</Typography><Typography variant="body1" noWrap component="div" sx={{ fontWeight: 700 }}>
               {navigationItems.find(n => n.id === activeTab)?.text}
             </Typography></Box>
@@ -391,9 +387,11 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
         sx={{
           flexGrow: 1,
           p: { xs: 1.5, sm: 3, md: 4.5 },
+          pl: { xs: 'max(12px, env(safe-area-inset-left))', sm: 'max(24px, env(safe-area-inset-left))', md: 4.5 },
+          pr: { xs: 'max(12px, env(safe-area-inset-right))', sm: 'max(24px, env(safe-area-inset-right))', md: 'max(36px, env(safe-area-inset-right))' },
           width: { md: `calc(100% - ${drawerCollapsed ? DRAWER_COLLAPSED_WIDTH : DRAWER_WIDTH}px)` },
           minWidth: 0,
-          mt: '72px',
+          mt: 'calc(72px + env(safe-area-inset-top))',
           mb: { xs: currentTrack ? 'calc(180px + env(safe-area-inset-bottom))' : 'calc(80px + env(safe-area-inset-bottom))', md: currentTrack ? '108px' : 0 },
           outline: 'none',
         }}
@@ -410,8 +408,6 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
           {activeTab === 'server-health' && user?.isAdmin && <ServerHealth />}
           {activeTab === 'acoustid' && user.isAdmin && <AcoustIDManager />}
           {activeTab === 'library-manager' && <LibraryManager />}
-          {activeTab === 'naming' && <NamingConvention />}
-          {activeTab === 'feat-fixer' && <FeatFixer />}
           {activeTab === 'metadata-rebuild' && <MetadataRebuild />}
           {activeTab === 'musicbrainz-inspector' && <MusicBrainzInspector />}
           {activeTab === 'lyrics' && <LyricsManager />}
@@ -426,7 +422,7 @@ const AppInner: React.FC<AppInnerProps> = ({ mode, toggleMode }) => {
       </Box>
 
       <Box component="nav" aria-label="Quick navigation" sx={theme => ({ display: { xs: 'flex', md: 'none' }, position: 'fixed', bottom: currentTrack ? 'calc(88px + env(safe-area-inset-bottom))' : 0, left: 0, right: 0, zIndex: 1200, p: 1, pb: currentTrack ? 1 : 'max(8px, env(safe-area-inset-bottom))', gap: .5, bgcolor: alpha(theme.palette.background.paper, .96), borderTop: '1px solid', borderColor: 'divider', backdropFilter: 'blur(24px)' })}>
-        {[['dashboard', 'Home', <DashboardIcon />], ['explore', 'Explore', <PlaylistIcon />], ['library-manager', 'Library', <LibraryIcon />], ['tasks', 'Activity', <TasksIcon />]].map(([id, label, icon]) => <Button key={String(id)} onClick={() => navigateTo(String(id))} sx={{ flex: 1, minWidth: 0, minHeight: 48, px: .5, flexDirection: 'column', gap: .25, color: activeTab === id ? 'primary.main' : 'text.secondary', bgcolor: activeTab === id ? 'rgba(155,108,255,.12)' : 'transparent', '&:hover': { bgcolor: 'rgba(155,108,255,.10)' } }}>
+        {[['dashboard', 'Home', <DashboardIcon />], ['explore', 'Explore', <PlaylistIcon />], ['library-manager', 'Library', <LibraryIcon />], ['tasks', 'Activity', <TasksIcon />]].map(([id, label, icon]) => <Button key={String(id)} onClick={() => navigateTo(String(id))} sx={{ flex: 1, minWidth: 0, minHeight: 48, px: .5, flexDirection: 'column', gap: .25, color: activeTab === id ? 'primary.main' : 'text.secondary', bgcolor: activeTab === id ? 'action.selected' : 'transparent', '&:hover': { bgcolor: 'action.hover' } }}>
           {icon}<Typography variant="caption" sx={{ fontWeight: activeTab === id ? 800 : 600, fontSize: '.68rem' }}>{label}</Typography>
         </Button>)}
       </Box>
@@ -452,9 +448,16 @@ export const App: React.FC = () => {
 
   const activeTheme = React.useMemo(() => getTheme(mode), [mode]);
 
+  useEffect(() => {
+    document.documentElement.style.colorScheme = mode;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', mode === 'dark' ? '#0d1017' : '#f6f7fb');
+    document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.setAttribute('content', mode === 'dark' ? 'black-translucent' : 'default');
+  }, [mode]);
+
   return (
     <ThemeProvider theme={activeTheme}>
       <CssBaseline />
+      <PwaStatus />
       <AuthProvider>
         <NotificationProvider>
           <AppInner mode={mode} toggleMode={toggleMode} />

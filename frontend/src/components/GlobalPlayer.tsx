@@ -49,7 +49,7 @@ export default function GlobalPlayer({ track, onClose }: { track: PreviewTrack |
   if (!track) return null;
   const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
   return <Box component="section" aria-label="Audio preview" sx={theme => ({ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: theme.zIndex.drawer + 1,
-    minHeight: 88, pb: 'env(safe-area-inset-bottom)', px: { xs: 2, sm: 3 }, display: 'flex', alignItems: 'center', gap: { xs: 1.5, sm: 3 },
+    minHeight: 'calc(88px + env(safe-area-inset-bottom))', pb: 'env(safe-area-inset-bottom)', pl: { xs: 'max(16px, env(safe-area-inset-left))', sm: 'max(24px, env(safe-area-inset-left))' }, pr: { xs: 'max(16px, env(safe-area-inset-right))', sm: 'max(24px, env(safe-area-inset-right))' }, display: 'flex', alignItems: 'center', gap: { xs: 1.5, sm: 3 },
     bgcolor: alpha(theme.palette.background.paper, .96), borderTop: '1px solid', borderColor: 'divider', backdropFilter: 'blur(24px)', boxShadow: '0 -8px 40px rgba(0,0,0,.12)' })}>
     <audio ref={audioRef} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)}
       onTimeUpdate={event => setPosition(event.currentTarget.currentTime)} onDurationChange={event => setDuration(event.currentTarget.duration)}

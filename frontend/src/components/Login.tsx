@@ -6,7 +6,7 @@ import {
 } from '@mui/material';
 import Visibility from '@mui/icons-material/Visibility';
 import VisibilityOff from '@mui/icons-material/VisibilityOff';
-import MusicIcon from '@mui/icons-material/MusicNote';
+import BrandLogo from './BrandLogo';
 import LoginIcon from '@mui/icons-material/Login';
 import { useAuth } from '../context/AuthContext';
 
@@ -44,12 +44,17 @@ const Login: React.FC = () => {
     <Box
       sx={{
         minHeight: '100vh',
+        '@supports (min-height: 100dvh)': { minHeight: '100dvh' },
+        pt: 'max(24px, env(safe-area-inset-top))',
+        pb: 'max(24px, env(safe-area-inset-bottom))',
+        pl: 'env(safe-area-inset-left)',
+        pr: 'env(safe-area-inset-right)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         background: isDark
-          ? 'linear-gradient(135deg, #0d0c12 0%, #1a1830 50%, #0d0c12 100%)'
-          : 'linear-gradient(135deg, #f0eeff 0%, #e8f4fd 50%, #f0eeff 100%)',
+          ? 'linear-gradient(135deg, #0d1017 0%, #1b1932 50%, #0d1017 100%)'
+          : 'linear-gradient(135deg, #f6f7fb 0%, #efebfa 50%, #f0faf8 100%)',
         position: 'relative',
         overflow: 'hidden',
       }}
@@ -79,11 +84,11 @@ const Login: React.FC = () => {
           mx: 2,
           borderRadius: 5,
           background: isDark
-            ? 'rgba(28, 27, 34, 0.85)'
-            : 'rgba(255, 255, 255, 0.9)',
+            ? 'rgba(23, 27, 37, 0.95)'
+            : 'rgba(255, 255, 255, 0.96)',
           backdropFilter: 'blur(24px)',
           border: '1px solid',
-          borderColor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+          borderColor: 'divider',
           boxShadow: isDark
             ? '0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.04)'
             : '0 32px 80px rgba(0,0,0,0.12)',
@@ -91,25 +96,11 @@ const Login: React.FC = () => {
       >
         <CardContent sx={{ p: { xs: 3, sm: 5 } }}>
           {/* Logo */}
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 4 }}>
-            <Box
-              sx={{
-                width: 48, height: 48, borderRadius: 3,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'linear-gradient(135deg, #6e46ff, #b388ff)',
-                boxShadow: '0 8px 24px rgba(110,70,255,0.4)',
-              }}
-            >
-              <MusicIcon sx={{ color: '#fff', fontSize: 26 }} />
-            </Box>
-            <Box>
-              <Typography variant="h5" sx={{ fontWeight: 800, lineHeight: 1.1 }}>
-                VeryDisco
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, letterSpacing: 1 }}>
-                SIGN IN WITH NAVIDROME
-              </Typography>
-            </Box>
+          <Box sx={{ mb: 4 }}>
+            <BrandLogo width="100%" sx={{ mb: 2 }} />
+            <Typography component="h1" variant="caption" color="text.secondary" sx={{ fontWeight: 600, letterSpacing: 1 }}>
+              SIGN IN WITH NAVIDROME
+            </Typography>
           </Box>
 
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
@@ -183,11 +174,11 @@ const Login: React.FC = () => {
                 fontWeight: 700,
                 fontSize: '1rem',
                 textTransform: 'none',
-                background: 'linear-gradient(135deg, #6e46ff, #9c70ff)',
-                boxShadow: '0 8px 24px rgba(110,70,255,0.35)',
+                bgcolor: 'primary.main',
+                boxShadow: 'none',
                 '&:hover': {
-                  background: 'linear-gradient(135deg, #5c38e8, #8560ee)',
-                  boxShadow: '0 12px 32px rgba(110,70,255,0.45)',
+                  bgcolor: 'primary.dark',
+                  boxShadow: 'none',
                   transform: 'translateY(-1px)',
                 },
                 '&:active': { transform: 'translateY(0)' },

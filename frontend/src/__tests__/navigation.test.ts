@@ -5,6 +5,10 @@ import type { RunRecord } from '../api';
 
 describe('navigation and truthful progress', () => {
   test('migrates the legacy aliases page instead of rendering blank', () => expect(resolveTab('/aliases')).toBe('metadata-rebuild'));
+  test('routes retired naming and feature tools into the metadata workflow', () => {
+    expect(resolveTab('/naming')).toBe('metadata-rebuild');
+    expect(resolveTab('/feat-fixer')).toBe('metadata-rebuild');
+  });
   test('rejects invalid destinations and admin-only routes for regular users', () => {
     expect(resolveTab({ page: 'config' })).toBe('dashboard');
     expect(resolveTab('/does-not-exist')).toBe('dashboard');

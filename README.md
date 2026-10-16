@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="frontend/public/brand/logo-horizontal-on-dark.svg">
+  <img src="frontend/public/brand/logo-horizontal.svg" width="360" alt="VeryDisco">
+</picture>
+
 # VeryDisco 🎵
 
 **VeryDisco** is a Dockerized homelab synchronization service that automatically retrieves your weekly ListenBrainz personalized playlists ("Weekly Exploration" or "Weekly Jams"), resolves them dynamically, searches and downloads tracks from Soulseek (via `slskd`), retrieves synchronized lyrics files (`.lrc`), and presents a premium Web Dashboard styled in modern Material Design (MUI v5).
@@ -61,6 +66,29 @@ veryDisco/
 ---
 
 ## Configuration (`config.yml` Schema)
+
+### Install on Android or iPhone/iPad
+
+Serve VeryDisco from an **HTTPS** origin for PWA installation and service workers
+(plain HTTP is supported only for local development on `localhost`/`127.0.0.1`).
+For a homelab, use your HTTPS reverse proxy and set `auth.cookie_secure: true`.
+
+- Android: open VeryDisco in Chrome and choose **Install app** or **Add to Home screen**.
+- iOS/iPadOS: open it in Safari, use **Share → Add to Home Screen**, then open the new icon.
+
+The Android manifest includes standard and maskable icons; iOS uses the dedicated
+180px Apple touch icon. Layouts account for the notch, home indicator and dynamic
+viewport height, and browser colors follow the selected theme. iOS may retain
+the status-bar appearance from the time the app was launched or installed.
+
+After the first online visit, the static interface can reopen offline. Music,
+authentication and library operations still require the server; API responses
+and audio are not stored in the service-worker cache. When a new version is
+available, save your edits and choose **Update now**, or dismiss the notice and
+update later. Closing and reopening the app can be necessary on the first upgrade
+from an older version without update prompts.
+
+### Settings
 
 | Field | Type | Default | Description |
 | :--- | :--- | :--- | :--- |

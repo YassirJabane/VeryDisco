@@ -125,7 +125,7 @@ const MetadataRebuild: React.FC = () => {
   return (
     <Box>
       <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" gap={2} mb={3}>
-        <Box>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
           <Stack direction="row" alignItems="center" spacing={1.5}>
             <RebuildIcon color="primary" sx={{ fontSize: 34 }} />
             <Typography variant="h5" fontWeight={800}>Metadata Rebuild</Typography>
@@ -135,9 +135,9 @@ const MetadataRebuild: React.FC = () => {
           </Typography>
         </Box>
         {['queued', 'scanning', 'cancelling'].includes(status.status)
-          ? <Button color="warning" variant="outlined" disabled={busy || status.status === 'cancelling'} onClick={cancelScan}>Stop scan</Button>
+          ? <Button color="warning" variant="outlined" sx={{ alignSelf: 'flex-start', flexShrink: 0 }} disabled={busy || status.status === 'cancelling'} onClick={cancelScan}>Stop scan</Button>
           : <Button variant="contained" startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <ScanIcon />}
-              disabled={busy} onClick={startScan}>Scan entire library</Button>}
+              sx={{ alignSelf: 'flex-start', flexShrink: 0, whiteSpace: 'nowrap' }} disabled={busy} onClick={startScan}>Scan entire library</Button>}
       </Stack>
 
       {message && <Alert severity={message.type} sx={{ mb: 2 }} onClose={() => setMessage(null)}>{message.text}</Alert>}
@@ -146,16 +146,17 @@ const MetadataRebuild: React.FC = () => {
         <strong>2. Review:</strong> open an album and verify the selected release and changed fields.{' '}
         <strong>3. Apply:</strong> writes one reviewed album and creates a rollback backup first.
         Artist aliases are resolved automatically through MusicBrainz; cosmetic spellings such as JAY-Z are preserved instead of being rewritten to JAŸ-Z.
+        {' '}Featured performers and track artists follow the recording credits, while Album Artist follows the release credit. Review uncertain matches before applying.
       </Alert>
 
       <Paper variant="outlined" sx={{ p: 2.5, mb: 2.5, borderRadius: 3 }}>
-        <Stack direction={{ xs: 'column', md: 'row' }} gap={2} justifyContent="space-between">
+        <Stack gap={2}>
           <Stack direction="row" gap={1} flexWrap="wrap">
             <Chip label={`${automatic} automatic`} color="success" variant="outlined" />
             <Chip label={`${review} review`} color="warning" variant="outlined" />
             <Chip label={`${unmatched} unmatched`} color="error" variant="outlined" />
           </Stack>
-          <Stack direction={{ xs: 'column', sm: 'row' }} gap={1}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', xl: 'repeat(3, minmax(0, 1fr))' }, gap: 1, '& .MuiFormControlLabel-root': { m: 0, minWidth: 0 } }}>
             <FormControlLabel control={<Switch checked={verifyAcoustid} onChange={e => setVerifyAcoustid(e.target.checked)} />} label="Verify recordings with AcoustID" />
             <FormControlLabel control={<Switch checked={lookupMissingBpm} onChange={e => setLookupMissingBpm(e.target.checked)} />} label="Look up missing BPM" />
             <FormControlLabel control={<Switch checked={integerBpm} onChange={e => setIntegerBpm(e.target.checked)} />} label="Round new BPM to integers" />
@@ -163,7 +164,7 @@ const MetadataRebuild: React.FC = () => {
             <FormControlLabel control={<Switch checked={localAudio} onChange={e => setLocalAudio(e.target.checked)} />} label="Analyze locally with Essentia" />
             <FormControlLabel control={<Switch checked={includeArtwork} onChange={e => setIncludeArtwork(e.target.checked)} />} label="Replace artwork" />
             <FormControlLabel control={<Switch checked={allowItunes} onChange={e => setAllowItunes(e.target.checked)} disabled={!includeArtwork} />} label="Allow verified digital artwork fallback" />
-          </Stack>
+          </Box>
         </Stack>
         <Typography variant="caption" color="text.secondary" display="block" mt={1}>
           BPM lookups use archived audio-analysis estimates, not MusicBrainz metadata. AcousticBrainz stopped collecting data in 2022, so coverage is limited. Existing BPM is preserved; unavailable values stay missing. Scan again to refresh saved plans.

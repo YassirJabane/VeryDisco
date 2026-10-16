@@ -2,11 +2,11 @@ import React, { useState } from 'react';
 import {
   Box, Card, CardContent, TextField, Button, Typography,
   CircularProgress, Alert, InputAdornment, IconButton,
-  useTheme, Stepper, Step, StepLabel,
+  useTheme, Stepper, Step, StepLabel, Checkbox, FormControlLabel,
 } from '@mui/material';
 import Visibility from '@mui/icons-material/Visibility';
 import VisibilityOff from '@mui/icons-material/VisibilityOff';
-import SettingsIcon from '@mui/icons-material/Settings';
+import BrandLogo from './BrandLogo';
 import MusicIcon from '@mui/icons-material/MusicNote';
 import CloudIcon from '@mui/icons-material/Cloud';
 import NextIcon from '@mui/icons-material/ChevronRight';
@@ -14,6 +14,7 @@ import PrevIcon from '@mui/icons-material/ChevronLeft';
 import DoneIcon from '@mui/icons-material/CheckCircle';
 import { apiService } from '../api';
 import { useAuth } from '../context/AuthContext';
+import { prepareLibraryOnboarding } from '../libraryOnboarding';
 
 const Setup: React.FC = () => {
   const theme = useTheme();
@@ -32,6 +33,7 @@ const Setup: React.FC = () => {
 
   const [slskdUrl, setSlskdUrl] = useState('http://slskd:5030');
   const [slskdApiKey, setSlskdApiKey] = useState('');
+  const [reviewLibrary, setReviewLibrary] = useState(true);
 
   const handleNext = () => {
     setError(null);
@@ -69,7 +71,7 @@ const Setup: React.FC = () => {
 
       if (result.status === 'ok') {
         await refreshUser();
-        window.location.href = '/dashboard';
+        window.location.href = await prepareLibraryOnboarding(reviewLibrary);
       }
     } catch (err: any) {
       setError(
@@ -86,15 +88,19 @@ const Setup: React.FC = () => {
     <Box
       sx={{
         minHeight: '100vh',
+        '@supports (min-height: 100dvh)': { minHeight: '100dvh' },
+        pl: 'env(safe-area-inset-left)',
+        pr: 'env(safe-area-inset-right)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         background: isDark
-          ? 'linear-gradient(135deg, #0d0c12 0%, #1a1830 50%, #0d0c12 100%)'
-          : 'linear-gradient(135deg, #f0eeff 0%, #e8f4fd 50%, #f0eeff 100%)',
+          ? 'linear-gradient(135deg, #0d1017 0%, #1b1932 50%, #0d1017 100%)'
+          : 'linear-gradient(135deg, #f6f7fb 0%, #efebfa 50%, #f0faf8 100%)',
         position: 'relative',
         overflow: 'hidden',
-        py: 4,
+        pt: 'max(32px, env(safe-area-inset-top))',
+        pb: 'max(32px, env(safe-area-inset-bottom))',
       }}
     >
       <Box sx={{
@@ -113,7 +119,7 @@ const Setup: React.FC = () => {
           mx: 2,
           borderRadius: 6,
           background: isDark
-            ? 'rgba(28, 27, 34, 0.85)'
+            ? 'rgba(23, 27, 37, 0.95)'
             : 'rgba(255, 255, 255, 0.9)',
           backdropFilter: 'blur(24px)',
           border: '1px solid',
@@ -124,25 +130,11 @@ const Setup: React.FC = () => {
         }}
       >
         <CardContent sx={{ p: { xs: 2.5, sm: 5 } }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 4 }}>
-            <Box
-              sx={{
-                width: 48, height: 48, borderRadius: 3,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: 'linear-gradient(135deg, #6e46ff, #b388ff)',
-                boxShadow: '0 8px 24px rgba(110,70,255,0.4)',
-              }}
-            >
-              <SettingsIcon sx={{ color: '#fff', fontSize: 26 }} />
-            </Box>
-            <Box>
-              <Typography variant="h5" sx={{ fontWeight: 800, lineHeight: 1.1 }}>
-                Welcome to VeryDisco
-              </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, letterSpacing: 1 }}>
-                INITIAL SETUP & ONBOARDING
-              </Typography>
-            </Box>
+          <Box sx={{ mb: 4 }}>
+            <BrandLogo width={320} sx={{ mb: 2 }} />
+            <Typography component="h1" variant="caption" color="text.secondary" sx={{ fontWeight: 600, letterSpacing: 1 }}>
+              INITIAL SETUP & ONBOARDING
+            </Typography>
           </Box>
 
           <Stepper activeStep={activeStep} alternativeLabel sx={{ mb: 4 }}>
@@ -255,6 +247,11 @@ const Setup: React.FC = () => {
               </Box>
             )}
 
+            {activeStep === steps.length - 1 && <Box sx={{ mt: 3, p: 2, borderRadius: 2.5, bgcolor: 'action.hover', border: '1px solid', borderColor: 'divider' }}>
+              <FormControlLabel control={<Checkbox checked={reviewLibrary} onChange={event => setReviewLibrary(event.target.checked)} disabled={loading} />} label="Scan my existing library after setup" />
+              <Typography variant="body2" color="text.secondary">Prepare a read-only inventory for Metadata Rebuild using your existing music. Review album matches and artist credits before applying changes, then preview file and folder names.</Typography>
+            </Box>}
+
             <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 4 }}>
               <Button
                 type="button"
@@ -270,7 +267,7 @@ const Setup: React.FC = () => {
                 <Button
                   type="button"
                   variant="contained"
-                  onClick={handleNext}
+                  onClick={event => { event.preventDefault(); handleNext(); }}
                   endIcon={<NextIcon />}
                   sx={{
                     borderRadius: 2.5,
@@ -292,11 +289,9 @@ const Setup: React.FC = () => {
                     textTransform: 'none',
                     fontWeight: 700,
                     px: 3.5,
-                    background: 'linear-gradient(135deg, #6e46ff, #9c70ff)',
-                    boxShadow: '0 8px 24px rgba(110,70,255,0.3)',
+                    bgcolor: 'primary.main',
                     '&:hover': {
-                      background: 'linear-gradient(135deg, #5c38e8, #8560ee)',
-                      boxShadow: '0 12px 32px rgba(110,70,255,0.4)',
+                      bgcolor: 'primary.dark',
                     },
                   }}
                 >

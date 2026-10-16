@@ -4,7 +4,7 @@ const ADMIN_TABS: readonly string[] = ['server-health', 'acoustid', 'config', 'l
 
 export function resolveTab(value: unknown, isAdmin = true): TabId {
   const candidate = typeof value === 'string' ? value.replace(/^\/+|\/+$/g, '') : '';
-  const tab = candidate === 'aliases' ? 'metadata-rebuild' : candidate;
+  const tab = ['aliases', 'naming', 'feat-fixer'].includes(candidate) ? 'metadata-rebuild' : candidate;
   if (!(TAB_IDS as readonly string[]).includes(tab) || (!isAdmin && ADMIN_TABS.includes(tab))) return 'dashboard';
   return tab as TabId;
 }

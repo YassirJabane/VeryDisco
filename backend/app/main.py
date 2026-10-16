@@ -8399,10 +8399,13 @@ async def serve_frontend(catchall: str):
     root = Path(frontend_dir).resolve()
     file_path = (root / clean_path).resolve()
     if clean_path and file_path.is_relative_to(root) and file_path.is_file():
+        if clean_path in {"sw.js", "manifest.webmanifest", "index.html"}:
+            media_type = "application/manifest+json" if clean_path.endswith(".webmanifest") else None
+            return FileResponse(file_path, media_type=media_type, headers={"Cache-Control": "no-cache"})
         return FileResponse(file_path)
         
     # SPA fallback
     index_path = os.path.join(frontend_dir, "index.html")
     if os.path.exists(index_path):
-        return FileResponse(index_path)
+        return FileResponse(index_path, headers={"Cache-Control": "no-cache"})
     return HTMLResponse("VeryDisco Front-end dashboard is loading. Please run production Vite build.", status_code=200)
