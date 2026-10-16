@@ -26,7 +26,7 @@ def safe_copy_file(src: Any, dst: Any):
     return atomic_copy(src, dst)
 
 
-async def _publish_tagged_track(source: Path, destination: Path, metadata: dict, lyrics: Optional[str], keep_source: bool = False) -> None:
+async def _publish_tagged_track(source: Path, destination: Path, metadata: dict, lyrics: Optional[str], keep_source: bool = False, replace_existing: bool = True) -> None:
     """Keep the previous library file and raw transfer until tagging succeeds."""
     import uuid
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -46,10 +46,15 @@ async def _publish_tagged_track(source: Path, destination: Path, metadata: dict,
         await finish_io(embed_metadata, file_path=str(staged), **metadata)
         if lyrics:
             staged_lyrics.write_text(lyrics, encoding="utf-8")
-        await finish_io(safe_move_file, staged, destination)
+        if replace_existing:
+            await finish_io(safe_move_file, staged, destination)
+        else:
+            # Same-directory hardlink publication is atomic and fails if another
+            # writer won the race. Never replace an existing album track.
+            await finish_io(os.link, staged, destination)
         if staged_lyrics.exists():
             try:
-                await finish_io(safe_move_file, staged_lyrics, destination.with_suffix(".lrc"))
+                await finish_io(safe_move_file if replace_existing else os.link, staged_lyrics, destination.with_suffix(".lrc"))
             except OSError as error:
                 logger.warning("Audio saved, but lyrics sidecar could not be published for %s: %s", destination, error)
         if not keep_source and source.resolve() != destination.resolve():
@@ -2080,16 +2085,24 @@ async def _download_single_track_internal(
             try:
                 meta_result = {}
                 try:
-                    meta_result = await fetch_track_metadata_with_fallback(
-                        deezer_client, artist, title, album,
-                        **({'release_mbid': mbid_album_override} if mbid_album_override else {})
-                    )
+                    if metadata_override and metadata_override.get('album_root'):
+                        # This context was verified against the existing release
+                        # before queueing. Never choose another edition per song.
+                        meta_result = {'artist': artist, 'title': title, 'track_num': None,
+                            'cover_bytes': None, 'album_artist': artist, 'date': None}
+                    else:
+                        meta_result = await fetch_track_metadata_with_fallback(
+                            deezer_client, artist, title, album,
+                            **({'release_mbid': mbid_album_override} if mbid_album_override else {})
+                        )
                 except Exception:
                     if not metadata_override:
                         raise
                     meta_result = {'artist': artist, 'title': title, 'track_num': None,
                         'cover_bytes': None, 'album_artist': artist, 'date': None}
+                extras = {**(meta_result.get('metadata_extras') or {}), **((metadata_override or {}).get('metadata_extras') or {})}
                 meta_result.update({key: value for key, value in (metadata_override or {}).items() if value not in (None, '', [])})
+                meta_result['metadata_extras'] = extras
                 fetched_artist = meta_result["artist"]
                 title_tag = meta_result["title"] or title
                 fetched_album = album if album else (meta_result.get("album") or title)
@@ -2146,6 +2159,14 @@ async def _download_single_track_internal(
                 dest_dir = replace_target.parent
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 dest_audio_path = replace_target.with_suffix(ext)
+            elif metadata_override and metadata_override.get('album_root'):
+                album_root = Path(metadata_override['album_root']).resolve()
+                dest_dir = Path(metadata_override['album_disc_dir']).resolve()
+                if not album_root.is_relative_to(Path(music_dir).resolve()) or not dest_dir.is_relative_to(album_root):
+                    raise ValueError('Pinned album destination is outside the music library')
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                clean_filename = get_library_filename(fetched_artist, album, track_num, title_tag, ext)
+                dest_audio_path = dest_dir / clean_filename
             elif dest_dir_override:
                 dest_dir = Path(dest_dir_override)
                 dest_dir.mkdir(parents=True, exist_ok=True)
@@ -2174,6 +2195,9 @@ async def _download_single_track_internal(
                 logger.warning(f"Could not retrieve lyrics for single track: {lyrics_err}")
 
             try:
+                if metadata_override and metadata_override.get('album_root') and dest_audio_path.exists():
+                    logger.warning('Missing-track destination already exists; refusing overwrite: %s', dest_audio_path)
+                    return False
                 await _publish_tagged_track(downloaded_file, dest_audio_path, dict(
                     artist=fetched_artist,
                     title=title_tag,
@@ -2192,7 +2216,7 @@ async def _download_single_track_internal(
                     credited_artists=credited_artists,
                     metadata_extras={**((meta_result or {}).get("metadata_extras") or {}), **({"instrumental": ["1"]} if _is_instrumental_track(title_tag, album, l_type) else {})},
                     album_artists=album_artists or [dz_album_artist or artist],
-                ), lyrics_content)
+                ), lyrics_content, replace_existing=not bool(metadata_override and metadata_override.get('album_root')))
                 logger.info(f"Saved and embedded metadata for single track '{fetched_artist} - {title_tag}'")
             except Exception as e:
                 logger.warning(f"Could not embed metadata/lyrics for single track: {e}")

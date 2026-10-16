@@ -71,6 +71,8 @@ class MetadataRebuildService:
         self.artwork = artwork or ArtworkProvider()
         self.verifier = verifier or AcoustIDRecordingVerifier()
         self.bpm_provider = bpm_provider or RecordingBpmProvider()
+        from .audio_analysis import LocalAudioAnalyzer
+        self.audio_analyzer = LocalAudioAnalyzer()
         self._locks: dict[str, asyncio.Lock] = {}
         self._cancel_events: dict[Any, threading.Event] = {}
 
@@ -143,6 +145,9 @@ class MetadataRebuildService:
         acoustid_api_key: str = "",
         indexed_tracks: Optional[list[dict[str, Any]]] = None,
         lookup_missing_bpm: bool = True,
+        audio_features_enabled: bool = False,
+        local_audio_analysis: bool = False,
+        bpm_integer: bool = False,
     ) -> list[dict[str, Any]]:
         lock = self._locks.setdefault(user_id, asyncio.Lock())
         if lock.locked():
@@ -229,7 +234,9 @@ class MetadataRebuildService:
                                 if change["acoustid"]["status"] == "mismatch":
                                     plan["confidence"] = min(plan["confidence"], 0.49)
                                     plan["review"] = "required"
-                    await self._enrich_missing_bpm(plan, lookup_missing_bpm)
+                    await self._enrich_missing_bpm(plan, lookup_missing_bpm,
+                        audio_features_enabled=audio_features_enabled, local_audio_analysis=local_audio_analysis,
+                        bpm_integer=bpm_integer)
                     plans.append(plan)
                     status.update({
                         "processed": index,
@@ -421,9 +428,12 @@ class MetadataRebuildService:
             "created_at": _now(), "root": str(root),
         }
 
-    async def _enrich_missing_bpm(self, plan: dict, enabled: bool) -> None:
+    async def _enrich_missing_bpm(self, plan: dict, enabled: bool, *, audio_features_enabled=False,
+                                local_audio_analysis=False, bpm_integer=False) -> None:
         """Prepare optional BPM changes; scanning never writes media files."""
         plan["lookup_missing_bpm"] = enabled
+        plan['audio_options'] = dict(audio_features_enabled=audio_features_enabled,
+                                     local_audio_analysis=local_audio_analysis, bpm_integer=bpm_integer)
         missing = proposed_count = 0
         for change in plan["tracks"]:
             current = change["current"]
@@ -432,13 +442,15 @@ class MetadataRebuildService:
                 change["bpm_lookup"] = {"status": "preserved"}
                 if proposed is not None:
                     proposed["bpm"] = current["bpm"]
-                continue
-            missing += 1
+                if not audio_features_enabled and not local_audio_analysis:
+                    continue
+            else:
+                missing += 1
             if proposed is None:
                 change["bpm_lookup"] = {"status": "unmatched"}
             elif change.get("acoustid", {}).get("status") == "mismatch":
                 change["bpm_lookup"] = {"status": "recording_mismatch"}
-            elif not enabled:
+            elif not enabled and not audio_features_enabled and not local_audio_analysis:
                 change["bpm_lookup"] = {"status": "disabled"}
             else:
                 try:
@@ -446,9 +458,36 @@ class MetadataRebuildService:
                         proposed.get("recording_mbid", ""), current.get("duration", 0),
                     )
                     change["bpm_lookup"] = result
-                    if result.get("status") == "found" and result.get("bpm"):
-                        proposed["bpm"] = result["bpm"]
+                    features = dict(result.get('features') or {})
+                    change['audio_analysis'] = {'archive': result, 'features': features}
+                    if local_audio_analysis:
+                        local_result = await self.audio_analyzer.analyze(change['path'],
+                            change.get('expected_size'), change.get('expected_mtime_ns'))
+                        change['audio_analysis']['local'] = local_result
+                        if local_result.get('status') == 'found':
+                            features.update(local_result.get('features') or {})
+                            change['audio_analysis']['source'] = local_result.get('source')
+                    if audio_features_enabled and hasattr(self.bpm_provider, 'lookup_highlevel') and result.get('status') == 'found':
+                        change['audio_analysis']['classifiers'] = await self.bpm_provider.lookup_highlevel(proposed['recording_mbid'])
+                    values = result.get('bpm') or []
+                    if features.get('bpm'):
+                        values = [str(features['bpm'])]
+                    if not current.get('bpm') and enabled and values:
+                        from decimal import Decimal, ROUND_HALF_UP
+                        raw_bpm = values[0]
+                        proposed['bpm'] = [str(Decimal(raw_bpm).quantize(Decimal('1'), rounding=ROUND_HALF_UP))] if bpm_integer else values
+                        change['bpm_lookup'] = dict(result, status='found', raw_bpm=raw_bpm,
+                            source=change['audio_analysis'].get('source') or result.get('source'))
                         proposed_count += 1
+                    elif current.get('bpm'):
+                        change['bpm_lookup'] = {'status': 'preserved'}
+                    elif not enabled:
+                        change['bpm_lookup'] = {'status': 'disabled'}
+                    elif result.get('status') == 'found':
+                        change['bpm_lookup'] = dict(result, status='not_found')
+                    if audio_features_enabled and not current.get('key') and features.get('key'):
+                        note, scale = features['key'].rsplit(' ', 1)
+                        proposed['key'] = [note + ('m' if scale == 'minor' else '')]
                 except Exception as error:
                     # Optional enrichment must never discard a release proposal.
                     logger.warning("BPM lookup failed for %s: %s", change["path"], error)
@@ -503,7 +542,8 @@ class MetadataRebuildService:
             "tracks": [read_track(Path(change["path"])) for change in plans[index]["tracks"]],
         }
         rebuilt = self._build_plan(Path(plans[index]["root"]), group, [details])
-        await self._enrich_missing_bpm(rebuilt, plans[index].get("lookup_missing_bpm", True))
+        await self._enrich_missing_bpm(rebuilt, plans[index].get("lookup_missing_bpm", True),
+                                       **plans[index].get('audio_options', {}))
         rebuilt["review"] = "selected"
         plans[index] = rebuilt
         _atomic_json(self._plans_path(user_id), plans)

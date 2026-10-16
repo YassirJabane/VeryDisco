@@ -17,6 +17,9 @@ from .bpm import RecordingBpmProvider
 class ScanRequest(BaseModel):
     verify_acoustid: bool = False
     lookup_missing_bpm: bool = True
+    audio_features_enabled: bool = True
+    local_audio_analysis: bool = False
+    bpm_integer: bool = True
 
 
 class SelectReleaseRequest(BaseModel):
@@ -38,6 +41,8 @@ def create_metadata_rebuild_router(
     provider = MusicBrainzReleaseProvider(db.get_provider_cache, db.set_provider_cache)
     service = MetadataRebuildService(state_root, provider=provider,
         bpm_provider=RecordingBpmProvider(db.get_provider_cache, db.set_provider_cache))
+    from .audio_analysis import LocalAudioAnalyzer
+    service.audio_analyzer = LocalAudioAnalyzer(db.get_provider_cache, db.set_provider_cache)
     tasks: dict[Any, asyncio.Task] = {}
 
     async def context(request: Request) -> tuple[dict[str, Any], Path]:
@@ -67,6 +72,9 @@ def create_metadata_rebuild_router(
                     user["id"], root, aliases, body.verify_acoustid, api_key,
                     indexed_tracks=indexed_tracks,
                     lookup_missing_bpm=body.lookup_missing_bpm,
+                    audio_features_enabled=body.audio_features_enabled,
+                    local_audio_analysis=body.local_audio_analysis,
+                    bpm_integer=body.bpm_integer,
                 )
 
         service.mark_queued(user["id"])

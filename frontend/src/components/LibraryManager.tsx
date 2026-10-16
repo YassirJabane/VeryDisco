@@ -458,7 +458,7 @@ const LibraryManager: React.FC = () => {
     }
     const missing = albumTracks
       .filter(t => !t.exists)
-      .map(t => ({ title: t.title, track_number: t.track_num }));
+      .map(t => ({ title: t.title, track_number: t.track_num, disc_number: t.disc_num, recording_mbid: t.recording_mbid }));
 
     if (missing.length === 0) {
       showToast('No missing tracks found for this album.');
@@ -466,8 +466,8 @@ const LibraryManager: React.FC = () => {
     }
 
     try {
-      await apiService.downloadMissingTracks(album.artist, album.album, missing);
-      showToast(`Queued ${missing.length} missing tracks for search and download!`);
+      const result = await apiService.downloadMissingTracks(album.artist, album.album, missing, album.folder_path, album.release_mbid);
+      showToast(result.message);
     } catch (err: any) {
       showToast(err?.response?.data?.detail ?? 'Failed to queue missing tracks.', 'error');
     }

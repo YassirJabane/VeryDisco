@@ -11,7 +11,7 @@ import RestoreIcon from '@mui/icons-material/Restore';
 import ScanIcon from '@mui/icons-material/Search';
 import apiService, { getErrorMessage } from '../api';
 
-const fields = ['title', 'artist', 'album', 'album_artist', 'date', 'track', 'disc', 'bpm'];
+const fields = ['title', 'artist', 'album', 'album_artist', 'date', 'track', 'disc', 'bpm', 'key'];
 const tagLabel = (value: any): string => Array.isArray(value) ? value.join(', ') || '∅' : value === null || value === undefined || value === '' ? '∅' : String(value);
 const bpmMessages: Record<string, string> = {
   preserved: 'Existing BPM preserved', not_found: 'BPM missing · no archive data',
@@ -26,6 +26,9 @@ const MetadataRebuild: React.FC = () => {
   const [busy, setBusy] = React.useState(false);
   const [verifyAcoustid, setVerifyAcoustid] = React.useState(false);
   const [lookupMissingBpm, setLookupMissingBpm] = React.useState(true);
+  const [audioFeatures, setAudioFeatures] = React.useState(true);
+  const [localAudio, setLocalAudio] = React.useState(false);
+  const [integerBpm, setIntegerBpm] = React.useState(true);
   const [includeArtwork, setIncludeArtwork] = React.useState(true);
   const [allowItunes, setAllowItunes] = React.useState(true);
   const [manualMbids, setManualMbids] = React.useState<Record<string, string>>({});
@@ -59,7 +62,9 @@ const MetadataRebuild: React.FC = () => {
     setBusy(true);
     setMessage(null);
     try {
-      await apiService.startMetadataRebuildScan(verifyAcoustid, lookupMissingBpm);
+      await apiService.startMetadataRebuildScan(verifyAcoustid, lookupMissingBpm, {
+        audio_features_enabled: audioFeatures, local_audio_analysis: localAudio, bpm_integer: integerBpm,
+      });
       setStatus({ status: 'scanning', processed: 0, total: 0, message: 'Starting read-only inventory…' });
     } catch (error) {
       setMessage({ type: 'error', text: getErrorMessage(error, 'Scan could not be started.') });
@@ -153,12 +158,16 @@ const MetadataRebuild: React.FC = () => {
           <Stack direction={{ xs: 'column', sm: 'row' }} gap={1}>
             <FormControlLabel control={<Switch checked={verifyAcoustid} onChange={e => setVerifyAcoustid(e.target.checked)} />} label="Verify recordings with AcoustID" />
             <FormControlLabel control={<Switch checked={lookupMissingBpm} onChange={e => setLookupMissingBpm(e.target.checked)} />} label="Look up missing BPM" />
+            <FormControlLabel control={<Switch checked={integerBpm} onChange={e => setIntegerBpm(e.target.checked)} />} label="Round new BPM to integers" />
+            <FormControlLabel control={<Switch checked={audioFeatures} onChange={e => setAudioFeatures(e.target.checked)} />} label="Audio features and missing key" />
+            <FormControlLabel control={<Switch checked={localAudio} onChange={e => setLocalAudio(e.target.checked)} />} label="Analyze locally with Essentia" />
             <FormControlLabel control={<Switch checked={includeArtwork} onChange={e => setIncludeArtwork(e.target.checked)} />} label="Replace artwork" />
             <FormControlLabel control={<Switch checked={allowItunes} onChange={e => setAllowItunes(e.target.checked)} disabled={!includeArtwork} />} label="Allow verified digital artwork fallback" />
           </Stack>
         </Stack>
         <Typography variant="caption" color="text.secondary" display="block" mt={1}>
           BPM lookups use archived audio-analysis estimates, not MusicBrainz metadata. AcousticBrainz stopped collecting data in 2022, so coverage is limited. Existing BPM is preserved; unavailable values stay missing. Scan again to refresh saved plans.
+          {' '}Local analysis requires the optional Essentia package on the server, runs sequentially in an isolated worker and never uploads audio. Mood/genre classifiers are suggestions only; archive loudness is not applied as ReplayGain.
         </Typography>
         {['scanning', 'queued', 'cancelling'].includes(status.status) && <Box mt={2}>
           <LinearProgress variant={status.total ? 'determinate' : 'indeterminate'} value={progress} />
@@ -239,8 +248,14 @@ const MetadataRebuild: React.FC = () => {
                       <TableCell>{track.proposed ? changed.map(field => <Chip key={field} size="small" label={`${field}: ${tagLabel(track.current[field])} → ${tagLabel(track.proposed[field])}`} sx={{ m: .25 }} />) : <Chip size="small" color="error" label="unmatched" />}</TableCell>
                       <TableCell>
                         {track.bpm_lookup?.status === 'found'
-                          ? <><Chip size="small" color="info" variant="outlined" label={`${track.proposed?.bpm?.join(', ')} BPM ${plan.state === 'applied' ? 'applied' : 'proposed'}`} /><Typography variant="caption" display="block">{track.bpm_lookup.source} · estimate, review before applying</Typography></>
+                          ? <><Chip size="small" color="info" variant="outlined" label={`${track.proposed?.bpm?.join(', ')} BPM ${plan.state === 'applied' ? 'applied' : 'proposed'}`} /><Typography variant="caption" display="block">{track.bpm_lookup.source} · estimate, review before applying{track.bpm_lookup.raw_bpm ? ` · raw ${track.bpm_lookup.raw_bpm}` : ''}</Typography></>
                           : <Typography variant="caption">{track.current.bpm?.length ? `${track.current.bpm.join(', ')} BPM · preserved` : bpmMessages[track.bpm_lookup?.status] || 'BPM missing · run a new scan'}</Typography>}
+                        {track.audio_analysis && <Box component="details" sx={{ mt: 1 }}>
+                          <Box component="summary" sx={{ cursor: 'pointer' }}>Audio analysis details</Box>
+                          {track.audio_analysis.local && <Typography variant="caption" display="block">Local: {track.audio_analysis.local.status}</Typography>}
+                          {Object.entries(track.audio_analysis.features || {}).map(([name, value]) => <Typography key={name} variant="caption" display="block">{name}: {String(value)}</Typography>)}
+                          {Object.entries(track.audio_analysis.classifiers?.features || {}).map(([name, value]: [string, any]) => <Typography key={name} variant="caption" display="block">{name}: {value.value} · model score {value.probability.toFixed(2)} · suggestion only</Typography>)}
+                        </Box>}
                       </TableCell>
                       <TableCell>{track.acoustid?.status || 'not checked'}</TableCell>
                     </TableRow>;

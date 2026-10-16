@@ -212,6 +212,7 @@ export interface GetStatusResponse {
   validation_errors: string | null;
   is_syncing: boolean;
   next_run: string | null;
+  next_runs?: Record<string, string | null>;
   progress: RunProgress;
   latest_run: RunRecord | null;
   latest_runs: Record<string, RunRecord | null>;
@@ -259,6 +260,8 @@ export interface AlbumItem {
 export interface LibraryTrackItem {
   title: string;
   track_num: number;
+  disc_num?: number;
+  recording_mbid?: string;
   exists: boolean;
   verified?: boolean;
   filepath: string | null;
@@ -460,8 +463,8 @@ export const apiService = {
     return resp.data;
   },
 
-  async downloadMissingTracks(artist: string, album: string, missingTracks: { title: string; track_number?: number }[]): Promise<{ status: string; message: string }> {
-    const resp = await api.post<{ status: string; message: string }>('/api/download/missing', { artist, album, missing_tracks: missingTracks });
+  async downloadMissingTracks(artist: string, album: string, missingTracks: { title: string; track_number?: number; disc_number?: number; recording_mbid?: string }[], folderPath: string, releaseMbid?: string | null): Promise<{ status: string; message: string }> {
+    const resp = await api.post<{ status: string; message: string }>('/api/download/missing', { artist, album, missing_tracks: missingTracks, folder_path: folderPath, release_mbid: releaseMbid });
     return resp.data;
   },
 
@@ -887,8 +890,9 @@ export const apiService = {
   },
 
   // ── Release-centric metadata rebuild ──────────────────────────────────────
-  async startMetadataRebuildScan(verifyAcoustid: boolean = false, lookupMissingBpm: boolean = true): Promise<any> {
-    const resp = await api.post('/api/metadata-rebuild/scan', { verify_acoustid: verifyAcoustid, lookup_missing_bpm: lookupMissingBpm });
+  async startMetadataRebuildScan(verifyAcoustid: boolean = false, lookupMissingBpm: boolean = true,
+    audioOptions: { audio_features_enabled?: boolean; local_audio_analysis?: boolean; bpm_integer?: boolean } = {}): Promise<any> {
+    const resp = await api.post('/api/metadata-rebuild/scan', { verify_acoustid: verifyAcoustid, lookup_missing_bpm: lookupMissingBpm, ...audioOptions });
     return resp.data;
   },
 

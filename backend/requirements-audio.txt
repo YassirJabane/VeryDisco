@@ -1,0 +1,4 @@
+# Optional Essentia worker, separate from the lightweight default installation.
+# PyPI publishes this version's CPython 3.12 Linux x86_64 wheel.
+numpy>=1.26,<2
+essentia==2.1b6.dev1389

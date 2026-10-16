@@ -748,6 +748,11 @@ async def get_status(request: Request = None):
     for p in active_playlists:
         latest_runs[p] = await db.get_latest_run(p, user_id=user_id)
     next_run = scheduler_manager.get_next_run_time() if config_manager.is_configured else None
+    next_runs = {
+        source: scheduler_manager.get_next_run_time(source)
+        if config_manager.is_configured and source in active_playlists else None
+        for source in ('daily-jams', 'weekly-jams', 'weekly-exploration')
+    }
 
     # Merge sync module variables: only show if the current sync belongs to this user
     is_syncing = False
@@ -779,6 +784,7 @@ async def get_status(request: Request = None):
         "validation_errors": config_manager.validation_errors,
         "is_syncing": is_syncing,
         "next_run": next_run,
+        "next_runs": next_runs,
         "progress": progress,
         "latest_run": latest_run,
         "latest_runs": latest_runs,
@@ -2732,13 +2738,18 @@ async def grab_single_track(req: GrabTrackRequest, request: Request = None):
 class MissingTrackItem(BaseModel):
     title: str
     track_number: Optional[int] = None
+    disc_number: Optional[int] = None
+    recording_mbid: Optional[str] = None
 
 class DownloadMissingTracksRequest(BaseModel):
     artist: str
     album: str
     missing_tracks: List[MissingTrackItem]
+    folder_path: str
+    release_mbid: Optional[str] = None
 
 @app.post("/api/download/missing")
+@artist_alias_scope
 async def download_missing_tracks(req: DownloadMissingTracksRequest, request: Request = None):
     """Trigger background search and download for multiple missing tracks of an album."""
     if not config_manager.is_configured or not config_manager.config:
@@ -2751,23 +2762,39 @@ async def download_missing_tracks(req: DownloadMissingTracksRequest, request: Re
     user = await get_current_user(request)
     user_id = user["id"]
 
-    for track in req.missing_tracks:
+    from backend.app.missing_tracks import prepare_missing_tracks
+    user_row = await db.get_user_by_id(user_id)
+    try:
+        prepared = await prepare_missing_tracks(db, user_id,
+            (user_row or {}).get('music_dir') or cfg.paths.music_dir,
+            req.folder_path, req.release_mbid, req.missing_tracks)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception:
+        logger.exception('Could not resolve release-bound missing tracks')
+        raise HTTPException(status_code=503, detail='Release lookup unavailable; no downloads were queued. Retry later.')
+    queued = 0
+    for track in prepared:
+        task_id = f"track:{user_id}:{req.folder_path}:{track['mbid_album_override']}:{track['metadata_override']['disc_num']}:{track['metadata_override']['track_num']}"
+        if task_id in _active_tasks:
+            continue
         _create_tracked_task(
             download_single_track_task(
-                artist=req.artist,
-                title=track.title,
-                album=req.album,
+                **track,
                 config=cfg,
                 db=db,
                 force=True,
                 user_id=user_id
             ),
-            task_id=f"track:{user_id}:{req.artist}:{track.title}:{req.album}",
+            task_id=task_id,
             task_type="track",
-            metadata={"artist": req.artist, "title": track.title, "album": req.album, "user_id": user_id}
+            metadata={"artist": track['artist'], "title": track['title'], "album": track['album'], "user_id": user_id}
         )
+        queued += 1
         
-    return {"status": "success", "message": f"Queued {len(req.missing_tracks)} missing tracks for download."}
+    return {"status": "success", "message": f"Queued {queued} missing tracks for download.", "queued": queued}
 
 @app.get("/api/deezer/artist/{artist_id}/albums")
 async def deezer_artist_albums(artist_id: int):

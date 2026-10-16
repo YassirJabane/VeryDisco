@@ -16,6 +16,7 @@ import httpx
 from backend.app.clients.http_client import get_http_client
 from backend.app.logger import get_logger
 from .extras import normalize_extras
+from .audio_analysis import audio_features, highlevel_features
 
 logger = get_logger()
 
@@ -37,7 +38,7 @@ class RecordingBpmProvider:
             mbid = str(UUID(recording_mbid))
         except (ValueError, TypeError, AttributeError):
             return {"status": "missing_mbid"}
-        key = f"acousticbrainz:bpm:v1:{mbid}"
+        key = f"acousticbrainz:bpm:v2:{mbid}"
         async with self._lock:
             cached = self._memory.get(key)
             result = cached[1] if cached and cached[0] > time.monotonic() else None
@@ -47,7 +48,7 @@ class RecordingBpmProvider:
                 if time.monotonic() < self._unavailable_until:
                     return {"status": "unavailable"}
                 await asyncio.sleep(max(0, self._next_request - time.monotonic()))
-                self._next_request = time.monotonic() + 0.3
+                self._next_request = time.monotonic() + 1.0
                 try:
                     client = await get_http_client()
                     response = await client.get(
@@ -59,9 +60,10 @@ class RecordingBpmProvider:
                     else:
                         response.raise_for_status()
                         raw = response.json()
+                        features = audio_features(raw)
                         bpm = normalize_extras({"bpm": (raw.get("rhythm") or {}).get("bpm")}).get("bpm")
                         result = {"status": "not_found"}
-                        if bpm:
+                        if bpm or features:
                             metadata_ids = (raw.get("metadata") or {}).get("tags", {}).get("musicbrainz_recordingid", [])
                             if isinstance(metadata_ids, str):
                                 metadata_ids = [metadata_ids]
@@ -71,7 +73,8 @@ class RecordingBpmProvider:
                             length = float(length or 0)
                             if not math.isfinite(length) or length < 0:
                                 raise ValueError("Invalid analysis duration")
-                            result = {"status": "found", "bpm": [format(float(bpm[0]), '.2f').rstrip('0').rstrip('.')], "duration": length,
+                            result = {"status": "found", "bpm": [format(float(bpm[0]), '.2f').rstrip('0').rstrip('.')] if bpm else [], "duration": length,
+                                      "features": features,
                                       "source": "AcousticBrainz audio analysis", "recording_mbid": mbid}
                 except (httpx.HTTPError, ValueError, TypeError, AttributeError) as error:
                     # A provider outage must not add a timeout per library track.
@@ -96,3 +99,38 @@ class RecordingBpmProvider:
             if result.get("status") == "found" and duration and length and abs(duration - length) > max(5, duration * .02):
                 return {"status": "duration_mismatch"}
             return dict(result)
+
+    async def lookup_highlevel(self, recording_mbid):
+        mbid = str(UUID(recording_mbid))
+        key = f'acousticbrainz:highlevel:v1:{mbid}'
+        async with self._lock:
+            cached = self._memory.get(key)
+            if cached and cached[0] > time.monotonic():
+                return dict(cached[1])
+            result = await self._cache_get(key) if self._cache_get else None
+            if result is not None:
+                return result
+            if time.monotonic() < self._unavailable_until:
+                return {'status': 'unavailable'}
+            await asyncio.sleep(max(0, self._next_request - time.monotonic()))
+            self._next_request = time.monotonic() + 1.0
+            try:
+                client = await get_http_client()
+                response = await client.get(f'https://acousticbrainz.org/api/v1/{mbid}/high-level', timeout=5)
+                if response.status_code == 404:
+                    result = {'status': 'not_found'}
+                else:
+                    response.raise_for_status()
+                    features = highlevel_features(response.json())
+                    result = {'status': 'found' if features else 'not_found', 'features': features,
+                              'source': 'AcousticBrainz classifiers'}
+            except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+                self._unavailable_until = time.monotonic() + 60
+                return {'status': 'unavailable'}
+            ttl = 30 * 86400 if result['status'] == 'found' else 7 * 86400
+            if len(self._memory) >= 2048:
+                self._memory.pop(next(iter(self._memory)))
+            self._memory[key] = (time.monotonic() + ttl, result)
+            if self._cache_set:
+                await self._cache_set(key, result, ttl)
+            return result

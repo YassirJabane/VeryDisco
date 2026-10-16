@@ -44,5 +44,32 @@ test('passes the optional BPM lookup setting when starting a new scan', async ()
   await screen.findByText('Artist — Album');
   fireEvent.click(screen.getByLabelText('Look up missing BPM'));
   fireEvent.click(screen.getByRole('button', { name: 'Scan entire library' }));
-  await waitFor(() => expect(apiService.startMetadataRebuildScan).toHaveBeenCalledWith(false, false));
+  await waitFor(() => expect(apiService.startMetadataRebuildScan).toHaveBeenCalledWith(false, false, {
+    audio_features_enabled: true, local_audio_analysis: false, bpm_integer: true,
+  }));
+});
+
+test('passes local analysis and fractional BPM choices explicitly', async () => {
+  render(<MetadataRebuild />);
+  await screen.findByText('Artist — Album');
+  fireEvent.click(screen.getByLabelText('Analyze locally with Essentia'));
+  fireEvent.click(screen.getByLabelText('Round new BPM to integers'));
+  fireEvent.click(screen.getByRole('button', { name: 'Scan entire library' }));
+  await waitFor(() => expect(apiService.startMetadataRebuildScan).toHaveBeenCalledWith(false, true, {
+    audio_features_enabled: true, local_audio_analysis: true, bpm_integer: false,
+  }));
+});
+
+test('shows raw estimates and classifier suggestions without claiming verification', async () => {
+  const plans = await apiService.getMetadataRebuildAlbums();
+  plans[0].tracks[0].bpm_lookup.raw_bpm = '119.88';
+  plans[0].tracks[0].audio_analysis = { features: { key: 'D minor', key_strength: .8 },
+    classifiers: { features: { mood_sad: { value: 'sad', probability: .9 } } },
+    local: { status: 'not_installed' } };
+  vi.mocked(apiService.getMetadataRebuildAlbums).mockResolvedValue(plans);
+  render(<MetadataRebuild />);
+  fireEvent.click(await screen.findByText('Artist — Album'));
+  expect(screen.getByText(/raw 119.88/)).toBeInTheDocument();
+  expect(screen.getByText('Local: not_installed')).toBeInTheDocument();
+  expect(screen.getByText(/mood_sad: sad · model score 0.90 · suggestion only/)).toBeInTheDocument();
 });

@@ -53,6 +53,7 @@ def atomic_tag_update(function):
 FIELDS = {
     "genre": ("genre", "TCON", "©gen"),
     "bpm": ("bpm", "TBPM", "tmpo"),
+    "key": ("initialkey", "TKEY", "----:com.apple.iTunes:initialkey"),
     "mood": ("mood", "TMOO", "----:com.apple.iTunes:MOOD"),
     "isrc": ("isrc", "TSRC", "----:com.apple.iTunes:ISRC"),
     "label": ("label", "TPUB", "----:com.apple.iTunes:LABEL"),

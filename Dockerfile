@@ -37,6 +37,12 @@ RUN mkdir -p /data /app/frontend/dist /slskd_downloads /music /navidrome_playlis
 COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Optional CPU audio analysis (Linux x86_64 wheel for the Python 3.12 runtime).
+# Disabled by default: enable explicitly with --build-arg WITH_AUDIO_ANALYSIS=true.
+ARG WITH_AUDIO_ANALYSIS=false
+COPY backend/requirements-audio.txt ./requirements-audio.txt
+RUN if [ "$WITH_AUDIO_ANALYSIS" = "true" ]; then pip install --no-cache-dir --only-binary=:all: -r requirements-audio.txt; fi
+
 # Copy FastAPI backend code and scripts
 COPY backend/app/ /app/backend/app/
 COPY scripts/ /app/scripts/

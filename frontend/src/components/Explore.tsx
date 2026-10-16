@@ -36,6 +36,7 @@ export const Explore: React.FC = () => {
   const [syncingActive, setSyncingActive] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [triggering, setTriggering] = useState(false);
+  const nextSourceRun = status?.next_runs?.[source];
   
   const [likedTracks, setLikedTracks] = useState<Set<string>>(new Set());
   const [hatedTracks, setHatedTracks] = useState<Set<string>>(new Set());
@@ -434,13 +435,16 @@ export const Explore: React.FC = () => {
                   <Tab key={pl} label={`${pl.replace('-', ' ').toUpperCase()}${activePlaylists.includes(pl) ? '' : ' · MANUAL'}`} />
                 ))}
               </Tabs>
-              {status?.next_run && (
+              {activePlaylists.includes(source) && nextSourceRun && (
                 <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, pb: 1, px: { xs: 0, sm: 1 } }}>
                   <Typography variant="caption" color="text.secondary" fontWeight={700}>
                     NEXT SCHEDULED RUN:
                   </Typography>
                   <Chip 
-                    label={new Date(status.next_run).toLocaleString()} 
+                    label={new Date(nextSourceRun).toLocaleString(undefined, {
+                      weekday: 'long', year: 'numeric', month: 'short', day: 'numeric',
+                      hour: '2-digit', minute: '2-digit',
+                    })}
                     size="small" 
                     variant="outlined" 
                     color="primary"

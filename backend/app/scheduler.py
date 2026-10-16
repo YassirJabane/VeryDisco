@@ -429,12 +429,17 @@ class SchedulerManager:
         )
         logger.info("Background caches scheduled every %s min; Server Health every %s min.", refresh_minutes, health_minutes)
 
-    def get_next_run_time(self) -> Optional[str]:
-        """Returns the next scheduled run timestamp across all active sync jobs in ISO format or None."""
+    def get_next_run_time(self, source: Optional[str] = None) -> Optional[str]:
+        """Read the actual job for a source; the dashboard can request the earliest job."""
+        source_jobs = {'daily-jams': 'daily_sync_job', 'weekly-jams': 'weekly_sync_job',
+                       'weekly-exploration': 'weekly_sync_job'}
+        if source is not None and source not in source_jobs:
+            return None
+        job_ids = [source_jobs[source]] if source is not None else ['daily_sync_job', 'weekly_sync_job']
         next_times = []
-        for job_id in ["daily_sync_job", "weekly_sync_job"]:
+        for job_id in job_ids:
             job = self.scheduler.get_job(job_id)
-            if job and job.next_run_time:
+            if job and getattr(job, 'next_run_time', None):
                 next_times.append(job.next_run_time)
         if next_times:
             return min(next_times).isoformat()
