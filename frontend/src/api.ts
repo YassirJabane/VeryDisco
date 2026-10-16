@@ -266,7 +266,7 @@ export interface LibraryTrackItem {
 
 // ── Lyrics Manager ───────────────────────────────────────────────────────────
 export interface LyricsAutosearchProgress {
-  status: 'idle' | 'running' | 'completed' | 'failed' | 'rate_limited' | 'cancelled';
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'rate_limited' | 'service_unavailable' | 'cancelled';
   total?: number;
   processed?: number;
   synced?: number;

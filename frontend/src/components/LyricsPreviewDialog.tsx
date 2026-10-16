@@ -75,8 +75,9 @@ export const LyricsPreviewDialog: React.FC<LyricsPreviewDialogProps> = ({
         setSelectedCandidate(best);
         setLyricsContent(best.syncedLyrics || best.plainLyrics || '');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to search lyrics', err);
+      notify(err?.response?.data?.detail || 'Lyrics search is temporarily unavailable. Please retry later.', 'error');
     } finally {
       setLoading(false);
     }

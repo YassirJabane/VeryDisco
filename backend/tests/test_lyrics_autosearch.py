@@ -107,7 +107,7 @@ async def test_automatic_search_continues_past_plain_strict_result(monkeypatch):
     ])
     monkeypatch.setattr(client, '_search', search)
     assert await client.find_automatic('Artist', 'Song', 'Album', 200, synced_only=True) == ('[00:01]upgrade', 'synced')
-    assert search.await_count == 3
+    assert search.await_count == 2
 
 
 @pytest.mark.asyncio

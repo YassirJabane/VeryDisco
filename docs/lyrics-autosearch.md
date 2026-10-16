@@ -15,7 +15,16 @@ Navidrome is notified once after the batch.
 
 LRCLIB calls are serialized, spaced at least one second apart and have an
 explicit timeout. HTTP 429 stops the bulk pass and establishes a shared cooldown
-of at least 60 seconds, respecting numeric Retry-After values. Per-track failures
+of at least 60 seconds, respecting Retry-After values. HTTP 408/5xx, transport
+errors/timeouts and malformed responses receive at most three request attempts,
+with increasing delays (2s, 4s) and the server's Retry-After (seconds or HTTP date).
+Retry-After values over 30 seconds stop immediately into a cooldown instead of
+holding the job asleep. Exhausted retries open a shared cooldown of at least
+60 seconds and stop the batch as `service_unavailable`; untouched tracks are
+not processed or classified as missing. The same bounded request retries apply
+to download lookups and manual searches, without nested retry multiplication.
+An automatic confident synced match stops before broader, unnecessary queries.
+Per-track failures
 are counted separately from no match. One job per user is allowed; the UI polls
 progress and reconnects on reopening. Jobs/progress are in memory and do not
 survive an application restart. Running Tasks can cancel an active pass.

@@ -54,3 +54,17 @@ test('resumes progress after reopening the page and refreshes on completion', as
   await waitFor(() => expect(screen.getByText(/Autosearch completed: 2\/2/)).toBeInTheDocument(), { timeout: 3500 });
   await waitFor(() => expect(apiService.getMissingLyrics).toHaveBeenCalledTimes(2));
 });
+
+test('provider outage is shown separately from missing lyrics and allows a later retry', async () => {
+  vi.mocked(apiService.getMissingLyrics).mockResolvedValue([
+    { artist: 'Artist', title: 'Song', album: '', filepath: '/music/a.mp3', duration: 200 },
+  ]);
+  vi.mocked(apiService.getLyricsAutosearch).mockResolvedValue({
+    status: 'service_unavailable', total: 20, processed: 1, failed: 1, not_found: 0,
+    error: 'LRCLIB is temporarily unavailable. Retries exhausted; retry later. Remaining tracks were not checked.',
+  });
+  render(<LyricsManager />);
+  await screen.findByText(/Remaining tracks were not checked/);
+  expect(screen.getByText(/0 not found/)).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Autosearch all' })).toBeEnabled());
+});

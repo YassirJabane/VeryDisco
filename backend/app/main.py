@@ -6717,8 +6717,14 @@ async def search_lyrics_endpoint(artist: str, title: str, request: Request, albu
     user = await get_current_user(request)
     from backend.app.clients.lrclib import LrcLibClient
     lrclib_client = LrcLibClient()
-    results = await lrclib_client.search_lyrics(artist, title, album)
-    return results
+    try:
+        return await lrclib_client.search_lyrics(artist, title, album, raise_errors=True)
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail='LRCLIB is temporarily unavailable. Retry later.')
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 429:
+            raise HTTPException(status_code=429, detail='LRCLIB rate limit reached. Retry later.')
+        raise HTTPException(status_code=502, detail='LRCLIB search failed. Retry later.')
 
 @app.post("/api/lyrics/save")
 async def save_lyrics_endpoint(req: SaveLyricsRequest, request: Request):

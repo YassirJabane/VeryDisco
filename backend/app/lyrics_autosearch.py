@@ -82,6 +82,11 @@ async def run_autosearch(db, user_id, music_dir, progress, notify, *, base_url='
                 if exc.response.status_code == 429:
                     progress.update(status='rate_limited', error='LRCLIB rate limit reached. Retry later.')
                     break
+            except httpx.RequestError as exc:
+                get_logger().warning('Lyrics autosearch stopped: LRCLIB temporarily unavailable (%s)', type(exc).__name__)
+                progress['failed'] += 1
+                progress.update(status='service_unavailable', error='LRCLIB is temporarily unavailable. Retries exhausted; retry later. Remaining tracks were not checked.')
+                break
             except Exception:
                 get_logger().exception('Lyrics autosearch failed for %s', row.get('filepath'))
                 progress['failed'] += 1
