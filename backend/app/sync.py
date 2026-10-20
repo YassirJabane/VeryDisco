@@ -2200,6 +2200,15 @@ def build_album_wildcard_queries(artist: str, album: str) -> list[str]:
 
 def build_track_search_queries(artist: str, title: str, album: str = "") -> list[str]:
     """Build precise Soulseek queries, preferring release + artist before track fallbacks."""
+    # Symbol-only credits lose their identity when Soulseek punctuation is
+    # stripped (¥$ became the single token S). Search by the known members.
+    if re.sub(r'\s+', '', artist or '').casefold() in {'¥$', 'ys'}:
+        member_queries = [
+            query for member in ('Kanye West', 'Ty Dolla Sign')
+            for query in build_track_search_queries(member, title, album)
+        ]
+        title_only = re.sub(r'\s+', ' ', re.sub(r'[^\w\s*]', ' ', clean_search_title(title))).strip()
+        return list(dict.fromkeys(q for q in member_queries if q != title_only)) + ([title_only] if title_only else [])
     def query_part(value: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[^\w\s*]", " ", value or "")).strip()
 

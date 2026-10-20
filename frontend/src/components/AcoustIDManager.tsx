@@ -11,6 +11,11 @@ import WarnIcon from '@mui/icons-material/Warning';
 import InfoIcon from '@mui/icons-material/Info';
 import apiService, { AcoustidStats } from '../api';
 
+const hasDecoderError = (failure: any): boolean =>
+  failure?.status === 'skipped' && /audio decoder failed/i.test(failure?.reason || '');
+const canReplace = (failure: any): boolean =>
+  ['mismatch', 'unknown'].includes(failure?.status || '') || hasDecoderError(failure);
+
 export const AcoustIDManager: React.FC = () => {
   const [acoustidStats, setAcoustidStats] = useState<AcoustidStats | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -270,9 +275,9 @@ export const AcoustIDManager: React.FC = () => {
                     secondary={<>{failure.reason}<br />{failure.suggestion}</>}
                   />
                   <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-                    <Chip size="small" label={{ mismatch: 'Mismatch', unknown: 'Unknown fingerprint', unavailable: 'Service unavailable', skipped: 'Not checked', verified: 'Verified' }[failure.status || 'mismatch']} />
+                    <Chip size="small" label={hasDecoderError(failure) ? 'Audio decoder error' : { mismatch: 'Mismatch', unknown: 'Unknown fingerprint', unavailable: 'Service unavailable', skipped: 'Not checked', verified: 'Verified' }[failure.status || 'mismatch']} />
                     <Button size="small" variant="outlined" startIcon={checkingPath === failure.file_path ? <CircularProgress size={14} /> : <RefreshIcon />} disabled={scanning || !!checkingPath} onClick={() => recheckTrack(failure)}>Recheck audio</Button>
-                    {['mismatch', 'unknown'].includes(failure.status || '') && <Button size="small" variant="outlined" disabled={scanning || !!checkingPath} onClick={() => openFailureFix(failure)}>Correct / Replace</Button>}
+                    {canReplace(failure) && <Button size="small" variant="outlined" disabled={scanning || !!checkingPath} onClick={() => openFailureFix(failure)}>Correct / Replace</Button>}
                   </Stack>
                 </ListItem>
               ))}
@@ -289,11 +294,12 @@ export const AcoustIDManager: React.FC = () => {
           <TextField label="Album" value={fixAlbum} onChange={event => setFixAlbum(event.target.value)} />
           <Alert severity="info">{failureToFix?.reason}</Alert>
           {failureToFix?.status === 'unknown' && <Alert severity="warning">AcoustID could not identify this audio. This does not prove it is wrong. Request a replacement only if you have confirmed the file or version is incorrect.</Alert>}
+          {hasDecoderError(failureToFix) && <Alert severity="warning">The audio decoder could not read this file. This is not a recording mismatch. You can request a replacement; the original is kept until a new candidate is verified.</Alert>}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => recheckTrack(failureToFix)} disabled={queueingFix || !!checkingPath || scanning}>Recheck existing audio</Button>
           <Button onClick={() => setFailureToFix(null)} disabled={queueingFix || !!checkingPath}>Cancel</Button>
-          <Button variant="contained" onClick={queueReplacement} disabled={queueingFix || !!checkingPath || !['mismatch', 'unknown'].includes(failureToFix?.status || '') || !fixArtist.trim() || !fixTitle.trim()}>
+          <Button variant="contained" onClick={queueReplacement} disabled={queueingFix || !!checkingPath || !canReplace(failureToFix) || !fixArtist.trim() || !fixTitle.trim()}>
             {queueingFix ? 'Queueing…' : 'Replace safely'}
           </Button>
         </DialogActions>

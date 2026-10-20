@@ -47,6 +47,30 @@ MBID, without exposing the API key or fingerprint. Artist names are not sent in
 the AcoustID fingerprint lookup: an empty result for a ¥$ track occurs before
 artist alias matching.
 
+Decoder failures (skipped checks whose reason contains `Audio decoder failed`)
+also offer manual replacement with a separate `Audio decoder error` label. A
+missing tool/key or an API outage does not offer replacement in this page.
+
+Production logs later exposed independent candidate-search defects for ¥$:
+symbol stripping produced `VULTURES 2 S`, an empty normalized artist alias
+matched every path, substring title matching admitted `Dead End Friends` for
+`DEAD` and `Forever Rolling` for `FOREVER`, and a flattened album name matched
+`Vultures 2009` as `Vultures 2`. Single-track queries now use the known member
+names, short artist aliases require token matches, titles require cleaned exact
+matches, and album paths use token boundaries. Regression fixtures include the
+actual filename forms from those logs, including a trailing release year.
+Peer-side HTTP 500 download-request timeouts remain separate transport failures.
+
+The release tagged in the inspected VULTURES 2 files
+(`33417db3-bfa9-477e-84b3-0392a7033b84`, streaming update #4) contains both
+FOREVER (#9, 1:28) and FOREVER ROLLING (#14, 3:17). These titles must not be
+treated as interchangeable. A mislabeled audio file needs an identity review,
+not automatic expansion of FOREVER to FOREVER ROLLING.
+
+After refreshing the production library preview, the replaced Trance file
+showed 3:14, consistent with its expected recording, whereas the prior failed
+lookup used 212.86 seconds. The user confirmed the refreshed audio was correct.
+
 During the 2026-10-20 inspection, copies served by the production library stream
 were measured without modifying the library. DEAD contained 2,573 MP3 frames
 (67.213 seconds), and FOREVER 6,596 frames (about 172.304 seconds, including its

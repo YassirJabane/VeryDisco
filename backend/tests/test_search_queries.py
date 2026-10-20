@@ -6,6 +6,50 @@ from backend.app.sync import (
 )
 
 
+def test_symbol_artist_queries_use_members_not_a_single_s_token():
+    for artist in ('¥$', 'YS'):
+        queries = build_track_search_queries(artist, 'DEAD', 'VULTURES 2')
+        assert queries[0] == 'VULTURES 2 *anye *est'
+        assert any('Ty Dolla Sign' in query for query in queries)
+        assert 'VULTURES 2 S' not in queries
+        assert queries[-1] == 'DEAD'
+
+
+def test_ys_candidates_do_not_accept_empty_aliases_title_substrings_or_album_prefixes():
+    from backend.app.clients.slskd import SlskdClient
+    client = SlskdClient('http://localhost:5030', 'key')
+    files = [
+        r'Music\Them Crooked Vultures\2009\04 Dead End Friends.mp3',
+        r'Music\Them Crooked Vultures\2009\13 Dead.mp3',
+        r'Music\Other Artist\Other Album\13 Dead.mp3',
+        r'Music\Kanye West & Ty Dolla $ign\Vultures 2\13 Dead.mp3',
+        r'Music\¥$, Kanye West, Ty Dolla $ign\Vultures 2\¥$, Kanye West, Ty Dolla $ign - Vultures 2 - 13 - Dead - 2024.mp3',
+    ]
+    responses = [{'username': 'peer', 'files': [
+        {'filename': name, 'size': 100, 'bitrate': 320} for name in files]}]
+    candidates = client._parse_candidates(responses, artist='¥$', title='DEAD', album='VULTURES 2', audio_quality={'preset': 'all'})
+    assert {c['filename'] for c in candidates} == set(files[-2:])
+    forever = client._parse_candidates([{'username': 'peer', 'files': [
+        {'filename': r'Music\Kanye West\Vultures 2\14 Forever Rolling (feat. Lil Baby).mp3', 'size': 100},
+        {'filename': r'Music\Kanye West\Vultures 2\09 Forever.mp3', 'size': 100},
+    ]}], artist='¥$', title='FOREVER', album='VULTURES 2', audio_quality={'preset': 'all'})
+    assert [c['filename'] for c in forever] == [r'Music\Kanye West\Vultures 2\09 Forever.mp3']
+
+
+def test_forever_rolling_is_searchable_as_a_distinct_track():
+    from backend.app.clients.slskd import SlskdClient
+    client = SlskdClient('http://localhost:5030', 'key')
+    queries = build_track_search_queries('¥$', 'FOREVER ROLLING', 'VULTURES 2')
+    assert 'FOREVER ROLLING Kanye West' in queries
+    responses = [{'username': 'peer', 'files': [
+        {'filename': r'Music\Kanye West\Vultures 2\09 Forever.mp3', 'size': 100},
+        {'filename': r'Music\Kanye West\Vultures 2\14 Forever Rolling (feat. Lil Baby).mp3', 'size': 100},
+    ]}]
+    matches = client._parse_candidates(responses, artist='¥$', title='FOREVER ROLLING',
+        album='VULTURES 2', audio_quality={'preset': 'all'})
+    assert [c['filename'] for c in matches] == [responses[0]['files'][1]['filename']]
+
+
 def test_track_queries_do_not_turn_artist_into_negative_search_term():
     queries = build_track_search_queries("Kanye West", "Good Morning", "Graduation")
 

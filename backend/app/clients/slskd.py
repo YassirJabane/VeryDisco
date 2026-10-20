@@ -111,7 +111,7 @@ class SlskdClient:
         norm_title = normalize_title(title)
         raw_norm_title = normalize(title)
         norm_album = normalize(album) if album else ""
-        artist_words = [normalize(w) for w in artist.split() if len(w) > 2]
+        artist_words = [normalize(w) for w in artist.split() if len(normalize(w)) > 2]
         
         preset = audio_quality.get("preset", "lossless")
         custom_profiles = audio_quality.get("custom_profiles", [])
@@ -188,20 +188,38 @@ class SlskdClient:
                 from backend.app.media_versions import master_matches_path
                 if not master_matches_path(title, filename, album or ""):
                     continue
-                norm_basename = normalize_title(basename)
-                if norm_title not in norm_basename:
+                from backend.app.album_sync import clean_track_title
+                from backend.app.sync import match_track_titles
+                candidate_title = clean_track_title(basename, artist, album or '')
+                # Scene filenames can append a release year after the title.
+                # Only remove this suffix when checking the exact requested title.
+                candidate_without_year = re.sub(r'\s+(?:[-–—]\s+)?(?:19|20)\d{2}\s*$', '', candidate_title)
+                if not (norm_title and (
+                    norm_title == normalize_title(candidate_title)
+                    or norm_title == normalize_title(candidate_without_year)
+                    or match_track_titles(title, basename, artist)
+                )):
                     continue
 
                 norm_filename = normalize(filename)
                     
                 from backend.app.sync import get_artist_aliases
                 norm_artists = get_artist_aliases(artist)
-                full_artist_match = any(normalize(a) in norm_filename for a in norm_artists) or (
+                filename_words = {normalize(w) for w in re.findall(r'\w+', filename)}
+                def alias_matches(alias: str) -> bool:
+                    key = normalize(alias)
+                    if not key or len(key) == 1:
+                        # Never let an empty normalized alias match every path.
+                        return bool(alias.strip() and re.search(r'[^\w\s]', alias) and alias.casefold() in filename.casefold())
+                    return key in filename_words if len(key) < 3 else key in norm_filename
+                full_artist_match = any(alias_matches(a) for a in norm_artists) or (
                     len(artist_words) > 0 and all(w in norm_filename for w in artist_words)
                 )
                 partial_artist_match = any(w in norm_filename for w in artist_words if len(w) >= 4)
                 album_is_distinct = bool(norm_album and len(norm_album) >= 3 and norm_album != norm_title)
-                album_match = (norm_album in norm_filename) if album_is_distinct else False
+                album_tokens = re.findall(r'[^\W_]+', album or '', flags=re.UNICODE)
+                album_pattern = r'(?<!\w)' + r'[\W_]*'.join(re.escape(t) for t in album_tokens) + r'(?!\w)'
+                album_match = bool(album_is_distinct and album_tokens and re.search(album_pattern, filename, re.IGNORECASE))
                 
                 # If album name equals the track title, matching the album provides no proof of the artist:
                 # the artist itself MUST match to prevent downloading random covers or karaoke tracks.

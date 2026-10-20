@@ -8,7 +8,7 @@ vi.mock('../api', () => ({ default: {
   getAcoustidStats: vi.fn(), acoustidScan: vi.fn(), recheckAcoustid: vi.fn(), replaceLibraryTrack: vi.fn(),
 } }));
 
-const stats = (status: 'mismatch' | 'unknown' | 'unavailable' = 'mismatch') => ({
+const stats = (status: 'mismatch' | 'unknown' | 'unavailable' | 'skipped' = 'mismatch') => ({
   total: 1, scanned: 1, verified: 0, failed: status === 'mismatch' ? 1 : 0,
   inconclusive: status === 'mismatch' ? 0 : 1, remaining: 0, running: false,
   failures: [{ file_path: '/music/Drake/song.mp3', artist: 'Drake', title: 'Jumbotron Shit Poppin',
@@ -49,6 +49,29 @@ test('a service outage offers a recheck without prompting replacement', async ()
   vi.mocked(apiService.getAcoustidStats).mockResolvedValue(stats('unavailable'));
   render(<AcoustIDManager />);
   expect(await screen.findByRole('button', { name: 'Recheck audio' })).toBeEnabled();
+  expect(screen.queryByRole('button', { name: 'Correct / Replace' })).not.toBeInTheDocument();
+});
+
+test('decoder errors allow manual replacement while other skipped checks do not', async () => {
+  const decoder = stats('skipped');
+  decoder.failures[0].reason = 'Skipped: Audio decoder failed (fpcalc exit 3): Invalid data found when processing input';
+  vi.mocked(apiService.getAcoustidStats).mockResolvedValue(decoder);
+  vi.mocked(apiService.replaceLibraryTrack).mockResolvedValue({ message: 'Replacement queued safely.' });
+  render(<AcoustIDManager />);
+  expect(await screen.findByText('Audio decoder error')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Correct / Replace' }));
+  expect(await screen.findByText(/This is not a recording mismatch/)).toBeInTheDocument();
+  expect(apiService.replaceLibraryTrack).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Replace safely' }));
+  await waitFor(() => expect(apiService.replaceLibraryTrack).toHaveBeenCalledTimes(1));
+});
+
+test('a missing fingerprint tool does not offer audio replacement', async () => {
+  const skipped = stats('skipped');
+  skipped.failures[0].reason = 'Skipped: fpcalc is not available';
+  vi.mocked(apiService.getAcoustidStats).mockResolvedValue(skipped);
+  render(<AcoustIDManager />);
+  expect(await screen.findByText('Not checked')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Correct / Replace' })).not.toBeInTheDocument();
 });
 
