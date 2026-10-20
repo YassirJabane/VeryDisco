@@ -209,6 +209,7 @@ class AcoustIDClient:
         expected_artist: Optional[str] = None,
         expected_title: Optional[str] = None,
         expected_mbid: Optional[str] = None,
+        require_recording_match: bool = False,
     ) -> Tuple[bool, str]:
         """
         Verifies if the track fingerprint matches the expected or embedded metadata.
@@ -250,7 +251,11 @@ class AcoustIDClient:
             return False, f"AcoustID API unavailable: {message}"
         if not data.get("results"):
             logger.info("AcoustID lookup succeeded with no results for %s (duration %.2fs)", file_path.name, fp_data["duration"])
-            return False, "No match found in AcoustID database"
+            return False, (
+                f"No match found in AcoustID database (audio duration {fp_data['duration']:.2f}s; "
+                f"expected recording {tagged_mbid or 'not available'}). "
+                "Audio is not verified; altered speed/pitch or an unregistered fingerprint can cause this."
+            )
 
         results = data.get("results", [])
         logger.info("AcoustID lookup: %s results, best score %.6f, expected recording %s",
@@ -275,6 +280,18 @@ class AcoustIDClient:
                         if rec.get("id") == tagged_mbid:
                             logger.info(f"[AcoustID] Track: '{tagged_title}' — Generated MBID: {tagged_mbid} | Expected MBID: {tagged_mbid} | Match: True")
                             return True, f"Verified by MusicBrainz Recording ID match ({tagged_mbid})"
+
+            if require_recording_match:
+                returned_mbids = sorted({
+                    rec['id'] for result in results if float(result.get('score') or 0) >= .6
+                    for rec in result.get('recordings', []) if rec.get('id')
+                })
+                if not returned_mbids:
+                    return False, "No match found: insufficient AcoustID score or recording IDs"
+                return False, (
+                    f"AcoustID recording mismatch: expected {tagged_mbid}; "
+                    f"returned {', '.join(returned_mbids)}. Artist/title alone cannot verify this version."
+                )
 
         if not has_any_valid_metadata:
             return False, "No match found: insufficient AcoustID score or recording metadata"

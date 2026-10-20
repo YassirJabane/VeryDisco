@@ -260,7 +260,7 @@ export const AcoustIDManager: React.FC = () => {
               <Button startIcon={<RefreshIcon />} disabled={scanning || !!checkingPath} onClick={() => handleStartScan(0, true)}>Recheck all unsuccessful</Button>
             </Stack>
             <Typography variant="body2" color="text.secondary" mb={2}>
-              Recheck the existing audio first. An unavailable service or an unknown fingerprint does not mean the file is wrong. A replacement is offered only for a detected mismatch.
+              Recheck the existing audio first. An unknown fingerprint is not verified and can include an altered version such as slowed audio. If you know the file is wrong, you can request a replacement manually. The current file is kept until a replacement is verified.
             </Typography>
             <List disablePadding>
               {acoustidStats.failures.map((failure) => (
@@ -272,7 +272,7 @@ export const AcoustIDManager: React.FC = () => {
                   <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
                     <Chip size="small" label={{ mismatch: 'Mismatch', unknown: 'Unknown fingerprint', unavailable: 'Service unavailable', skipped: 'Not checked', verified: 'Verified' }[failure.status || 'mismatch']} />
                     <Button size="small" variant="outlined" startIcon={checkingPath === failure.file_path ? <CircularProgress size={14} /> : <RefreshIcon />} disabled={scanning || !!checkingPath} onClick={() => recheckTrack(failure)}>Recheck audio</Button>
-                    {failure.status === 'mismatch' && <Button size="small" variant="outlined" disabled={scanning || !!checkingPath} onClick={() => openFailureFix(failure)}>Correct / Replace</Button>}
+                    {['mismatch', 'unknown'].includes(failure.status || '') && <Button size="small" variant="outlined" disabled={scanning || !!checkingPath} onClick={() => openFailureFix(failure)}>Correct / Replace</Button>}
                   </Stack>
                 </ListItem>
               ))}
@@ -282,17 +282,18 @@ export const AcoustIDManager: React.FC = () => {
       )}
 
       <Dialog open={Boolean(failureToFix)} onClose={() => !queueingFix && !checkingPath && setFailureToFix(null)} fullWidth maxWidth="sm">
-        <DialogTitle>Correct AcoustID mismatch</DialogTitle>
+        <DialogTitle>Review and replace audio</DialogTitle>
         <DialogContent sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 1.5 }}>
           <TextField label="Artist" value={fixArtist} onChange={event => setFixArtist(event.target.value)} />
           <TextField label="Title" value={fixTitle} onChange={event => setFixTitle(event.target.value)} />
           <TextField label="Album" value={fixAlbum} onChange={event => setFixAlbum(event.target.value)} />
           <Alert severity="info">{failureToFix?.reason}</Alert>
+          {failureToFix?.status === 'unknown' && <Alert severity="warning">AcoustID could not identify this audio. This does not prove it is wrong. Request a replacement only if you have confirmed the file or version is incorrect.</Alert>}
         </DialogContent>
         <DialogActions>
           <Button onClick={() => recheckTrack(failureToFix)} disabled={queueingFix || !!checkingPath || scanning}>Recheck existing audio</Button>
           <Button onClick={() => setFailureToFix(null)} disabled={queueingFix || !!checkingPath}>Cancel</Button>
-          <Button variant="contained" onClick={queueReplacement} disabled={queueingFix || !!checkingPath || failureToFix?.status !== 'mismatch' || !fixArtist.trim() || !fixTitle.trim()}>
+          <Button variant="contained" onClick={queueReplacement} disabled={queueingFix || !!checkingPath || !['mismatch', 'unknown'].includes(failureToFix?.status || '') || !fixArtist.trim() || !fixTitle.trim()}>
             {queueingFix ? 'Queueing…' : 'Replace safely'}
           </Button>
         </DialogActions>

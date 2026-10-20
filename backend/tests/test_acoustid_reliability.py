@@ -70,11 +70,25 @@ def verification_client(monkeypatch, results):
 
 
 @pytest.mark.asyncio
-async def test_mbid_can_verify_without_text_and_fingerprint_is_generated_once(monkeypatch):
+@pytest.mark.parametrize('strict', [False, True])
+async def test_mbid_can_verify_without_text_and_fingerprint_is_generated_once(monkeypatch, strict):
     client = verification_client(monkeypatch, [{'score': .9994396, 'recordings': [{'id': 'expected-recording'}]}])
-    assert await client.verify_track(Path('file.mp3'), 'expected-recording', 'Drake', 'Jumbotron Shit Poppin')
+    valid, _ = await client.verify_track_against_metadata(Path('file.mp3'), 'Drake', 'Jumbotron Shit Poppin',
+        'expected-recording', require_recording_match=strict)
+    assert valid
     assert client.generate_fingerprint.await_count == 1
     assert client.lookup_fingerprint.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_replacement_cannot_verify_a_different_version_by_title_alone(monkeypatch):
+    client = verification_client(monkeypatch, [{'score': .99, 'recordings': [
+        {'id': 'slowed-recording', 'title': 'Trance', 'artists': [{'name': 'Metro Boomin'}]}]}])
+    valid, reason = await client.verify_track_against_metadata(Path('file.mp3'), 'Metro Boomin', 'Trance',
+        'original-recording', require_recording_match=True)
+    assert not valid
+    assert verification_status(valid, reason) == 'mismatch'
+    assert 'original-recording' in reason and 'slowed-recording' in reason
 
 
 @pytest.mark.asyncio
@@ -100,6 +114,25 @@ async def test_unknown_never_requires_discarding_audio(monkeypatch):
     valid, reason = await client.verify_track_against_metadata(Path('file.mp3'), 'Drake', 'Song')
     assert verification_status(valid, reason) == 'unknown'
     assert await client.verify_track(Path('file.mp3'), 'expected', 'Drake', 'Song')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('title,duration', [('DEAD', 67.21), ('FOREVER', 172.26), ('ISABELLA', 8.92)])
+async def test_ys_unknown_is_a_fingerprint_result_not_an_artist_alias_failure(monkeypatch, title, duration):
+    client = verification_client(monkeypatch, [])
+    client.generate_fingerprint.return_value = {'fingerprint': 'fp', 'duration': duration}
+    valid, reason = await client.verify_track_against_metadata(Path('ys.mp3'), '¥$', title, 'expected-recording')
+    assert not valid
+    assert verification_status(valid, reason) == 'unknown'
+    assert f'{duration:.2f}s' in reason
+    assert 'expected-recording' in reason
+    client.lookup_fingerprint.assert_awaited_once_with('fp', duration, 'recordings releasegroups')
+    # The exact same artist credit verifies as soon as AcoustID returns the recording.
+    client.lookup_fingerprint.return_value = {'status': 'ok', 'results': [
+        {'score': .99, 'recordings': [{'id': 'expected-recording'}]}]}
+    valid, reason = await client.verify_track_against_metadata(Path('ys.mp3'), '¥$', title, 'expected-recording')
+    assert valid
+    assert verification_status(valid, reason) == 'verified'
 
 
 @pytest.mark.asyncio

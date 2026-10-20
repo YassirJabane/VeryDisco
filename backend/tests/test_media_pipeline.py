@@ -326,7 +326,14 @@ async def test_acoustid_joint_artist_credit(monkeypatch, expected_artist, record
 
 
 @pytest.mark.asyncio
-async def test_single_track_never_keeps_acoustid_mismatch_at_retry_limit(monkeypatch, tmp_path):
+@pytest.mark.parametrize('verification,replace', [
+    ('Different recording', False),
+    ('No match found in AcoustID database', True),
+    ('AcoustID API unavailable: timeout', True),
+    ('Skipped: decoder failed', True),
+    ('exception', True),
+])
+async def test_single_track_never_keeps_rejected_acoustid_candidate_at_retry_limit(monkeypatch, tmp_path, verification, replace):
     import backend.app.album_sync as album_sync
     import backend.app.sync as sync
     from backend.app.clients.acoustid import acoustid_client
@@ -365,7 +372,9 @@ async def test_single_track_never_keeps_acoustid_mismatch_at_retry_limit(monkeyp
         }
 
     async def mismatch(*args, **kwargs):
-        return False, "Different recording"
+        if verification == 'exception':
+            raise RuntimeError('verification failed')
+        return verification.startswith('Skipped:'), verification
 
     monkeypatch.setattr(album_sync, "SlskdClient", FakeSlskd)
     monkeypatch.setattr(album_sync, "LrcLibClient", FakeClient)
@@ -383,10 +392,19 @@ async def test_single_track_never_keeps_acoustid_mismatch_at_retry_limit(monkeyp
         schedule=SimpleNamespace(max_candidate_attempts=2),
         acoustid=SimpleNamespace(max_retries=2),
     )
-    assert await album_sync.download_single_track_task("Drake", "Song", "Album", config, force=True) is False
-    assert not list((tmp_path / "music").rglob("*.mp3"))
-    assert not (tmp_path / "track1.mp3").exists()
-    assert not (tmp_path / "track2.mp3").exists()
+    original = tmp_path / 'music' / 'song.mp3'
+    if replace:
+        original.parent.mkdir()
+        original.write_bytes(b'original audio')
+    assert await album_sync.download_single_track_task("Drake", "Song", "Album", config, force=True,
+        replace_path_override=str(original) if replace else None) is False
+    if replace:
+        assert original.read_bytes() == b'original audio'
+        assert list((tmp_path / 'music').rglob('*.mp3')) == [original]
+    else:
+        assert not list((tmp_path / "music").rglob("*.mp3"))
+        assert not (tmp_path / "track1.mp3").exists()
+        assert not (tmp_path / "track2.mp3").exists()
 
 
 @pytest.mark.asyncio

@@ -30,12 +30,26 @@ test('rechecks existing audio and removes a verified failure without queueing a 
   expect(apiService.replaceLibraryTrack).not.toHaveBeenCalled();
 });
 
-test('unknown fingerprints offer a recheck without suggesting replacement', async () => {
+test('unknown fingerprints allow an explicit replacement without claiming a mismatch', async () => {
   vi.mocked(apiService.getAcoustidStats).mockResolvedValue(stats('unknown'));
+  vi.mocked(apiService.replaceLibraryTrack).mockResolvedValue({ status: 'success', message: 'Replacement queued safely.' });
+  render(<AcoustIDManager />);
+  expect(await screen.findByRole('button', { name: 'Recheck audio' })).toBeEnabled();
+  expect(screen.getByText('Unknown fingerprint')).toBeInTheDocument();
+  expect(apiService.replaceLibraryTrack).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Correct / Replace' }));
+  expect(await screen.findByText(/This does not prove it is wrong/)).toBeInTheDocument();
+  expect(apiService.replaceLibraryTrack).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Replace safely' }));
+  await waitFor(() => expect(apiService.replaceLibraryTrack).toHaveBeenCalledWith(
+    '/music/Drake/song.mp3', 'Drake', 'Jumbotron Shit Poppin', 'Her Loss'));
+});
+
+test('a service outage offers a recheck without prompting replacement', async () => {
+  vi.mocked(apiService.getAcoustidStats).mockResolvedValue(stats('unavailable'));
   render(<AcoustIDManager />);
   expect(await screen.findByRole('button', { name: 'Recheck audio' })).toBeEnabled();
   expect(screen.queryByRole('button', { name: 'Correct / Replace' })).not.toBeInTheDocument();
-  expect(screen.getByText('Unknown fingerprint')).toBeInTheDocument();
 });
 
 test('bulk recheck includes already scanned unsuccessful files', async () => {

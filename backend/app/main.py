@@ -1448,6 +1448,8 @@ async def get_acoustid_stats(request: Request = None):
             if "audio decoder failed" in (failure.get("reason") or "").lower() else
             "Recheck first. If the mismatch persists, review artist/title before replacing audio."
             if status == "mismatch"
+            else "Audio is not verified. An altered version may be unrecognized. Recheck, or request a replacement manually if you know the file is wrong."
+            if status == "unknown"
             else "Verification is inconclusive. Retry the check; this does not establish that the audio is wrong."
         )
     return {

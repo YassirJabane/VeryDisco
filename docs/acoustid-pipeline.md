@@ -2,8 +2,10 @@
 
 Downloads and library scans distinguish verified audio, a positive mismatch,
 unknown fingerprints/insufficient evidence, unavailable API responses, and
-skipped checks. Only a positive mismatch rejects a new download candidate or
-offers replacement in the AcoustID page. Existing historical "No match found"
+skipped checks. Ordinary downloads reject positive mismatches; atomic library
+replacement requires positive verification. The AcoustID page also permits an explicit
+manual replacement for an unknown fingerprint when the user knows the audio or
+version is incorrect. Existing historical "No match found"
 rows are shown as inconclusive rather than proof of a bad audio file.
 
 API requests share a process-wide gate (two calls per second). Transport errors,
@@ -26,6 +28,33 @@ only verification results, and never alter tags, replace audio or start a search
 A file changed during verification cannot receive the old result. Successful
 checks disappear from the review list. Background scans and manual rechecks for
 the same user are serialized.
+
+## Manual replacement of unverified audio
+
+Unknown fingerprints remain inconclusive, never verified or automatically
+replaced. The review dialog explains that altered speed/pitch can cause an
+unknown result and lets the user explicitly request replacement. API outages
+continue to offer rechecking rather than a replacement prompt.
+
+The atomic library replacement path requires a verified candidate: unknown,
+skipped, unavailable, decoder failures and unexpected verification exceptions
+cannot overwrite the original. If the expected recording MBID is available,
+the replacement must match that ID; a title/artist fallback cannot accept a
+different recording. The original remains in place after failed attempts.
+
+Empty lookup diagnostics now include the audio duration and expected recording
+MBID, without exposing the API key or fingerprint. Artist names are not sent in
+the AcoustID fingerprint lookup: an empty result for a ¥$ track occurs before
+artist alias matching.
+
+During the 2026-10-20 inspection, copies served by the production library stream
+were measured without modifying the library. DEAD contained 2,573 MP3 frames
+(67.213 seconds), and FOREVER 6,596 frames (about 172.304 seconds, including its
+VBR header frame). These agree with the logged 67.21/172.26-second durations;
+they are measurements of the served audio, not the expected album durations.
+The stream endpoint serves the file directly, without preview truncation.
+No duration substitution or retagging was applied. Establishing which edition
+or source the files contain still requires inspection of the audio itself.
 
 Download operations hold a ContextVar-backed artist identity context. It collects
 MusicBrainz credits/aliases from existing responses, fetches missing aliases at

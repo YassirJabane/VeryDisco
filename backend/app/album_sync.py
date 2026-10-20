@@ -2126,30 +2126,38 @@ async def _download_single_track_internal(
             # 1.5 AcoustID check on raw downloaded file BEFORE moving/tagging
             from backend.app.clients.acoustid import acoustid_client, verification_status
             acoustid_mismatch = False
+            verification_rejection_reason = "AcoustID metadata mismatch"
             try:
                 is_valid, reason = await acoustid_client.verify_track_against_metadata(
                     downloaded_file,
                     expected_artist=fetched_artist,
                     expected_title=title_tag,
                     expected_mbid=mbid_recording,
+                    **({'require_recording_match': True} if replace_path_override else {}),
                 )
-                if not is_valid:
-                    if verification_status(is_valid, reason) != "mismatch":
+                status = verification_status(is_valid, reason)
+                if status != "verified":
+                    if status != "mismatch" and not replace_path_override:
                         logger.info(f"AcoustID verification skipped for single track '{title_tag}': {reason}")
                     else:
                         acoustid_retry_count += 1
                         acoustid_mismatch = True
-                        if downloaded_file.exists():
+                        verification_rejection_reason = f"AcoustID {status}: {reason}"
+                        if status == "mismatch" and downloaded_file.exists():
                             downloaded_file.unlink()
-                        logger.warning(f"AcoustID mismatch detected for single track '{title_tag}': {reason}. Discarding downloaded file.")
+                        logger.warning("Candidate rejected for '%s': %s. Current library audio is preserved.", title_tag, verification_rejection_reason)
             except Exception as ac_err:
                 logger.error(f"Error during AcoustID check for single track {downloaded_file}: {ac_err}")
+                if replace_path_override:
+                    acoustid_retry_count += 1
+                    acoustid_mismatch = True
+                    verification_rejection_reason = f"AcoustID verification unavailable: {type(ac_err).__name__}"
 
             if acoustid_mismatch:
                 if attempt_id is not None:
-                    await db.update_download_attempt(attempt_id, "rejected", "AcoustID metadata mismatch")
+                    await db.update_download_attempt(attempt_id, "rejected", verification_rejection_reason)
                 if config and hasattr(config, 'acoustid') and acoustid_retry_count >= max(1, config.acoustid.max_retries):
-                    logger.warning(f"AcoustID max retries ({config.acoustid.max_retries}) reached for single track '{title_tag}'. No mismatched file will be saved.")
+                    logger.warning(f"AcoustID max retries ({config.acoustid.max_retries}) reached for single track '{title_tag}'. No rejected candidate will be saved.")
                     break
                 continue
 
